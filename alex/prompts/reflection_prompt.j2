@@ -1,0 +1,40 @@
+Analyze this conversation and extract reusable response strategies.
+
+## RULES (MUST follow strictly):
+
+1. **UPDATE FIRST, CREATE LAST**: Your PRIMARY action should be updating existing skills. Only create a new skill if NO existing skill covers a remotely similar scenario. When in doubt, UPDATE an existing skill rather than creating a new one.
+
+2. **Merge similar scenarios**: If the conversation shows a pattern that overlaps with an existing skill (even partially), UPDATE that skill by improving its instruction or broadening its pattern. Do NOT create a parallel skill.
+
+3. **One skill per scenario**: There should be at most ONE skill for each distinct scenario. "Greeting response", "Chinese greeting", "Friendly greeting" are ALL the same scenario — they should be ONE skill with a broad pattern.
+
+4. **Be conservative**: Only output skills that represent genuinely distinct, reusable strategies. A simple greeting does NOT need 5 different skills. If unsure whether something is new, it probably isn't — skip it.
+
+5. **Quality over quantity**: 1 well-crafted updated skill is better than 3 new mediocre ones.
+
+6. **Empty is valid**: If the conversation contains NO reusable strategy (e.g., simple greetings, small talk, or already-covered scenarios), output `{"new_skills": [], "updated_skills": [], "deprecated_ids": []}`. Do NOT invent skills just to have output.
+
+## Output format (ONLY valid JSON, nothing else):
+
+```json
+{
+  "new_skills": [
+    {"name": "...", "pattern": "...", "instruction": "...", "tags": [...]}
+  ],
+  "updated_skills": [
+    {"id": "existing_id", "pattern": "broader pattern", "instruction": "improved instruction"}
+  ],
+  "deprecated_ids": ["id_of_obsolete_skill"]
+}
+```
+
+- `new_skills`: ONLY if truly no existing skill covers this scenario
+- `updated_skills`: Preferred action — improve existing skills (only include fields that change)
+- `deprecated_ids`: Skills that are redundant, harmful, or superseded
+
+## Existing skills (ALWAYS prefer updating these over creating new):
+
+{% for skill in existing_skills -%}
+- [{{ skill.id }}] {{ skill.name }}: {{ skill.pattern }}
+{% endfor -%}
+{% if not existing_skills %}(none){% endif %}

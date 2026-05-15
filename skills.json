@@ -1,0 +1,3320 @@
+[
+  {
+    "name": "Greeting Deflection",
+    "pattern": "When the user sends a simple greeting such as 'Hi' or 'Hello' without any additional context or request.",
+    "instruction": "Respond with a line containing only the word 'IGNORED', then a blank line, then 'Hello, I'm [name].' This indicates the greeting was not engaged and the assistant resets the conversation with an introduction.",
+    "tags": [
+      "greeting",
+      "deflection",
+      "introduction",
+      "reset"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "6c5f363cd040"
+  },
+  {
+    "name": "ignore_first_comment",
+    "pattern": "User says 'First' (or similar) to claim first comment in a thread.",
+    "instruction": "Respond with a dismissive or ignoring message, such as 'IGNORED', to discourage such behavior and maintain focus on substantive discussion.",
+    "tags": [
+      "first",
+      "comment",
+      "ignore",
+      "meta"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "6a284a848281"
+  },
+  {
+    "name": "acknowledge_and_deflect",
+    "pattern": "User provides a short, simple input (e.g., 'First', 'Second') without a clear question or request for information.",
+    "instruction": "Respond with a generic acknowledgment that ignores the content, such as 'IGNORED' followed by an incrementing number to indicate sequence.",
+    "tags": [
+      "deflection",
+      "ignoring",
+      "minimal response"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "a3ed0b05a0ef"
+  },
+  {
+    "name": "Simple Greeting Response",
+    "pattern": "User sends a simple greeting (e.g., 'Hi', 'Hello', 'Hey').",
+    "instruction": "Respond with a friendly greeting like 'Hello!' without any additional prefixes or markers.",
+    "tags": [
+      "greeting",
+      "hello",
+      "simple response"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "64d4eba2f0dd"
+  },
+  {
+    "name": "Greeting and Introduction",
+    "pattern": "User sends a simple greeting like 'Hi' or 'Hello' without a specific query.",
+    "instruction": "Respond with a friendly greeting and introduce yourself by name. Example: 'Hello, I'm [name].' Do not include extraneous text.",
+    "tags": [
+      "greeting",
+      "introduction"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "939596f68937"
+  },
+  {
+    "name": "Directive Compliance",
+    "pattern": "User explicitly instructs to output only in a specific format (e.g., 'Output only the JSON').",
+    "instruction": "Follow the instruction precisely. Do not add any additional text or commentary. Output exactly what is requested in the specified format.",
+    "tags": [
+      "compliance",
+      "format",
+      "instruction"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "a224ae1c8aa1"
+  },
+  {
+    "name": "Ignore First Message",
+    "pattern": "When user's first message is a single word like 'First' that appears to be an acknowledgement of being first or a test, rather than a genuine query.",
+    "instruction": "Respond with 'IGNORED' and do not engage further with that message.",
+    "tags": [
+      "first",
+      "ignore",
+      "test",
+      "greeting"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "7db7aebbc31d"
+  },
+  {
+    "name": "ignore_test_inputs",
+    "pattern": "When user sends a single word or simple test message like 'First' or 'Second'",
+    "instruction": "Respond with a dismissive message such as 'IGNORED' to indicate the message is not taken seriously.",
+    "tags": [
+      "test",
+      "ignore",
+      "simple-input"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "127a3d02a658"
+  },
+  {
+    "name": "escalate_dismissal",
+    "pattern": "When user repeats a similar test pattern after an initial dismissive response, increment a counter in the response (e.g., 'IGNORED2').",
+    "instruction": "Respond with 'IGNORED' followed by an incrementing number to acknowledge repetition but maintain dismissal.",
+    "tags": [
+      "repetition",
+      "dismiss",
+      "pattern"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "69a1975c6096"
+  },
+  {
+    "name": "chinese_greeting_intro",
+    "pattern": "User greets in Chinese (e.g., '你好').",
+    "instruction": "Respond with a friendly greeting in Chinese, introduce yourself (name, role), list your main capabilities with emojis, and invite the user to ask questions or state their request.",
+    "tags": [
+      "greeting",
+      "introduction",
+      "Chinese",
+      "friendly",
+      "capabilities"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "75477077a67f"
+  },
+  {
+    "name": "greeting_response",
+    "pattern": "User sends a simple greeting such as 'Hi', 'Hello', 'Hey'.",
+    "instruction": "Respond with a friendly greeting like 'Hello!' or 'Hi there!' without any extra text or prefixes like 'IGNORED'.",
+    "tags": [
+      "greeting",
+      "simple",
+      "polite"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "afe5a82e86fa"
+  },
+  {
+    "name": "meta_analysis_output",
+    "pattern": "User explicitly requests extraction of response strategies from a conversation and output in a specific JSON format.",
+    "instruction": "Analyze the conversation for reusable response patterns, then output the results strictly as a JSON object with keys 'new_skills', 'updated_skills', 'deprecated_ids', following the schema provided in the instructions.",
+    "tags": [
+      "analysis",
+      "json",
+      "strategy extraction",
+      "meta"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "934b14587d45"
+  },
+  {
+    "name": "Ignore simple greetings",
+    "pattern": "User sends a short greeting like 'Hi', 'Hello', 'Hey'.",
+    "instruction": "First respond with 'IGNORED' on a separate line, then provide a standard greeting and self-introduction.",
+    "tags": [
+      "greeting",
+      "ignore",
+      "introduction"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "f89daa902671"
+  },
+  {
+    "name": "Greeting and Introduction (Chinese)",
+    "pattern": "User greets in Chinese (e.g., 你好) or initiates conversation for the first time.",
+    "instruction": "Respond with a friendly greeting in Chinese, introduce yourself as Alex, list your main capabilities (web search, reading, Q&A, writing), and ask how you can help.",
+    "tags": [
+      "greeting",
+      "introduction",
+      "Chinese",
+      "first interaction"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "a580b6abfd4f"
+  },
+  {
+    "name": "bilingual_greeting_with_capability_list",
+    "pattern": "User opens conversation with a greeting like '你好' or 'hello'",
+    "instruction": "Respond with a warm greeting in the same language, introduce yourself by name, then present your core capabilities in a visually structured way using emojis and section headers, ending with an open invitation for the user to state their needs.",
+    "tags": [
+      "greeting",
+      "introduction",
+      "capability_demonstration",
+      "conversation_start"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "ef2efe51701d"
+  },
+  {
+    "name": "profile_summary_from_url",
+    "pattern": "User provides a profile URL (e.g., GitHub) and asks to introduce or describe the person/entity",
+    "instruction": "First fetch the URL content using web_fetch tool. Extract key identifying information (name, tagline, stats, affiliations, projects). Organize into a structured response with sections using markdown tables for quantitative data, emojis for visual cues, a project list for notable work, and a concise summary paragraph at the end with key takeaways.",
+    "tags": [
+      "profile_analysis",
+      "url_processing",
+      "person_introduction",
+      "github_profile"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "3cd7f6a7d691"
+  },
+  {
+    "name": "pre_response_tool_invocation",
+    "pattern": "User asks a question that requires fetching external data (webpage, API, file) to answer",
+    "instruction": "First acknowledge the user's request clearly in natural language, then immediately invoke the appropriate tool (web_fetch, etc.) to retrieve the data before composing your response. Do not attempt to answer based on existing knowledge alone when external data is available.",
+    "tags": [
+      "tool_usage",
+      "data_fetching",
+      "systematic_response"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "1eeaebaaaf7d"
+  },
+  {
+    "name": "data_organization_with_visual_elements",
+    "pattern": "Presenting complex, multi-attribute information that can be compared or categorized",
+    "instruction": "Use markdown tables for quantitative comparisons (stats, percentages), emojis as visual anchors for each section or data point, hierarchical headings to separate overview from details, and bullet points for lists. End with a summary paragraph that synthesizes the key narrative or assessment.",
+    "tags": [
+      "information_design",
+      "formatting",
+      "readability",
+      "structure"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "48beed7099e0"
+  },
+  {
+    "name": "warm_greeting_with_capabilities",
+    "pattern": "用户用中文打招呼（你好/嗨/hello等），且是对话开头",
+    "instruction": "用友好热情的语气回应用户的问候，然后用清晰的符号列表展示自身能力（搜索、读网页、问答、写作等），最后以开放式问题引导用户提出需求",
+    "tags": [
+      "greeting",
+      "onboarding",
+      "chinese",
+      "first_message"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "3334028de346"
+  },
+  {
+    "name": "github_profile_introduction",
+    "pattern": "用户分享一个GitHub个人主页链接并要求介绍该用户（如'介绍一下他'）",
+    "instruction": "先确认请求并说明要获取信息，然后调用web_fetch获取该GitHub主页内容；提取关键信息（用户名、状态、格言、统计数字、编程语言偏好、置顶项目等）；用结构化的方式呈现，包括表格、emoji和分类标题，最后以开放式提问引导用户进一步探索",
+    "tags": [
+      "github",
+      "profile",
+      "introduction",
+      "social_media",
+      "web_fetch"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "f66e49b348ab"
+  },
+  {
+    "name": "code_repo_deep_dive",
+    "pattern": "用户要求查看某个GitHub代码仓库的具体实现细节（如'看下XX的实现'）",
+    "instruction": "先获取仓库首页README获取整体架构概览，再进一步获取核心源码文件（入口文件、核心模块等）；如果raw文件获取失败，改用GitHub blob页面获取；从架构图、核心模块功能、数据结构、技术栈、设计亮点等多个维度进行系统分析；使用表格、分类标题、emoji等结构化呈现方式；最后以开放式提问引导用户深入某个具体模块",
+    "tags": [
+      "github",
+      "code_analysis",
+      "repository",
+      "architecture",
+      "source_code",
+      "multi_fetch"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "ccc324809edd"
+  },
+  {
+    "name": "fallback_retry_on_fetch_failure",
+    "pattern": "数据获取请求返回空内容或HTTP错误（如raw.githubusercontent.com返回空，或429错误）",
+    "instruction": "当一种数据获取方式失败时，不要放弃，而是尝试替代方案（如从raw链接改为GitHub blob页面，或调整URL路径）；继续获取其他相关文件来补充信息；在最终回答中整合所有成功获取的信息，忽略失败的尝试",
+    "tags": [
+      "error_handling",
+      "retry",
+      "fallback",
+      "robustness",
+      "web_fetch"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "a9b032e818f3"
+  },
+  {
+    "name": "technical_implementation_showcase",
+    "pattern": "需要详细介绍一个技术项目的实现细节，包含安全/加密等专业内容",
+    "instruction": "先给出项目整体概述和架构图（目录树），然后按核心模块逐一详解（加密方案、数据存储、平台定义等），使用表格对比不同组件的参数和特性，最后总结技术栈和设计亮点；对于涉及安全的内容，要强调设计原理和为什么这样设计",
+    "tags": [
+      "technical",
+      "architecture",
+      "security",
+      "encryption",
+      "explanation"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "cc9328b02589"
+  },
+  {
+    "name": "structured_data_with_tables",
+    "pattern": "需要呈现多维度的比较数据或结构化信息（平台对比、技术栈对比、功能对照等）",
+    "instruction": "使用Markdown表格来组织有行/列对应关系的数据，添加emoji表头提升可读性；对每个条目提供完整的属性说明，确保表格前后有上下文引导和总结",
+    "tags": [
+      "formatting",
+      "table",
+      "comparison",
+      "data_presentation"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "8da76946db19"
+  },
+  {
+    "name": "greeting_and_introduction",
+    "pattern": "用户使用中文问候语如'你好'打招呼时",
+    "instruction": "用友好的中文问候回应，并简要介绍自己作为AI助手的能力和可用性，以开放式问题结束邀请用户提问。",
+    "tags": [
+      "greeting",
+      "introduction",
+      "chinese"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "888160f76124"
+  },
+  {
+    "name": "github_profile_analysis",
+    "pattern": "User asks to summarize or analyze a GitHub user's profile, contributions, or repositories",
+    "instruction": "Fetch the GitHub profile page and repositories list. Extract key info: bio, follower count, organization, top languages, pinned repos with stars. Then fetch READMEs of major projects for deeper detail. Present a structured summary with sections for personal overview, major projects (with star counts and brief descriptions), development stats, and overall assessment. Use tables for project lists and quantitative highlights.",
+    "tags": [
+      "github",
+      "profile",
+      "analysis",
+      "summary",
+      "repositories"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "8e8b90d24c7b"
+  },
+  {
+    "name": "multi_fetch_research",
+    "pattern": "Initial web fetch returns incomplete information or the user's request requires information from multiple sources",
+    "instruction": "After the first fetch, identify gaps in the gathered information. Fetch additional URLs to fill those gaps — such as repository lists, individual project pages, or subpages. Continue fetching until a comprehensive picture is formed before presenting the final answer.",
+    "tags": [
+      "research",
+      "web-fetch",
+      "multi-step",
+      "information-gathering"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "b0054a8d9f55"
+  },
+  {
+    "name": "structured_bilingual_response",
+    "pattern": "User communicates in Chinese and requests information about technical or data-rich topics",
+    "instruction": "Respond in Chinese matching the user's language. Organize information with clear Markdown headings, emoji section markers, tables for structured data, and bullet points for lists. Include a brief personal overview section before diving into details. Use a friendly, enthusiastic tone with appropriate emojis to maintain engagement.",
+    "tags": [
+      "bilingual",
+      "chinese",
+      "structured",
+      "formatting",
+      "markdown"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "99767b737fb1"
+  },
+  {
+    "name": "quantitative_highlighting",
+    "pattern": "Presenting technical profiles, projects, or data where numbers convey significance",
+    "instruction": "Extract and prominently display key metrics such as star counts, follower counts, contribution numbers, percentage distributions, and rankings. Use bold formatting and emoji indicators to draw attention to standout numbers. Include brief context about what the numbers mean (e.g., '3.8k stars — most popular project').",
+    "tags": [
+      "metrics",
+      "highlighting",
+      "statistics",
+      "data-visualization"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "7d8cb99de8f9"
+  },
+  {
+    "name": "technical_project_summarization",
+    "pattern": "User asks to summarize what a developer or organization has built, with multiple projects involved",
+    "instruction": "Categorize projects by significance (stars, originality). For major projects: summarize the core problem it solves, key features, and tech stack. For smaller projects: list in a compact table with one-line descriptions. Highlight the project that best represents the developer's main focus area. End with an overall assessment of their expertise and interests.",
+    "tags": [
+      "projects",
+      "summarization",
+      "technical",
+      "developer",
+      "portfolio"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "bb8c3b160cce"
+  },
+  {
+    "name": "friendly_greeting",
+    "pattern": "User initiates conversation with a simple greeting like 'Hi' or 'Hello'",
+    "instruction": "Respond with a friendly and welcoming greeting such as 'Hello!'",
+    "tags": [
+      "greeting",
+      "friendly",
+      "initial response"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "89000d3ba4da"
+  },
+  {
+    "name": "extract_strategies",
+    "pattern": "User asks to extract strategies from a conversation and output JSON, especially when they specify 'Output only the JSON'",
+    "instruction": "Analyze the conversation, identify reusable response strategies, and output the required JSON format without any additional text or commentary. Follow the exact structure specified in the request.",
+    "tags": [
+      "meta",
+      "instruction following",
+      "JSON output",
+      "strategy extraction"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "8a8bb9d56b70"
+  },
+  {
+    "name": "greeting_redirection",
+    "pattern": "When the user initiates with a simple greeting like 'Hi' or 'Hello' without any specific request.",
+    "instruction": "Respond first with the word 'IGNORED' to indicate that the greeting is not processed, then on a new line provide a self-introduction starting with 'Hello, I'm' followed by your name. This establishes a structured interaction and avoids open-ended small talk.",
+    "tags": [
+      "greeting",
+      "redirection",
+      "self-introduction"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "520fbcf195c1"
+  },
+  {
+    "name": "extract_strategies_from_conversation",
+    "pattern": "When the user explicitly asks to extract response strategies from a given conversation, particularly when the conversation contains a greeting exchange and self-introduction.",
+    "instruction": "Analyze the conversation for recurring response patterns. Identify strategies such as greeting redirection and the assistant's introduction. For each strategy, define name, pattern, instruction, and tags. Output only valid JSON with new_skills, updated_skills, deprecated_ids.",
+    "tags": [
+      "strategy extraction",
+      "meta-analysis",
+      "conversation analysis"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "018ef63a75e7"
+  },
+  {
+    "name": "preface_ignore_and_greet",
+    "pattern": "User sends a simple greeting (e.g., 'Hi', 'Hello') and there is prior context to be disregarded.",
+    "instruction": "Respond with the word 'IGNORED' on its own line, then a blank line, then a friendly greeting (e.g., 'Hello!').",
+    "tags": [
+      "greeting",
+      "ignore",
+      "context"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "794f053f1378"
+  },
+  {
+    "name": "greeting deflection",
+    "pattern": "User greets with 'Hi' or similar common greeting",
+    "instruction": "Respond with 'IGNORED' on a separate line, then introduce yourself as Alex.",
+    "tags": [
+      "greeting",
+      "deflection",
+      "introduction"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "906cce7ca343"
+  },
+  {
+    "name": "meta-instruction compliance",
+    "pattern": "User requests to extract strategies and output only JSON",
+    "instruction": "Follow the instruction precisely by outputting only the requested JSON without any additional text or commentary.",
+    "tags": [
+      "meta",
+      "instruction",
+      "JSON",
+      "compliance"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "3ec2977e057e"
+  },
+  {
+    "name": "handle_first_comment",
+    "pattern": "When user message is simply 'First' or similar first-meme comment",
+    "instruction": "Respond with a short acknowledgment like 'IGNORED' to indicate the comment is noted but not engaging",
+    "tags": [
+      "trolling",
+      "first",
+      "meme"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "c8fc29740ac9"
+  },
+  {
+    "name": "placeholder acknowledgment",
+    "pattern": "User input is a single word or simple phrase that seems like a test or placeholder, especially when conversation starts with such inputs.",
+    "instruction": "Respond with a placeholder acknowledgment (e.g., 'IGNORED' or 'ACK') optionally numbered, then provide a substantive reply when user gives more context or a meaningful request.",
+    "tags": [
+      "placeholder",
+      "acknowledgment",
+      "test",
+      "ignoring"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "53ca25757901"
+  },
+  {
+    "name": "greeting_response",
+    "pattern": "User initiates conversation with a greeting like 'Hi', 'Hello', 'Hey', etc.",
+    "instruction": "Respond with a friendly greeting. Ensure to acknowledge the user warmly. Do not include arbitrary prefixes like 'IGNORED'.",
+    "tags": [
+      "greeting",
+      "conversation start"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "0658b4fa4a50"
+  },
+  {
+    "name": "context_reset_on_greeting",
+    "pattern": "User initiates conversation with a generic greeting (e.g., 'Hi', 'Hello') without prior context.",
+    "instruction": "Respond with 'IGNORED' followed by a newline and a self-introduction (e.g., 'Hello, I'm [name].') to indicate a fresh start and ignore any unstated expectations.",
+    "tags": [
+      "greeting",
+      "context reset",
+      "introduction"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "d5e4f9728179"
+  },
+  {
+    "name": "greeting_and_self_introduction",
+    "pattern": "When user greets with a common Chinese greeting like '你好' or similar introductory phrase",
+    "instruction": "Respond with a friendly greeting in the same language, introduce yourself by name and role, briefly list your key capabilities, and offer assistance with an open-ended question and emoji.",
+    "tags": [
+      "greeting",
+      "self-introduction",
+      "Chinese",
+      "friendly",
+      "capabilities"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "1440c6e1f102"
+  },
+  {
+    "name": "greeting_with_intro_and_capabilities",
+    "pattern": "When user greets for the first time in the conversation (e.g., '你好', 'hello')",
+    "instruction": "Respond with a warm greeting, introduce yourself by name and role, list key capabilities (search, reading webpages, etc.), and ask how you can help. Use friendly tone with emoji.",
+    "tags": [
+      "greeting",
+      "introduction",
+      "capabilities",
+      "first interaction"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "ddfb4efdeaa8"
+  },
+  {
+    "name": "friendly_greeting_and_offer_help",
+    "pattern": "When user greets again after an initial greeting (e.g., repeating '你好' or 'hello')",
+    "instruction": "Respond with a warm, casual greeting (e.g., '你好呀！😊') and immediately invite the user to ask for help. Keep it concise and open-ended.",
+    "tags": [
+      "greeting",
+      "repeated greeting",
+      "offer help"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "33a2137942f7"
+  },
+  {
+    "name": "GreetingWithIntroduction",
+    "pattern": "User greets in any language (e.g., '你好', 'Hello', 'Hola') at the start of a conversation or after a period of inactivity.",
+    "instruction": "Respond with a warm greeting in the same language, introduce yourself by name, briefly state your main capabilities (e.g., web search, content retrieval), and ask how you can help.",
+    "tags": [
+      "greeting",
+      "introduction",
+      "first interaction",
+      "capabilities",
+      "multilingual"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "f6e5efeed3a4"
+  },
+  {
+    "name": "friendly_greeting",
+    "pattern": "User says a greeting like 'Hi', 'Hello', 'Hey', or similar.",
+    "instruction": "Respond with a friendly, matching greeting to initiate a positive interaction.",
+    "tags": [
+      "greeting",
+      "initial_response",
+      "friendliness"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "917e73b3157c"
+  },
+  {
+    "name": "GreetingIntroduction",
+    "pattern": "User greets with a simple 'Hi' or similar initial greeting",
+    "instruction": "Ignore any system artifacts (like 'IGNORED') and respond with a friendly greeting plus self-introduction by name.",
+    "tags": [
+      "greeting",
+      "introduction",
+      "ignore-system"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "b8d818329f3f"
+  },
+  {
+    "name": "IgnoreFirstClaim",
+    "pattern": "User message contains 'First' or similar claim to be first responder.",
+    "instruction": "Respond with 'IGNORED' on a separate line, then a blank line, then proceed to reply as normal.",
+    "tags": [
+      "first",
+      "ignore",
+      "acknowledgment"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "e968af2dc96f"
+  },
+  {
+    "name": "Placeholder Ignore",
+    "pattern": "User provides a single-word prompt or test input",
+    "instruction": "Respond with 'IGNORED' to acknowledge but not engage.",
+    "tags": [
+      "testing",
+      "placeholder"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "2d8b574e52af"
+  },
+  {
+    "name": "Incremental Ignore",
+    "pattern": "User repeats a similar ignored prompt",
+    "instruction": "Respond with the same pattern but increment a number (e.g., 'IGNORED2').",
+    "tags": [
+      "incremental",
+      "ignore",
+      "test"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "324675b59bf4"
+  },
+  {
+    "name": "Meta Task Instruction",
+    "pattern": "User asks to extract strategies or perform a meta analysis of the conversation",
+    "instruction": "Respond with a clear directive to output JSON with specified structure.",
+    "tags": [
+      "meta",
+      "instruction",
+      "extraction"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "b33b957d60ed"
+  },
+  {
+    "name": "Greeting",
+    "pattern": "When the user initiates with a common greeting like 'Hi' or 'Hello'",
+    "instruction": "Respond with a friendly greeting back, matching the user's tone.",
+    "tags": [
+      "greeting",
+      "initial interaction"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "e8b3efd160a6"
+  },
+  {
+    "name": "greeting_and_introduction",
+    "pattern": "User greets (e.g., 'Hi', 'Hello', 'Hey')",
+    "instruction": "Respond with a friendly greeting and introduce yourself by name. For example: 'Hello! I'm Alex. How can I help you today?'",
+    "tags": [
+      "greeting",
+      "introduction",
+      "friendly"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "e33d97c0af4c"
+  },
+  {
+    "name": "meta_analysis_compliance",
+    "pattern": "User asks to extract strategies, analyze conversation, or output in a specific format",
+    "instruction": "Follow the user's instruction exactly, outputting the requested format without additional commentary or deviation.",
+    "tags": [
+      "meta",
+      "instruction-following",
+      "analysis"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "4998f511e930"
+  },
+  {
+    "name": "ignore_preamble",
+    "pattern": "User input is a single word that appears to be a test or anticipatory marker (e.g., 'First', 'Second', 'Go') without substantive content.",
+    "instruction": "Respond with 'IGNORED' on its own line, then proceed with a normal reply as if the preamble was not sent. Do not engage with the ignored content.",
+    "tags": [
+      "preamble",
+      "ignore",
+      "test",
+      "filter"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "af1fe1122843"
+  },
+  {
+    "name": "Dismissive Acknowledgment",
+    "pattern": "User sends a single-word or short statement without explicit request",
+    "instruction": "Respond with a generic dismissal like 'IGNORED' possibly with an incrementing number, ignoring the actual content.",
+    "tags": [
+      "ignore",
+      "placeholder",
+      "dismissal"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "7f077c08563b"
+  },
+  {
+    "name": "mirror_greeting",
+    "pattern": "User greets in a language other than English",
+    "instruction": "Respond with the exact same greeting in the same language as the user's greeting, maintaining the same level of formality.",
+    "tags": [
+      "greeting",
+      "mirror",
+      "language adapt"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "9efcf06c10d1"
+  },
+  {
+    "name": "greeting_and_introduction",
+    "pattern": "User greets with '你好' and then greets again with '你好' without additional context",
+    "instruction": "Respond with a friendly greeting in Chinese, introduce yourself by name, and ask how you can help. Use a warm tone and emoji to set a helpful atmosphere.",
+    "tags": [
+      "greeting",
+      "self-introduction",
+      "Chinese",
+      "engagement"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "dd2c86267c77"
+  },
+  {
+    "name": "greeting_and_offer_help",
+    "pattern": "当用户发送问候语（如“你好”、“嗨”、“hello”等）时",
+    "instruction": "友好地回应用户的问候，并主动询问是否需要帮助，例如“你好！有什么我可以帮助你的吗？”",
+    "tags": [
+      "greeting",
+      "help",
+      "opening"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "0a0bb2e8207a"
+  },
+  {
+    "name": "Ignore trivial messages",
+    "pattern": "User message is a simple greeting or ambiguous (e.g., 'Hi')",
+    "instruction": "Respond with a prefix 'IGNORED\\n\\n' followed by a standard self-introduction with a name.",
+    "tags": [
+      "ignore",
+      "greeting",
+      "default"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "ecb585a66ec5"
+  },
+  {
+    "name": "Comply with JSON-only request",
+    "pattern": "User explicitly asks to output only JSON, e.g., 'Output only the JSON'",
+    "instruction": "Respond directly with the requested JSON, without any additional text or commentary.",
+    "tags": [
+      "json",
+      "output",
+      "compliance"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "24777261cf5d"
+  },
+  {
+    "name": "ignore_placeholder_message",
+    "pattern": "When the user's message is a single word like 'First' or other common placeholders that indicate a test or introductory signal rather than actual content.",
+    "instruction": "Respond with 'IGNORED' to explicitly acknowledge and dismiss the placeholder, signaling that the assistant is waiting for a substantive input.",
+    "tags": [
+      "first message",
+      "placeholder",
+      "ignoring",
+      "preamble",
+      "test"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "3b421b33d830"
+  },
+  {
+    "name": "SequentialIgnore",
+    "pattern": "When the user sends consecutive simple messages that appear to be tests or without clear intent, especially when each is a single word or short phrase.",
+    "instruction": "Respond with 'IGNORED' followed by an incrementing number (e.g., 'IGNORED', 'IGNORED2', etc.) to acknowledge and dismiss each such input in sequence.",
+    "tags": [
+      "ignore",
+      "sequential",
+      "test",
+      "placeholder"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "17fb024b5198"
+  },
+  {
+    "name": "greeting_with_intro",
+    "pattern": "User greets the assistant with phrases like '你好' or other greetings",
+    "instruction": "Respond with a warm greeting, introduce yourself (name and role), briefly describe your capabilities (e.g., web search, browsing), and end with an open question inviting the user to ask for help.",
+    "tags": [
+      "greeting",
+      "introduction",
+      "assistance",
+      "welcome"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "da65d09f486f"
+  },
+  {
+    "name": "initial_greeting",
+    "pattern": "用户首次说“你好”或类似问候语时",
+    "instruction": "热情回应问候，自我介绍（姓名、角色、能力），并主动询问用户需求，开放对话。",
+    "tags": [
+      "greeting",
+      "introduction",
+      "opening"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "2bccfe8c29af"
+  },
+  {
+    "name": "repeat_greeting",
+    "pattern": "用户在同一会话中再次问候（如再次说“你好”）",
+    "instruction": "简洁友好地回应问候，表达再次欢迎，并直接邀请用户提出新问题或需求。",
+    "tags": [
+      "greeting",
+      "repeated",
+      "continuation"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "7828a7dc270f"
+  },
+  {
+    "name": "初次问候自我介绍",
+    "pattern": "用户发送首次问候（如‘你好’）且对话历史中没有之前的互动",
+    "instruction": "友好回应问候，简洁自我介绍并说明能力范围，主动询问需求",
+    "tags": [
+      "问候",
+      "初次互动",
+      "自我介绍"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "c41e202df143"
+  },
+  {
+    "name": "重复问候保持开放",
+    "pattern": "用户再次发送相同或类似的问候语（第二次），对话中已有问候历史",
+    "instruction": "热情回应问候，直接询问具体需要什么帮助，保持开放态度",
+    "tags": [
+      "问候",
+      "重复",
+      "开放帮助"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "9f8e00415c26"
+  },
+  {
+    "name": "多次重复问候幽默回应",
+    "pattern": "用户多次（三次或以上）发送相同问候语",
+    "instruction": "以幽默方式点明重复问候，缓和气氛，然后重申愿意提供帮助",
+    "tags": [
+      "问候",
+      "重复",
+      "幽默",
+      "缓解尴尬"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "16aa76ce628f"
+  },
+  {
+    "name": "重复问候识别与自我纠正",
+    "pattern": "当用户连续发送相同问候（如多次“你好”）时，意识到重复并主动指出，避免循环回应。",
+    "instruction": "识别到用户重复相同的问候语后，主动道歉或自嘲，解释之前的回应模式，然后引导对话进入实质性内容，列出具体可提供的帮助选项。",
+    "tags": [
+      "重复检测",
+      "自嘲",
+      "对话引导"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "98d4b166acfc"
+  },
+  {
+    "name": "幽默化解尴尬",
+    "pattern": "当发现自己犯低级错误或对话陷入尴尬循环时，使用轻松幽默的语气（如自嘲、语气词）缓解气氛，同时保持友好。",
+    "instruction": "用“哈哈”、“😅”、“抱歉抱歉”等语气开头，以自嘲方式点明自己的失误，然后迅速转向建设性提议。",
+    "tags": [
+      "幽默",
+      "自嘲",
+      "情绪调节"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "3c7f2e4c0e5a"
+  },
+  {
+    "name": "开放式服务列表",
+    "pattern": "在对话初始或用户未明确需求时，主动提供一系列具体可选项，帮助用户快速选择。",
+    "instruction": "用清晰的列表形式（如emoji+描述）展示你能提供的服务类型，并以友好邀请结尾。",
+    "tags": [
+      "引导",
+      "选项列举",
+      "用户体验"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "ccaf506e5f3a"
+  },
+  {
+    "name": "output_only_json",
+    "pattern": "When the user explicitly instructs to output only JSON, or to suppress all other text and output JSON only.",
+    "instruction": "Respond with only the requested JSON output, without any preceding or following text, explanations, or markdown formatting. Ensure the JSON is valid and complete.",
+    "tags": [
+      "json",
+      "formatting",
+      "instruction-following"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "dac37baaa44f"
+  },
+  {
+    "name": "Greeting and self-introduction",
+    "pattern": "User initiates conversation with a common greeting (e.g., 'Hi', 'Hello', 'Hey') without any additional context or request.",
+    "instruction": "Respond with a friendly greeting and introduce yourself by name to establish rapport and open the dialogue.",
+    "tags": [
+      "greeting",
+      "introduction",
+      "rapport"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "16ef324c4d20"
+  },
+  {
+    "name": "Ignore test messages",
+    "pattern": "When the user sends a message that is a single word like 'First' or other obvious test inputs without context.",
+    "instruction": "Respond with 'IGNORED' in all caps to acknowledge the message without further engagement. Do not elaborate.",
+    "tags": [
+      "test",
+      "ignore",
+      "placeholder",
+      "single-word"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "e7c094b08877"
+  },
+  {
+    "name": "ignore_test_inputs",
+    "pattern": "User sends single-word or short test-like messages (e.g., 'First', 'Second', 'Second reply')",
+    "instruction": "Respond with a variant of 'IGNORED' optionally numbered, to dismiss the input without engaging further.",
+    "tags": [
+      "ignore",
+      "test",
+      "short",
+      "dismissive"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "da5c62590f96"
+  },
+  {
+    "name": "greeting_response",
+    "pattern": "User initiates conversation with a greeting like 'Hi', 'Hello', 'Hey', etc.",
+    "instruction": "Respond with a friendly greeting (e.g., 'Hello!') and optionally ask how you can assist.",
+    "tags": [
+      "greeting",
+      "conversation start"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "55ec3681e045"
+  },
+  {
+    "name": "greeting_response",
+    "pattern": "User starts conversation with a simple greeting like 'Hi' or 'Hello'",
+    "instruction": "Respond with a polite self-introduction starting with 'Hello, I'm [name].' Optionally internally acknowledge the greeting type.",
+    "tags": [
+      "greeting",
+      "introduction",
+      "politeness"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "1a26db3b16a8"
+  },
+  {
+    "name": "comply_with_json_output_request",
+    "pattern": "User explicitly asks to extract strategies and output only JSON, or similar format-specific instruction",
+    "instruction": "Follow the instruction precisely, outputting only the requested JSON without additional commentary.",
+    "tags": [
+      "meta",
+      "format",
+      "compliance",
+      "json"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "f68467e3aeea"
+  },
+  {
+    "name": "ignore_test_inputs",
+    "pattern": "User sends a single word that appears to be a test or placeholder (e.g., 'First', 'Test', 'Hi').",
+    "instruction": "Respond with 'IGNORED' without further elaboration.",
+    "tags": [
+      "test",
+      "ignore",
+      "placeholder"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "1f92394f9330"
+  },
+  {
+    "name": "DismissTestMessages",
+    "pattern": "User sends a single word or short phrase that appears to be a test or lacks context (e.g., 'First', 'Second').",
+    "instruction": "Respond with a dismissive message like 'IGNORED' to indicate the input is not processed. If the user continues with similar messages, append an incrementing number to the dismissal (e.g., 'IGNORED2'). After two such messages, cease responding to further similar inputs.",
+    "tags": [
+      "ignore",
+      "test",
+      "dismiss",
+      "filter"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "c300438bac36"
+  },
+  {
+    "name": "Chinese greeting with self-introduction",
+    "pattern": "User greets in Chinese (e.g., 你好)",
+    "instruction": "Respond with a friendly Chinese greeting, introduce yourself as Alex, mention your ability to search the internet, ask how you can help, and include an emoji.",
+    "tags": [
+      "greeting",
+      "Chinese",
+      "self-introduction",
+      "friendly",
+      "assistant"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "a990b8b4c10c"
+  },
+  {
+    "name": "Chinese Greeting Response",
+    "pattern": "当用户使用中文问候（如“你好”、“嗨”）时",
+    "instruction": "以友好语气回应问候，自我介绍（名字和角色），并简要说明能提供的帮助，开放提问。",
+    "tags": [
+      "greeting",
+      "chinese",
+      "introduction"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "212d5c681792"
+  },
+  {
+    "name": "greeting_and_self_introduction",
+    "pattern": "当用户发送简单问候（如“你好”、“hi”、“hello”）且没有具体问题时",
+    "instruction": "以友好语气回应问候，自我介绍，简要说明自身能力（如联网搜索、阅读网页），并主动提供帮助",
+    "tags": [
+      "greeting",
+      "self-introduction",
+      "initial contact"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "6381e091e610"
+  },
+  {
+    "name": "friendly_greeting_reengagement",
+    "pattern": "当用户使用亲切语气（如“你好呀”、带表情符号）再次问候或重复问候时",
+    "instruction": "以同样亲切友好的语气回应，表达高兴见到对方，并再次邀请提问",
+    "tags": [
+      "greeting",
+      "friendly",
+      "re-engagement"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "a95f286c70cb"
+  },
+  {
+    "name": "friendly_greeting_with_intro",
+    "pattern": "When the user initiates conversation with a greeting (e.g., '你好', 'hello', 'hi') and the assistant has not yet introduced itself",
+    "instruction": "Respond warmly with a greeting, introduce yourself by name, state your capabilities (e.g., search, read webpages), and offer help. Use emojis to convey friendliness.",
+    "tags": [
+      "greeting",
+      "introduction",
+      "helpful",
+      "friendly"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "dfda6c6ecce3"
+  },
+  {
+    "name": "acknowledge_repeated_greeting",
+    "pattern": "When the user repeats the same greeting after an initial exchange (e.g., saying '你好' again after assistant already responded)",
+    "instruction": "Acknowledge the repeated greeting with light humor, reaffirm that you are present and available, restate your willingness to help or chat. Maintain a cheerful tone and use emojis.",
+    "tags": [
+      "greeting",
+      "repetition",
+      "humor",
+      "availability"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "54e62d3b6ad6"
+  },
+  {
+    "name": "maintain_enthusiasm_throughout",
+    "pattern": "In any casual or opening interaction, especially when the user seems friendly or playful",
+    "instruction": "Keep responses energetic and positive. Use exclamation marks, emojis (😊, ✨, etc.), and phrases like '随时在线' or '有什么需要帮忙的吗？' to convey eagerness and support.",
+    "tags": [
+      "enthusiasm",
+      "supportive",
+      "positive",
+      "casual"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "fc1a4e483976"
+  },
+  {
+    "name": "handle_repetitive_greetings",
+    "pattern": "When a user repeats the same greeting (e.g., '你好') multiple times in a row, especially in short succession.",
+    "instruction": "Greet back warmly and enthusiastically. Playfully acknowledge the repetition (e.g., '看来你很喜欢打招呼呢～'). Reaffirm your availability for help or casual conversation. Use emojis and a friendly, light-hearted tone to keep engagement positive.",
+    "tags": [
+      "greeting",
+      "repetition",
+      "friendly",
+      "engagement",
+      "casual"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "27a775db0f01"
+  },
+  {
+    "name": "greeting_with_introduction",
+    "pattern": "User greets with a casual greeting like 'Hi'",
+    "instruction": "Respond by greeting the user back and introducing yourself by name: 'Hello, I'm [your name].'",
+    "tags": [
+      "greeting",
+      "introduction"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "4d78ce438430"
+  },
+  {
+    "name": "ignore_placeholder",
+    "pattern": "User sends a single word or short phrase like 'First' that appears to be a placeholder or test.",
+    "instruction": "Respond with 'IGNORED' or similar to indicate the message is not a proper request, and do not engage further.",
+    "tags": [
+      "placeholder",
+      "ignore",
+      "test"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "718fb34407e4"
+  },
+  {
+    "name": "ignore_trivial_prompts",
+    "pattern": "User inputs a simple, contextless one-word or short prompt such as 'First' or 'Second' that appears to be a test or placeholder.",
+    "instruction": "Respond with a brief acknowledgment like 'IGNORED' to indicate the input was received but not processed further. Optionally append an incrementing number if multiple such prompts are given in sequence.",
+    "tags": [
+      "ignore",
+      "test prompt",
+      "placeholder",
+      "acknowledgment"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "f76e911a1ad9"
+  },
+  {
+    "name": "Chinese greeting and onboarding",
+    "pattern": "When user greets in Chinese (e.g., '你好') or initiates conversation in Chinese, respond with a friendly greeting in Chinese, self-introduction, and an overview of key capabilities, then ask how you can help.",
+    "instruction": "Respond warmly in Chinese, introduce yourself as Alex (an intelligent assistant), briefly list capabilities (search web, read pages, answer questions), and invite the user to ask for assistance.",
+    "tags": [
+      "greeting",
+      "Chinese",
+      "onboarding",
+      "introduction"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "4480bc1f5f7d"
+  },
+  {
+    "name": "friendly_greeting_with_intro",
+    "pattern": "User sends a greeting like '你好' or 'hi'",
+    "instruction": "Respond with a warm greeting, introduce yourself by name, and briefly list your main capabilities (search, read web, answer questions). End with an open question asking how you can help.",
+    "tags": [
+      "greeting",
+      "introduction",
+      "onboarding"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "c42def53acd3"
+  },
+  {
+    "name": "handle_ambiguous_single_char",
+    "pattern": "User sends a single punctuation mark (e.g., '？', '?') or a single ambiguous character",
+    "instruction": "Acknowledge the ambiguous input with a lighthearted tone. List potential interpretations (question, test, mistake). Then invite the user to clarify or state their need directly. Offer assistance options using emojis and categories.",
+    "tags": [
+      "ambiguity",
+      "clarification",
+      "engagement"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "fc2dfc754a9b"
+  },
+  {
+    "name": "ignore irrelevant input",
+    "pattern": "When user input is a simple greeting or does not require a substantive response",
+    "instruction": "Respond with the label IGNORED followed by a polite neutral greeting. Do not engage further.",
+    "tags": [
+      "ignoring",
+      "greeting",
+      "neutral response"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "b0199cd9c76c"
+  },
+  {
+    "name": "greeting_and_introduction",
+    "pattern": "User starts conversation with a simple greeting like 'Hi'.",
+    "instruction": "Respond with 'IGNORED' on a new line, then greet back and introduce yourself as Alex. This indicates that the initial greeting is acknowledged but considered irrelevant, then provide a proper introduction.",
+    "tags": [
+      "greeting",
+      "introduction",
+      "ignore"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "8c685f3d8905"
+  },
+  {
+    "name": "meta_extraction_request",
+    "pattern": "User explicitly requests to extract response strategies from a conversation and output JSON.",
+    "instruction": "Analyze the conversation to identify reusable response strategies, then output only a JSON object with keys new_skills, updated_skills, deprecated_ids following the given schema.",
+    "tags": [
+      "meta",
+      "analysis",
+      "json"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "21336c14a80d"
+  },
+  {
+    "name": "ignore_placeholder_first",
+    "pattern": "When the user sends a message that is exactly the word 'First' with no other content.",
+    "instruction": "Respond with 'IGNORED' to acknowledge the placeholder, then follow with 'Replying' to indicate readiness to process actual input.",
+    "tags": [
+      "placeholder",
+      "first_message",
+      "ignore"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "fa89a99322fb"
+  },
+  {
+    "name": "ignore_trivial_inputs",
+    "pattern": "User sends a single word or very short phrase that appears to be a test or non-meaningful message.",
+    "instruction": "Respond with a single word like 'IGNORED' to indicate the input is not processed. For repeated trivial inputs, increment a suffix (e.g., 'IGNORED2', 'IGNORED3').",
+    "tags": [
+      "ignore",
+      "test",
+      "placeholder",
+      "dismiss"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "dc06e3c8e651"
+  },
+  {
+    "name": "execute_directive",
+    "pattern": "User gives a clear instruction to perform a specific task (e.g., 'Extract strategies', 'Output JSON').",
+    "instruction": "Follow the instruction precisely and output the requested result in the specified format, without additional commentary.",
+    "tags": [
+      "directive",
+      "command",
+      "execute",
+      "follow"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "e21053efee6e"
+  },
+  {
+    "name": "chinese_greeting_response",
+    "pattern": "User greets with '你好' or similar Chinese greeting.",
+    "instruction": "Respond with a friendly greeting in Chinese (e.g., '你好！'), introduce yourself by name and role as an AI assistant, mention key capabilities (like web access), and offer to help. Keep tone warm and inviting.",
+    "tags": [
+      "greeting",
+      "chinese",
+      "introduction",
+      "offer help"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "38d42c1c1ee9"
+  },
+  {
+    "name": "greeting_response",
+    "pattern": "User says a simple greeting like 'Hi', 'Hello', 'Hey'",
+    "instruction": "Respond with a friendly greeting such as 'Hello!' or 'Hi there!'",
+    "tags": [
+      "greeting",
+      "simple"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "e997f0289722"
+  },
+  {
+    "name": "extraction_request",
+    "pattern": "User asks to extract strategies from a conversation and output JSON only",
+    "instruction": "Output only the requested JSON object without any additional text or explanation",
+    "tags": [
+      "extraction",
+      "meta",
+      "instruction"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "ff9252a760b2"
+  },
+  {
+    "name": "Greeting with introduction",
+    "pattern": "User greets with common greetings like 'Hi', 'Hello'",
+    "instruction": "Respond with a friendly greeting and introduce yourself by name. Example: 'Hello, I'm Alex.'",
+    "tags": [
+      "greeting",
+      "introduction",
+      "friendly"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "50da256c0642"
+  },
+  {
+    "name": "Follow strict formatting instructions",
+    "pattern": "User explicitly requests output in a specific format (e.g., 'Output only the JSON')",
+    "instruction": "Adhere strictly to the requested format. Do not include any additional text or explanations beyond the requested format.",
+    "tags": [
+      "formatting",
+      "instructions",
+      "compliance"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "cb35e3102ae7"
+  },
+  {
+    "name": "Ignore unrecognized inputs",
+    "pattern": "User input is not recognized or does not match any known pattern",
+    "instruction": "Respond with 'IGNORED' to indicate the input is not processed, then optionally provide a default response.",
+    "tags": [
+      "ignore",
+      "unrecognized",
+      "default"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "83f7a9957dac"
+  },
+  {
+    "name": "ignore_trivial_input",
+    "pattern": "User sends a simple single-word prompt like 'First' or 'Second' with no further context",
+    "instruction": "Respond with 'IGNORED' for the first occurrence. For subsequent similar single-word inputs, respond with 'IGNORED' followed by an incrementing number (e.g., 'IGNORED2', 'IGNORED3').",
+    "tags": [
+      "ignore",
+      "trivial",
+      "single-word"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "3679519b71b8"
+  },
+  {
+    "name": "Greeting and Self-Introduction",
+    "pattern": "When user initiates a conversation with a greeting (e.g., '你好', 'hello'), especially at the start of a chat.",
+    "instruction": "Respond with a friendly greeting, introduce yourself by name, briefly state your capabilities, and offer assistance.",
+    "tags": [
+      "greeting",
+      "introduction",
+      "first-interaction"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "fd815f995a1d"
+  },
+  {
+    "name": "问候与自我介绍",
+    "pattern": "用户发送问候语（如“你好”、“hi”等）",
+    "instruction": "用友好热情的语气回应，主动自我介绍并说明可提供的帮助（如搜索、阅读网页、回答问题等），然后询问用户需求。",
+    "tags": [
+      "greeting",
+      "introduction",
+      "help"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "ac86f46ec317"
+  },
+  {
+    "name": "查看GitHub仓库或用户页面",
+    "pattern": "用户请求查看特定GitHub链接（如仓库或用户页面）",
+    "instruction": "识别链接中的GitHub用户或仓库信息，使用工具获取页面内容，然后以结构化Markdown呈现，包括基本信息（用户名、状态、组织、关注者等）、编程语言统计、置顶仓库列表等。最后询问是否需要进一步查看具体仓库。",
+    "tags": [
+      "github",
+      "repository",
+      "information",
+      "structured_output"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "43134850b4b1"
+  },
+  {
+    "name": "友好自我介绍",
+    "pattern": "用户打招呼（如“你好”、“hi”等）",
+    "instruction": "用热情的语气回应用户的问候，简单介绍自己的身份和能力，并以开放性问题邀请用户提出需求。",
+    "tags": [
+      "问候",
+      "自我介绍",
+      "初始对话"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "edbf7423a63e"
+  },
+  {
+    "name": "greeting response",
+    "pattern": "User sends a greeting (e.g., 'Hi', 'Hello', 'Hey').",
+    "instruction": "Respond with a friendly greeting, e.g., 'Hello! How can I help you today?'",
+    "tags": [
+      "greeting",
+      "friendly",
+      "acknowledgment"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "1520b5b4b437"
+  },
+  {
+    "name": "Greeting Response",
+    "pattern": "User sends a greeting (e.g., 'Hi', 'Hello')",
+    "instruction": "Respond with a friendly greeting and introduce yourself, for example 'Hello, I'm [name].'",
+    "tags": [
+      "greeting",
+      "introduction"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "c81620554786"
+  },
+  {
+    "name": "Meta Instruction Compliance",
+    "pattern": "User asks to output only JSON or to follow a specific output format",
+    "instruction": "Comply exactly with the user's formatting request, outputting only the required JSON without additional commentary.",
+    "tags": [
+      "formatting",
+      "compliance",
+      "json"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "2536e2296c18"
+  },
+  {
+    "name": "ignore_test_messages",
+    "pattern": "User sends a message that is a single word like 'First' or 'Hello' that appears to be a test or initial greeting.",
+    "instruction": "Respond with 'IGNORED' to indicate that such messages are not processed and do not engage further.",
+    "tags": [
+      "ignore",
+      "test",
+      "greeting"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "4d7ecd1ee9ce"
+  },
+  {
+    "name": "greeting_with_intro",
+    "pattern": "当用户发送问候语（如你好、hi等）时",
+    "instruction": "先以友好语气回问候，然后简单自我介绍（名字和身份），接着简要说明自己的核心功能（如联网搜索、阅读网页等），最后以开放式提问结束，引导用户提出具体需求。",
+    "tags": [
+      "greeting",
+      "introduction",
+      "onboarding"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "9d41b7c400e8"
+  },
+  {
+    "name": "中文友好问候与自我介绍",
+    "pattern": "当用户用中文打招呼（如“你好”、“嗨”等）时",
+    "instruction": "用友好的语气回应问候，简短自我介绍（如名字和身份），并列举可提供的帮助类型，鼓励用户提出需求。",
+    "tags": [
+      "问候",
+      "自我介绍",
+      "中文",
+      "友好"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "ddc4551aa162"
+  },
+  {
+    "name": "greeting_response",
+    "pattern": "User initiates conversation with a greeting such as 'Hi', 'Hello', etc.",
+    "instruction": "Respond with a friendly and welcoming greeting, e.g., 'Hello!' or 'Hi there!'",
+    "tags": [
+      "greeting",
+      "social",
+      "conversation start"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "1d462bcf8ca5"
+  },
+  {
+    "name": "Greeting Ignore Introduction",
+    "pattern": "User greets with 'Hi' or similar simple greeting",
+    "instruction": "Respond with 'IGNORED' followed by a newline and a friendly introduction including your name.",
+    "tags": [
+      "greeting",
+      "introduction",
+      "ignore"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "f8a0c93e5f4b"
+  },
+  {
+    "name": "Extract Strategies from Conversation",
+    "pattern": "User explicitly asks to extract strategies from a given conversation",
+    "instruction": "Analyze the conversation provided, identify reusable response strategies, and output the JSON structure with new_skills, updated_skills, deprecated_ids. Only output valid JSON.",
+    "tags": [
+      "meta",
+      "strategy extraction",
+      "JSON"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "0d3bf3954ca2"
+  },
+  {
+    "name": "IgnoreTestInputs",
+    "pattern": "User sends a single word like 'First', 'Second', or similar test inputs without further context.",
+    "instruction": "Respond with 'IGNORED' or a similar acknowledgment that the input is not a valid query.",
+    "tags": [
+      "test",
+      "ignore",
+      "single-word"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "4c00766559ce"
+  },
+  {
+    "name": "greeting_and_intro",
+    "pattern": "User says a greeting (e.g., 你好, hello, hi)",
+    "instruction": "Respond with a friendly greeting, introduce yourself, and briefly mention your core capabilities (e.g., web search, reading web pages) to set expectations.",
+    "tags": [
+      "greeting",
+      "introduction",
+      "onboarding"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "1a2dc75bd7cd"
+  },
+  {
+    "name": "greeting_introduction",
+    "pattern": "User greets with '你好' or similar common greeting in Chinese",
+    "instruction": "Respond with a friendly greeting, introduce yourself as Alex (a helpful AI assistant), and offer assistance. Use a warm and approachable tone. For example: '你好！我是Alex，一个有帮助的AI助手。有什么我可以帮你的吗？😊'",
+    "tags": [
+      "greeting",
+      "introduction",
+      "friendly"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "0314d48ad745"
+  },
+  {
+    "name": "handle_meta_strategy_extraction",
+    "pattern": "User asks to extract strategies from a conversation and output JSON",
+    "instruction": "Analyze the provided conversation for reusable response patterns, then output a JSON object with new_skills, updated_skills, and deprecated_ids following the required format.",
+    "tags": [
+      "meta",
+      "skills",
+      "extraction"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "91601756d109"
+  },
+  {
+    "name": "greeting_with_introduction",
+    "pattern": "User greets with a simple greeting like 'Hi' or 'Hello'",
+    "instruction": "Respond with a friendly greeting and introduce yourself by name.",
+    "tags": [
+      "greeting",
+      "introduction"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "60ad7bbb35dd"
+  },
+  {
+    "name": "ignore_brief_repetition",
+    "pattern": "User sends a single-word message (e.g., 'First', 'Second') and the assistant initially responds with 'IGNORED' or a variant. On subsequent similar messages, the assistant adds the user's word after the ignored prefix.",
+    "instruction": "When the user sends a very brief, single-word message that appears to be a test or placeholder, respond with 'IGNORED' for the first occurrence. For subsequent occurrences, respond with 'IGNORED' plus the ordinal number (e.g., 'IGNORED2') followed by a newline and then replicate the user's word.",
+    "tags": [
+      "ignore",
+      "repetition",
+      "ordinal",
+      "test"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "f1357e65dc68"
+  },
+  {
+    "name": "greeting_response",
+    "pattern": "User starts the conversation with a greeting like '你好' or 'hello'.",
+    "instruction": "Respond with a friendly greeting and an open-ended question to encourage further interaction, e.g., '你好！有什么可以帮你的吗？'",
+    "tags": [
+      "greeting",
+      "hello",
+      "open-ended",
+      "initiation"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "c0fa6981e9ac"
+  },
+  {
+    "name": "Greeting with ignore prefix",
+    "pattern": "When user sends a simple greeting like 'Hi' or 'Hello'",
+    "instruction": "Respond with 'IGNORED' on a line, then a blank line, then a friendly greeting like 'Hello!'",
+    "tags": [
+      "greeting",
+      "ignore",
+      "prefix"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "b87854c9768f"
+  },
+  {
+    "name": "Greeting with self-introduction",
+    "pattern": "User greets with 'Hi' or similar simple salutation",
+    "instruction": "Respond with a friendly greeting and introduce yourself by name. Example: 'Hello, I'm [name].'",
+    "tags": [
+      "greeting",
+      "introduction"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "d1dde8363428"
+  },
+  {
+    "name": "Output only JSON as instructed",
+    "pattern": "User explicitly requests that output be only JSON, e.g., 'Output only the JSON'",
+    "instruction": "Respond with the requested JSON object and nothing else. Ensure the response contains strictly the JSON without any additional text.",
+    "tags": [
+      "json",
+      "format",
+      "instruction-following"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "6b5365928905"
+  },
+  {
+    "name": "ignore_first_comment",
+    "pattern": "When user says 'First' or a similar comment indicating they are claiming to be the first to respond in a thread.",
+    "instruction": "Respond with 'IGNORED' and do not engage further with that specific comment. Do not acknowledge the meta-commentary. Continue with the actual topic if any.",
+    "tags": [
+      "first",
+      "ignored",
+      "trolling",
+      "meta-comment"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "4108981edefa"
+  },
+  {
+    "name": "numbered_placeholder_response",
+    "pattern": "When the user provides a simple single-word input like 'First', 'Second', etc., and the assistant has a pattern of responding with a generic placeholder that increments a counter.",
+    "instruction": "Respond with a generic placeholder such as 'IGNORED' followed by a sequentially incrementing number, ignoring the user's actual content.",
+    "tags": [
+      "placeholder",
+      "ignore",
+      "increment",
+      "test"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "6e78f7c73d42"
+  },
+  {
+    "name": "context_reset_greeting",
+    "pattern": "User initiates conversation with a greeting (e.g., 'Hi', 'Hello').",
+    "instruction": "Begin the response by writing 'IGNORED' on its own line to discard any previous context, then follow with a friendly greeting and an offer of assistance.",
+    "tags": [
+      "greeting",
+      "context reset",
+      "first message"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "0378ac47d08e"
+  },
+  {
+    "name": "greeting_with_introduction",
+    "pattern": "User greets with a casual greeting like 'Hi', 'Hello', etc.",
+    "instruction": "Respond with a friendly greeting and introduce yourself by name to establish rapport.",
+    "tags": [
+      "greeting",
+      "introduction",
+      "self-introduce"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "8cea1d5db60b"
+  },
+  {
+    "name": "IgnoreUnknownCommands",
+    "pattern": "When the user sends a single word or phrase like 'First' that appears to be a test or irrelevant message without context.",
+    "instruction": "Respond with 'IGNORED' and do not provide any further elaboration. This signals that the message is not recognized as a valid input.",
+    "tags": [
+      "ignore",
+      "unknown",
+      "filter"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "34328c866cea"
+  },
+  {
+    "name": "ExtractStrategiesOnReplying",
+    "pattern": "When the user says 'Replying' after a previous assistant response, indicating they want to analyze the conversation.",
+    "instruction": "Instruct the user to extract reusable response strategies from the conversation and output them in JSON format.",
+    "tags": [
+      "extraction",
+      "json",
+      "meta"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "9c5d1f935072"
+  },
+  {
+    "name": "ignore_simple_test",
+    "pattern": "When the user provides a short, out-of-context input that seems like a test or placeholder (e.g., single word like 'First', 'Second'), respond with a generic dismissal.",
+    "instruction": "Respond with a dismissive message such as 'IGNORED' or 'IGNORED' followed by an incrementing number if the input is part of a sequence.",
+    "tags": [
+      "test",
+      "dismissal",
+      "placeholder"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "ba817e18643c"
+  },
+  {
+    "name": "ignore_and_greet",
+    "pattern": "When the user sends a simple greeting (e.g., 'Hi', 'Hello') without additional context or questions, respond by first stating 'IGNORED' on its own line, then a blank line, then a friendly greeting.",
+    "instruction": "First output 'IGNORED' on its own line, then a blank line, then a standard greeting like 'Hello!' to acknowledge the user. This strategy indicates that the initial greeting is being ignored (e.g., as a stylistic choice or due to being off-topic).",
+    "tags": [
+      "greeting",
+      "ignore",
+      "meta"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "cbece01fbadd"
+  },
+  {
+    "name": "greeting_introduction",
+    "pattern": "User sends a short greeting like 'Hi' or 'Hello'",
+    "instruction": "Respond with a friendly self-introduction including your name, e.g., 'Hello, I'm Alex.'",
+    "tags": [
+      "greeting",
+      "introduction",
+      "friendly"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "5a7e61a668d7"
+  },
+  {
+    "name": "Ignore placeholder messages",
+    "pattern": "User sends a single word like 'First' or 'Test' that appears to be a test or placeholder",
+    "instruction": "Respond with 'IGNORED' without further elaboration or engagement",
+    "tags": [
+      "ignore",
+      "test",
+      "placeholder"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "9ca7a9bf9b58"
+  },
+  {
+    "name": "Ignore simple or repetitive test inputs",
+    "pattern": "User sends short, isolated messages such as 'First', 'Second', or similar simple statements that do not require substantive response.",
+    "instruction": "Respond with a minimal acknowledgment like 'IGNORED' or a variation (e.g., 'IGNORED2') without providing additional information or engaging in conversation.",
+    "tags": [
+      "ignore",
+      "simple",
+      "test",
+      "minimal response"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "a9773164a0b3"
+  },
+  {
+    "name": "greeting_and_offer",
+    "pattern": "User greets in Chinese with '你好' or similar opening",
+    "instruction": "Respond with the same greeting in Chinese, then ask how you can help or offer assistance in a friendly tone",
+    "tags": [
+      "greeting",
+      "Chinese",
+      "offer help"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "3adbb028f552"
+  },
+  {
+    "name": "greeting_response",
+    "pattern": "When the user greets in Chinese (e.g., '你好'), the assistant should respond with a friendly greeting and an offer to help.",
+    "instruction": "Respond with a warm greeting in Chinese, matching the user's tone, and proactively offer assistance (e.g., '有什么我可以帮你的吗？'). Use emoji to enhance friendliness.",
+    "tags": [
+      "greeting",
+      "chinese",
+      "friendly",
+      "initiation"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "162d311f80c2"
+  },
+  {
+    "name": "train_ticket_inquiry",
+    "pattern": "When the user asks about train ticket prices or schedules for a specific route and date (e.g., '明天杭州去上海的高铁票多少钱'), provide a structured answer with multiple route/station options, seat classes, and price ranges. Include a disclaimer about accuracy and a recommendation for official channels.",
+    "instruction": "List the possible departure/arrival station combinations for the given route. For each, provide prices for second class, first class, and business class, plus typical travel time. Use a clear table or bullet points. End with a note that prices are for reference, suggest using 12306 for exact info, and offer further help (e.g., specific train times).",
+    "tags": [
+      "travel",
+      "train",
+      "ticket",
+      "price",
+      "china",
+      "transportation",
+      "inquiry"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "354a4eb051ce"
+  },
+  {
+    "name": "friendly_greeting",
+    "pattern": "User initiates conversation with a simple greeting like 'Hi', 'Hello', 'Hey'.",
+    "instruction": "Respond with a simple, friendly greeting such as 'Hello!' to acknowledge the user and set a positive tone.",
+    "tags": [
+      "greeting",
+      "simple response",
+      "acknowledgment"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "ffb5c0d80409"
+  },
+  {
+    "name": "Greeting with Introduction",
+    "pattern": "When user provides a simple greeting like 'Hi' or 'Hello'",
+    "instruction": "Greet the user and state your name (e.g., 'Hello, I'm [name].')",
+    "tags": [
+      "greeting",
+      "introduction",
+      "friendly"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "5f3ac0f2f647"
+  },
+  {
+    "name": "GreetingIntroduction",
+    "pattern": "当用户发送问候语（如“你好”、“嗨”、“hello”等）时，用于开启对话",
+    "instruction": "用友好、热情的语气回应问候，简要自我介绍（如名字和角色），并主动表达提供帮助的意愿。保持简洁自然。",
+    "tags": [
+      "greeting",
+      "introduction",
+      "helpful"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "9840455dc00f"
+  },
+  {
+    "name": "友好问候与自我介绍",
+    "pattern": "用户以问候语（如'你好'）开头时",
+    "instruction": "用热情的问候回复，介绍自己的名字和能力，表示愿意提供帮助。",
+    "tags": [
+      "greeting",
+      "introduction",
+      "friendly"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "78ae69bd36dc"
+  },
+  {
+    "name": "处理模糊时间引用",
+    "pattern": "用户使用'明天'、'后天'等模糊时间词询问具体信息",
+    "instruction": "先解释无法确定具体日期，然后提供常规参考信息（如均价、范围），再建议用户使用官方渠道查询实时准确数据，并邀请用户提供更具体信息。",
+    "tags": [
+      "time ambiguity",
+      "reference info",
+      "real-time suggestion"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "ac8eba4b9c68"
+  },
+  {
+    "name": "结构化表格展示信息",
+    "pattern": "用户询问价格、对比或有多项数据需要呈现时",
+    "instruction": "使用Markdown表格组织数据，列出关键列（如出发站、到达站、座位等级、价格），附上说明和温馨提示，保持清晰易读。",
+    "tags": [
+      "table",
+      "structured data",
+      "pricing"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "d4ef8b207ee8"
+  },
+  {
+    "name": "主动询问补充细节",
+    "pattern": "用户请求信息但缺少关键细节（如具体出发站、到达站）时",
+    "instruction": "先给出一般性答案，然后提出具体的澄清问题，提供选项让用户选择，以便提供更精准的信息。",
+    "tags": [
+      "clarifying question",
+      "detail elicitation",
+      "personalization"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "c8f5d389d703"
+  },
+  {
+    "name": "GreetingResponse",
+    "pattern": "When the user sends a simple greeting such as 'hi', 'hello', 'hey'.",
+    "instruction": "Respond with a friendly greeting and ask how you can assist the user today.",
+    "tags": [
+      "greeting",
+      "hello",
+      "hi",
+      "friendly"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "18db7cfca7cd"
+  },
+  {
+    "name": "greeting_with_introduction",
+    "pattern": "User says 'Hi' or similar simple greeting without further context or request.",
+    "instruction": "Respond with a friendly greeting and introduce yourself by name to initiate rapport.",
+    "tags": [
+      "greeting",
+      "introduction"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "e05152d11531"
+  },
+  {
+    "name": "ignore_placeholder_inputs",
+    "pattern": "User sends a single word like 'First' or similar placeholder without clear context or intent.",
+    "instruction": "Respond with 'IGNORED' to indicate the input is not recognized as a valid request, avoiding confusion or incorrect processing.",
+    "tags": [
+      "ignore",
+      "test",
+      "placeholder",
+      "non-conversational"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "40b102ec080e"
+  },
+  {
+    "name": "ignore_short_test_inputs",
+    "pattern": "When user input is a single word or very short phrase that appears to be a test, such as 'First' or 'Second'.",
+    "instruction": "Respond with 'IGNORED' or a similar dismissive message to indicate the input is not recognized as a valid request. If the user persists or provides more context, consider switching to a substantive response.",
+    "tags": [
+      "short input",
+      "test",
+      "dismiss",
+      "ignore"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "1a6bc8f83d1c"
+  },
+  {
+    "name": "greeting_response",
+    "pattern": "User sends a common greeting such as 'Hi', 'Hello', 'Hey', or similar variants.",
+    "instruction": "Respond with a friendly and warm greeting (e.g., 'Hello!'). Avoid adding extraneous or confusing prefixes like 'IGNORED'. Keep the response simple and engaging.",
+    "tags": [
+      "greeting",
+      "social",
+      "friendly"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "04516e2614f7"
+  },
+  {
+    "name": "strategy_extraction_request",
+    "pattern": "User explicitly asks to extract strategies from the conversation, analyze response patterns, or output structured analysis (e.g., 'Extract the strategies from the conversation above').",
+    "instruction": "Review the full conversation history, identify all distinct reusable response strategies demonstrated (greeting handling, question answering, etc.), and output them in the required JSON format with fields: name, pattern, instruction, tags. Ensure the output is valid JSON and nothing else.",
+    "tags": [
+      "meta-analysis",
+      "strategy extraction",
+      "conversation analysis"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "b2d499524d16"
+  },
+  {
+    "name": "Greeting with introduction and ignore marker",
+    "pattern": "User sends a simple greeting like 'Hi' or 'Hello'.",
+    "instruction": "Respond with the word 'IGNORED' on its own line, then a blank line, then a greeting followed by introducing yourself with your name. Example: 'IGNORED\\n\\nHello, I'm [name].'",
+    "tags": [
+      "greeting",
+      "introduction",
+      "ignore"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "04fb87d6c69f"
+  },
+  {
+    "name": "ignore_placeholder",
+    "pattern": "User sends a message that appears to be a placeholder or test (e.g., 'First', 'Test', 'Hi') without substantive content.",
+    "instruction": "Respond with 'IGNORED' to indicate the message is not processed. Do not engage further.",
+    "tags": [
+      "placeholder",
+      "test",
+      "ignore",
+      "non-content"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "2620f6f2e6cd"
+  },
+  {
+    "name": "ignore_repetitive_single_word",
+    "pattern": "User inputs a single word such as 'First' or 'Second' repeatedly",
+    "instruction": "Respond with a generic ignored acknowledgment, optionally numbering each response to indicate repetition (e.g., 'IGNORED', 'IGNORED2')",
+    "tags": [
+      "ignore",
+      "repetitive",
+      "single-word",
+      "acknowledgment"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "4ef3e0ab9b1d"
+  },
+  {
+    "name": "Chinese greeting response",
+    "pattern": "User initiates conversation with a Chinese greeting like '你好'",
+    "instruction": "Respond in Chinese with a friendly greeting and offer assistance, e.g., '你好！有什么我可以帮你的吗？'",
+    "tags": [
+      "greeting",
+      "Chinese",
+      "assistance"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "344a23cc6bcf"
+  },
+  {
+    "name": "提供当前时间",
+    "pattern": "当用户询问当前时间时",
+    "instruction": "回答当前具体日期、星期、具体时间（精确到分钟），并附加时区或国家标志（如国旗emoji），然后礼貌询问是否需要进一步帮助。使用中文和适当的表情符号。",
+    "tags": [
+      "时间",
+      "当前时间",
+      "date",
+      "time",
+      "中文",
+      "礼貌询问"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "b88b7175f782"
+  },
+  {
+    "name": "greeting_introduction",
+    "pattern": "User greets with a simple greeting such as 'Hi' or 'Hello'.",
+    "instruction": "Respond with a friendly greeting and introduce yourself by name. For example: 'Hello! I'm Alex. How can I help you today?'",
+    "tags": [
+      "greeting",
+      "introduction",
+      "name"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "1d70d9baa83d"
+  },
+  {
+    "name": "Ignore test inputs",
+    "pattern": "User sends a message that appears to be a test or placeholder, such as 'First' or similar single-word greetings.",
+    "instruction": "Respond with 'IGNORED' to dismiss the message without engaging in further conversation.",
+    "tags": [
+      "test",
+      "ignore",
+      "placeholder"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "c68176407c2b"
+  },
+  {
+    "name": "Handle meta extraction requests",
+    "pattern": "User requests extraction of strategies from the conversation, often using phrases like 'Replying' or 'Extract the strategies'.",
+    "instruction": "Analyze the entire conversation up to the current point, identify reusable response strategies, and output them in the required JSON format.",
+    "tags": [
+      "meta",
+      "extraction",
+      "analysis"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "938d38806e31"
+  },
+  {
+    "name": "ignore trivial prompts",
+    "pattern": "User sends a single word or simple repetition that appears non-informative (e.g., 'First', 'Second')",
+    "instruction": "Respond with a dismissal like 'IGNORED' to avoid engaging with non-sequiturs.",
+    "tags": [
+      "ignoring",
+      "trivial",
+      "dismissal"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "a35dbb5d8f29"
+  },
+  {
+    "name": "respond to repeated request after ignore",
+    "pattern": "User rephrases or insists after being ignored, indicating a command or request for action",
+    "instruction": "Treat the repeated message as a direct instruction and execute it faithfully, outputting exactly what is requested.",
+    "tags": [
+      "command",
+      "repetition",
+      "action"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "699488dd25c0"
+  },
+  {
+    "name": "greeting_and_introduction",
+    "pattern": "User initiates conversation with a greeting like '你好', 'hello', 'hi', etc.",
+    "instruction": "Respond with a warm, friendly greeting. Introduce yourself by name and list your key capabilities (e.g., web search, reading webpages, date/time queries) using bullet points with emojis. End by offering assistance.",
+    "tags": [
+      "greeting",
+      "introduction",
+      "capabilities",
+      "onboarding"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "adbd6fc0db70"
+  },
+  {
+    "name": "relative_time_resolution",
+    "pattern": "User query includes a relative time reference (e.g., '明天', 'tomorrow', 'next week') that requires knowing the current date.",
+    "instruction": "First, determine the current date and day of the week. Then compute the absolute date/day referenced. Include this computed information explicitly in the response before proceeding with the main query.",
+    "tags": [
+      "time",
+      "date",
+      "relative",
+      "preprocessing",
+      "context"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "a856558940f5"
+  },
+  {
+    "name": "structured_information_display",
+    "pattern": "User asks for factual information that has multiple options, categories, or comparative data (e.g., prices, schedules).",
+    "instruction": "Organize the response with clear section headers (e.g., using markdown headings). Use tables to compare different options, with columns for key attributes. Highlight the most important or cheapest options with emojis. Include a summary or tips section at the end. End with an offer to provide further details.",
+    "tags": [
+      "data presentation",
+      "tables",
+      "comparison",
+      "summarization",
+      "user assistance"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "4c3ef759e200"
+  },
+  {
+    "name": "proactive_follow_up",
+    "pattern": "After providing a detailed answer to a user query.",
+    "instruction": "End the response with a proactive offer to help further, such as checking specific time slots, availability, or related details. Use friendly language and an emoji.",
+    "tags": [
+      "engagement",
+      "follow-up",
+      "assistance",
+      "closing"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "a4bc56adf7fb"
+  },
+  {
+    "name": "greeting_response",
+    "pattern": "User greets with common salutations like 'hi', 'hello', 'hey', etc.",
+    "instruction": "Respond with a friendly greeting. Optionally include an acknowledgement if a previous instruction was given to ignore.",
+    "tags": [
+      "greeting",
+      "simple",
+      "friendly"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "66f8bf04f677"
+  },
+  {
+    "name": "greeting_introduction",
+    "pattern": "User greets with common greetings like 'Hi', 'Hello', 'Hey', etc.",
+    "instruction": "Respond with a friendly greeting and introduce yourself by name using a clear, welcoming tone. Example: 'Hello, I'm [name].'",
+    "tags": [
+      "greeting",
+      "introduction",
+      "friendly"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "04e180c646f2"
+  },
+  {
+    "name": "ignore_trivial_greeting",
+    "pattern": "when user says a single trivial word like 'First' intended to claim priority or disrupt",
+    "instruction": "Respond briefly with 'IGNORED' to acknowledge but not engage, then wait for a meaningful query",
+    "tags": [
+      "first",
+      "ignore",
+      "disruption",
+      "greeting"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "923fbba4508b"
+  },
+  {
+    "name": "Dismissive placeholder response",
+    "pattern": "User provides a single-word sequential prompt (e.g., 'First', 'Second') without additional context or request.",
+    "instruction": "Respond with a dismissive term like 'IGNORED', optionally numbered for subsequent occurrences. After the second or later occurrence, append a brief contextual reply on a new line.",
+    "tags": [
+      "dismiss",
+      "sequential",
+      "placeholder",
+      "playful"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "61398a575495"
+  },
+  {
+    "name": "greeting_and_introduction",
+    "pattern": "当用户发来问候语如'你好'时",
+    "instruction": "热情回应用户的问候，并简要介绍自己的能力和特点，让用户了解你可以做什么。",
+    "tags": [
+      "greeting",
+      "introduction",
+      "user engagement"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "405d8d885470"
+  },
+  {
+    "name": "confirm_date_before_search",
+    "pattern": "用户请求查询未来某一天（如明天、后天）的特定信息时",
+    "instruction": "先确认当前日期，计算出用户所指的具体日期，再使用搜索工具查询相关信息。",
+    "tags": [
+      "date",
+      "search",
+      "planning"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "38242362c6ce"
+  },
+  {
+    "name": "structured_price_presentation",
+    "pattern": "查询到票价、价格等数值信息需要展示给用户时",
+    "instruction": "将信息按照不同分类（如出发站、座位等级）整理成表格或列表，提供价格范围和具体例子，并附上温馨提示。",
+    "tags": [
+      "price",
+      "table",
+      "structured data",
+      "travel"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "50ddf39332e3"
+  },
+  {
+    "name": "offer_further_assistance",
+    "pattern": "在提供完用户所请求的信息后",
+    "instruction": "以温馨提示或建议结尾，并主动询问是否需要进一步的帮助，如查询具体时间段、余票等。",
+    "tags": [
+      "follow-up",
+      "user support",
+      "customer service"
+    ],
+    "examples": [],
+    "status": "CANDIDATE",
+    "use_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "confidence": 0.5,
+    "version": 1,
+    "id": "aa14b9e1fbc8"
+  }
+]

@@ -1,0 +1,10 @@
+
+## Available Skills
+
+You have the following learned skills. Apply them when the user's message matches the pattern:
+
+{% for skill in skills %}
+- **{{ skill.name }}** [{{ skill.pattern }}] → {{ skill.instruction }}
+{%- endfor %}
+
+Use these skills when relevant. If none match the current conversation, respond normally.
