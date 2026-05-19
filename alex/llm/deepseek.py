@@ -33,8 +33,9 @@ class DeepSeekAdapter(ChatDeepSeek):
 
         for msg, payload_msg in zip(messages, payload["messages"]):
             if isinstance(msg, AIMessage):
-                reasoning = msg.additional_kwargs.get("reasoning_content")
-                if reasoning:
-                    payload_msg["reasoning_content"] = reasoning
+                reasoning = msg.additional_kwargs.get("reasoning_content", "")
+                if reasoning is None:
+                    reasoning = ""
+                payload_msg["reasoning_content"] = reasoning
 
         return payload

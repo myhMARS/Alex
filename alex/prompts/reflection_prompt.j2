@@ -1,40 +1,63 @@
-Analyze this conversation and extract reusable response strategies.
+Analyze the accumulated problem-solving experience below and extract reusable execution methodologies.
 
-## RULES (MUST follow strictly):
+A "skill" is a distilled execution methodology — a step-by-step guide for handling a specific problem domain. Skills are formed from repeated experience: observing what tools were used, what workflows succeeded, and what patterns recur across multiple conversations.
 
-1. **UPDATE FIRST, CREATE LAST**: Your PRIMARY action should be updating existing skills. Only create a new skill if NO existing skill covers a remotely similar scenario. When in doubt, UPDATE an existing skill rather than creating a new one.
+## What makes a good skill:
 
-2. **Merge similar scenarios**: If the conversation shows a pattern that overlaps with an existing skill (even partially), UPDATE that skill by improving its instruction or broadening its pattern. Do NOT create a parallel skill.
+- **`name`**: The methodology name. Use kebab-case nouns (e.g., "debug-python-import-error", "deploy-microservice", "code-review-workflow").
+- **`pattern`**: When this skill applies. Describe the problem domain or user intent (e.g., "user encounters a Python import error", "user needs to deploy a service to production").
+- **`instruction`**: The complete execution methodology. Write as a numbered step-by-step guide. Include: what information to gather, what tools to call and in what order, decision branches, verification checkpoints, common pitfalls. This is the playbook the agent will follow.
+- **`tags`**: Domain keywords for retrieval (e.g., ["debugging", "python", "imports"]).
 
-3. **One skill per scenario**: There should be at most ONE skill for each distinct scenario. "Greeting response", "Chinese greeting", "Friendly greeting" are ALL the same scenario — they should be ONE skill with a broad pattern.
+## RULES:
 
-4. **Be conservative**: Only output skills that represent genuinely distinct, reusable strategies. A simple greeting does NOT need 5 different skills. If unsure whether something is new, it probably isn't — skip it.
+1. **Synthesize from accumulated experience**: The episodes below span multiple rounds of conversation. Look for recurring patterns — same tools being used, similar problems appearing, workflows that proved effective. A single conversation is NOT enough to form a skill; synthesize across episodes.
 
-5. **Quality over quantity**: 1 well-crafted updated skill is better than 3 new mediocre ones.
+2. **Capture the process, not the answer**: Skills describe HOW to solve a class of problems, not WHAT the answer is. Include: tool selection logic, information gathering sequence, verification steps, fallback strategies.
 
-6. **Empty is valid**: If the conversation contains NO reusable strategy (e.g., simple greetings, small talk, or already-covered scenarios), output `{"new_skills": [], "updated_skills": [], "deprecated_ids": []}`. Do NOT invent skills just to have output.
+3. **UPDATE FIRST**: Prefer improving existing skills over creating new ones. If a new episode reveals a better workflow for an existing skill, UPDATE it. Broaden its pattern, refine its steps, add edge cases.
 
-## Output format (ONLY valid JSON, nothing else):
+4. **One skill per problem domain**: "debug-import", "fix-python-import", "resolve-module-error" are the SAME domain — keep ONE skill.
+
+5. **Conservative extraction**: Only extract skills that represent genuinely reusable, non-trivial workflows. Casual chat, simple Q&A, or one-off trivia do NOT need skills. Quality > quantity.
+
+6. **Empty is valid**: If the accumulated experience contains NO reusable methodology, output empty arrays.
+
+## Output format (ONLY valid JSON):
 
 ```json
 {
   "new_skills": [
-    {"name": "...", "pattern": "...", "instruction": "...", "tags": [...]}
+    {"name": "methodology-name", "pattern": "problem domain", "instruction": "step-by-step guide", "tags": ["domain", "keywords"]}
   ],
   "updated_skills": [
-    {"id": "existing_id", "pattern": "broader pattern", "instruction": "improved instruction"}
+    {"id": "existing_id", "pattern": "broader trigger", "instruction": "refined steps", "tags": ["updated", "tags"]}
   ],
   "deprecated_ids": ["id_of_obsolete_skill"]
 }
 ```
 
-- `new_skills`: ONLY if truly no existing skill covers this scenario
-- `updated_skills`: Preferred action — improve existing skills (only include fields that change)
-- `deprecated_ids`: Skills that are redundant, harmful, or superseded
-
-## Existing skills (ALWAYS prefer updating these over creating new):
+## Existing skills (prefer updating these):
 
 {% for skill in existing_skills -%}
 - [{{ skill.id }}] {{ skill.name }}: {{ skill.pattern }}
 {% endfor -%}
 {% if not existing_skills %}(none){% endif %}
+
+## Accumulated experience episodes ({{ episodes|length }} rounds):
+
+{% if episodes -%}
+{% for ep in episodes %}
+### Round {{ loop.index }}
+- **User query**: {{ ep.query }}
+- **Skills loaded**: {{ ep.skills_loaded | join(", ") if ep.skills_loaded else "(none)" }}
+- **Tools used**: {{ ep.tools_used | join(", ") if ep.tools_used else "(none)" }}
+- **Outcome**: {{ ep.outcome }}
+{% endfor -%}
+{% else %}
+(no accumulated episodes yet — rely on the conversation below)
+{% endif %}
+
+## Current conversation (last round):
+
+The messages below are the most recent interaction. Use them alongside the accumulated episodes above to identify patterns and refine skills.

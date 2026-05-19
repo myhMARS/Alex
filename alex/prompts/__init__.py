@@ -26,9 +26,9 @@ def render(template_name: str, **kwargs) -> str:
     return template.render(**kwargs)
 
 
-def get_system_prompt(**kwargs) -> str:
+def get_system_prompt(tool_hints: str = "", **kwargs) -> str:
     """Render the system prompt template."""
-    return render("system_prompt.j2", **kwargs)
+    return render("system_prompt.j2", tool_hints=tool_hints, **kwargs)
 
 
 def get_reflection_prompt(**kwargs) -> str:
@@ -73,4 +73,4 @@ def remove_skill_template(skill_id: str) -> None:
 
 
 def _skill_template_content(name: str, pattern: str, instruction: str) -> str:
-    return f"## Skill: {name}\n**When**: {pattern}\n**How**: {instruction}\n"
+    return f"## Skill: {name}\n**Applies when**: {pattern}\n**Execution methodology**:\n{instruction}\n"

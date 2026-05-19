@@ -24,7 +24,13 @@ from alex.display import (
     EventType,
 )
 from alex.prompts import get_system_prompt
-from alex.tools import create_time_tool, create_web_fetch_tool, create_web_search_tool
+from alex.tools import (
+    create_time_tool,
+    create_web_fetch_tool,
+    create_web_search_tool,
+    get_tool_hints,
+)
+from alex.tools.cron import create_cron_tool
 
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -33,12 +39,14 @@ from rich.text import Text
 
 def create_agent() -> Agent:
     """Create and configure an agent with all available tools."""
-    return Agent(
-        system_prompt=get_system_prompt(),
+    agent = Agent(
+        system_prompt=get_system_prompt(tool_hints=get_tool_hints()),
         max_iterations=5,
         tools=[create_time_tool(), create_web_search_tool(), create_web_fetch_tool()],
         callbacks=[ToolDisplayCallback()],
     )
+    agent.register_tool(create_cron_tool(agent))
+    return agent
 
 
 # ── Simple CLI modes (non-TUI) ──────────────────────────────────────────────

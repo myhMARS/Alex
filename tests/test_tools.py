@@ -1,6 +1,7 @@
 """Core tests for web tools."""
 
 import pytest
+pytest.importorskip("langchain_core")
 from langchain_core.tools import StructuredTool
 
 from alex.tools.web_fetch import WebFetchInput, _web_fetch, create_web_fetch_tool

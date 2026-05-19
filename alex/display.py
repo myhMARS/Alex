@@ -56,6 +56,7 @@ class DisplayEvent:
 @dataclass
 class ToolCallState:
     """Tracks a single in-flight tool call."""
+    id: str
     name: str
     args: dict
     start_time: float = field(default_factory=time.time)
@@ -81,7 +82,8 @@ class Renderer:
 
     def __init__(self) -> None:
         self._queue: asyncio.Queue[DisplayEvent] = asyncio.Queue()
-        self._active_tools: list[ToolCallState] = []
+        self._active_tools: dict[str, ToolCallState] = {}
+        self._active_order: list[str] = []
         self._completed_tools: list[ToolCallState] = []
         self._streaming_tokens: list[str] = []
         self._running = False
@@ -106,31 +108,36 @@ class Renderer:
     def _process_event(self, event: DisplayEvent) -> None:
         """Process a single event, updating internal state."""
         if event.type == EventType.TOOL_START:
-            self._active_tools.append(
-                ToolCallState(
-                    name=event.data.get("name", "unknown"),
-                    args=event.data.get("args", {}),
-                    start_time=event.timestamp,
-                )
+            tid = str(event.data.get("id") or "")
+            name = event.data.get("name", "unknown")
+            if not tid:
+                tid = f"{name}:{time.monotonic_ns()}"
+            self._active_tools[tid] = ToolCallState(
+                id=tid,
+                name=name,
+                args=event.data.get("args", {}),
+                start_time=event.timestamp,
             )
+            self._active_order.append(tid)
 
         elif event.type == EventType.TOOL_END:
             output = str(event.data.get("output", ""))
-            # Match to the first active (not-done) tool
-            for tool in self._active_tools:
-                if not tool.is_done:
-                    tool.output = output
-                    tool.elapsed = time.time() - tool.start_time
-                    break
-
-            # Move all completed tools to completed list
-            still_active = []
-            for tool in self._active_tools:
-                if tool.is_done:
-                    self._completed_tools.append(tool)
-                else:
-                    still_active.append(tool)
-            self._active_tools = still_active
+            tid = str(event.data.get("id") or "")
+            if tid and tid in self._active_tools:
+                tool = self._active_tools.pop(tid)
+                try:
+                    self._active_order.remove(tid)
+                except ValueError:
+                    pass
+            else:
+                while self._active_order and self._active_order[0] not in self._active_tools:
+                    self._active_order.pop(0)
+                fallback_id = self._active_order.pop(0) if self._active_order else ""
+                tool = self._active_tools.pop(fallback_id) if fallback_id and fallback_id in self._active_tools else None
+            if tool:
+                tool.output = output
+                tool.elapsed = time.time() - tool.start_time
+                self._completed_tools.append(tool)
 
         elif event.type == EventType.TOKEN:
             token = event.data.get("token", "")
@@ -178,28 +185,31 @@ class Renderer:
 
         # Render active (in-flight) tools
         if self._active_tools:
+            active_list = [self._active_tools[tid] for tid in self._active_order if tid in self._active_tools]
+            if not active_list:
+                active_list = list(self._active_tools.values())
             # Group by tool name for compact display
-            names = [t.name for t in self._active_tools]
+            names = [t.name for t in active_list]
             same_tool = len(set(names)) == 1
-            count = len(self._active_tools)
+            count = len(active_list)
 
             if same_tool and count > 1:
                 # Parallel same-tool: compact
                 output.append("  ")
                 output.append("◈ ", style="yellow")
-                output.append(self._active_tools[0].name, style="bold magenta")
+                output.append(active_list[0].name, style="bold magenta")
                 output.append(f" ×{count}", style="dim")
                 output.append("  ")
                 output.append("⟳ running...", style="dim yellow")
                 output.append("\n")
                 # Show differing args
                 all_keys: list[str] = []
-                for t in self._active_tools:
+                for t in active_list:
                     for k in t.args:
                         if k not in all_keys:
                             all_keys.append(k)
                 for k in all_keys:
-                    values = [str(t.args.get(k, "")) for t in self._active_tools]
+                    values = [str(t.args.get(k, "")) for t in active_list]
                     unique = list(dict.fromkeys(values))
                     if len(unique) == 1:
                         v_str = unique[0]
@@ -218,7 +228,7 @@ class Renderer:
                             output.append(f"{v}\n", style="white")
             else:
                 # Single or mixed tools
-                for tool in self._active_tools:
+                for tool in active_list:
                     output.append("  ")
                     output.append("◈ ", style="yellow")
                     output.append(tool.name, style="bold magenta")

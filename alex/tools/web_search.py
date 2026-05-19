@@ -5,6 +5,9 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 
+TOOL_HINT = "Use `web_search` to search the web for current information, facts, or answers beyond your knowledge cutoff."
+
+
 class WebSearchInput(BaseModel):
     query: str = Field(description="The search query string")
     max_results: int = Field(default=5, description="Maximum number of results to return (max: 15)")

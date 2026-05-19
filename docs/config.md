@@ -2,26 +2,30 @@
 
 ## 业务逻辑
 
-1. 从 `.apikey` 文件读取配置（provider、baseurl、apikey、models）
-2. 环境变量优先级高于文件（`ALEX_PROVIDER`、`ALEX_API_KEY`、`ALEX_BASE_URL`）
-3. 返回 `LLMConfig` 对象供 `LLMFactory.create()` 使用
+1. 通过 `python-dotenv` 从 `.env` 文件加载环境变量
+2. 返回 `LLMConfig` 对象供 `LLMFactory.create()` 使用
+3. `.env` 文件不提交到版本控制，`.env_example` 作为模板
 
-## 配置文件格式
+## 环境变量
 
-```
-provider:deepseek
-baseurl:https://api.deepseek.com
-apikey:sk-xxx
-models:deepseek-chat,deepseek-reasoner
-```
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `ALEX_PROVIDER` | LLM 提供商 | `deepseek` |
+| `ALEX_API_KEY` | API 密钥 | *(必填)* |
+| `ALEX_BASE_URL` | API 基础地址 | `https://api.deepseek.com` |
+| `ALEX_MODEL` | 模型名称 | `deepseek-chat` |
+| `ALEX_MAX_TOKENS` | 最大 token 数 | `4096` |
+| `ALEX_TEMPERATURE` | 温度参数 | `0.0` |
 
 ## 优先级
 
 ```
-环境变量 > .apikey 文件 > 默认值
+环境变量 > .env 文件 > 默认值
 ```
+
+（已注入的系统环境变量会覆盖 `.env` 文件中的值）
 
 ## 与现有代码的关系
 
 - 返回 `LLMConfig` 对象，增加 provider 字段
-- 保持向后兼容，原有配置文件格式继续支持
+- 统一使用环境变量方式管理配置，不再依赖 `.apikey` 文件

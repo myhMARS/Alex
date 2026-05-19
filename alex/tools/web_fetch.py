@@ -13,6 +13,9 @@ USER_AGENT = (
 )
 
 
+TOOL_HINT = "Use `web_fetch` to read and extract the content of a specific web page URL."
+
+
 class WebFetchInput(BaseModel):
     url: str = Field(description="The URL of the web page to fetch")
     max_length: int = Field(default=8000, description="Maximum character length of returned content (default: 8000)")

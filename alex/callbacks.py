@@ -31,9 +31,10 @@ class ToolDisplayCallback(BaseCallbackHandler):
             nested = self._parse_input(args["input"])
             if nested:
                 args = nested
+        run_id = str(kwargs.get("run_id") or "")
         renderer.emit(DisplayEvent(
             type=EventType.TOOL_START,
-            data={"name": tool_name, "args": args},
+            data={"id": run_id, "name": tool_name, "args": args},
         ))
 
     @staticmethod
@@ -59,7 +60,8 @@ class ToolDisplayCallback(BaseCallbackHandler):
         output: str,
         **kwargs,
     ) -> None:
+        run_id = str(kwargs.get("run_id") or "")
         renderer.emit(DisplayEvent(
             type=EventType.TOOL_END,
-            data={"output": str(output)},
+            data={"id": run_id, "output": str(output)},
         ))

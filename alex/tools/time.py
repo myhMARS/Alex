@@ -1,8 +1,11 @@
 """Time tool - get the current date and time."""
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone as dt_timezone
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
+
+
+TOOL_HINT = "Use `time` to get the current the current date/time. Prefer timezone='local' unless the user specifies otherwise."
 
 
 class TimeInput(BaseModel):
@@ -11,15 +14,43 @@ class TimeInput(BaseModel):
         description="Timezone name (e.g. 'Asia/Shanghai', 'US/Eastern', 'UTC') or 'local' for system local time",
     )
 
+_TZ_ALIASES: dict[str, str] = {
+    "CHINA STANDARD TIME": "Asia/Shanghai",
+    "BEIJING": "Asia/Shanghai",
+    "SHANGHAI": "Asia/Shanghai",
+    "UTC": "UTC",
+    "GMT": "UTC",
+    "Z": "UTC",
+}
+
+
+def _normalize_tz_key(tz: str) -> str:
+    s = (tz or "").strip()
+    if not s:
+        return "local"
+    if s.lower() == "local":
+        return "local"
+    key = s.upper()
+    return _TZ_ALIASES.get(key, s)
+
 
 async def _get_current_time(timezone: str = "local") -> str:
     """Return the current date and time."""
     try:
-        if timezone == "local":
+        tz_key = _normalize_tz_key(timezone)
+        if tz_key == "local":
             now = datetime.now().astimezone()
         else:
-            from zoneinfo import ZoneInfo
-            now = datetime.now(ZoneInfo(timezone))
+            if tz_key == "UTC":
+                now = datetime.now(dt_timezone.utc)
+            else:
+                try:
+                    from zoneinfo import ZoneInfo
+                    now = datetime.now(ZoneInfo(tz_key))
+                except Exception:
+                    if str(tz_key).lower() != "asia/shanghai":
+                        raise
+                    now = datetime.now(dt_timezone(timedelta(hours=8), name="CST"))
 
         return (
             f"Current time: {now.strftime('%Y-%m-%d %H:%M:%S %Z')}\n"

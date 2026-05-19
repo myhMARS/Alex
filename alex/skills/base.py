@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 @dataclass
 class Skill:
-    """A learned response strategy — not factual knowledge, but *how* to respond."""
+    """A learned execution methodology — distilled from past problem-solving experience in a specific domain."""
 
     name: str
     pattern: str  # When to use (trigger scenario)
@@ -80,28 +80,44 @@ class SkillManager:
     # ── retrieval ────────────────────────────────────────────────────────
 
     def retrieve(self, query: str, top_k: int = 3) -> list[Skill]:
-        """Return all active/candidate skills (model decides which to apply)."""
-        return [s for s in self.store.list_all() if s.status in ("ACTIVE", "CANDIDATE")]
+        """Return relevant non-deprecated skills using tag/keyword scoring."""
+        if self._retriever is None:
+            from alex.skills.retriever import SkillRetriever
+            self._retriever = SkillRetriever(self.store)
+        return self._retriever.retrieve(query, top_k)
 
     def inject_skills_prompt(self, query: str) -> str:
-        """Inject all skills as a directory — model decides which to apply."""
-        skills = self.retrieve(query)
-        if not skills:
+        """Inject a lightweight skill directory — names and patterns only.
+
+        The agent loads full execution flows on demand via the load_skill tool.
+        """
+        skills = self.store.list_all()
+        active = [s for s in skills if s.status != "DEPRECATED"]
+        if not active:
             return ""
         return get_skills_section(skills=[
-            {"name": s.name, "pattern": s.pattern, "instruction": s.instruction} for s in skills
+            {"name": s.name, "pattern": s.pattern} for s in active
         ])
+
+    def get_skill_by_name(self, name: str) -> Skill | None:
+        """Look up a non-deprecated skill by name (case-insensitive)."""
+        name_lower = name.lower()
+        for s in self.store.list_all():
+            if s.name.lower() == name_lower and s.status != "DEPRECATED":
+                return s
+        return None
 
     # ── reflection ───────────────────────────────────────────────────────
 
-    async def reflect(self, recent_messages: list, llm) -> None:
+    async def reflect(self, recent_messages: list, llm, episodes: list[dict] | None = None) -> dict:
         if self._reflector is None:
             from alex.skills.reflector import Reflector
-            self._reflector = Reflector(llm)
+            self._reflector = Reflector()
 
         result = await self._reflector.reflect(
             recent_messages,
             [s for s in self.store.list_all() if s.status != "DEPRECATED"],
+            episodes=episodes or [],
         )
 
         for skill in result.new_skills:
@@ -126,6 +142,13 @@ class SkillManager:
             from alex.skills.evolution import EvolutionEngine as EE
             self._evolution = EE()
         self._evolution.evolve(self.store)
+
+        return {
+            "new": len(result.new_skills),
+            "updated": len(result.updated_skills),
+            "deprecated": len(result.deprecated_ids),
+            "new_skill_names": [s.name for s in result.new_skills],
+        }
 
     # ── feedback ─────────────────────────────────────────────────────────
 

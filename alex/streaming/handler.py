@@ -11,7 +11,7 @@ from typing import Any, Callable
 class StreamEvent:
     """Unified stream event emitted during agent execution."""
 
-    type: str  # "token", "tool_start", "tool_end", "done", "error"
+    type: str  # "token", "tool_start", "tool_end", "skill_load", "done", "error"
     data: Any = None
     metadata: dict = field(default_factory=dict)
 

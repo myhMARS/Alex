@@ -19,20 +19,24 @@ class ReflectionResult:
 
 
 class Reflector:
-    """Calls an LLM to analyze conversations and extract skills."""
+    """Calls an LLM to analyze conversations and extract execution workflows."""
 
     async def reflect(
         self,
         messages: list[BaseMessage],
         existing_skills: list[Skill],
+        episodes: list[dict] | None = None,
     ) -> ReflectionResult:
-        """Analyze conversation and extract skills using JSON mode."""
+        """Analyze accumulated conversation experience to extract reusable methodologies."""
         from alex.llm.json_client import create_json_completion
 
-        full_prompt = get_reflection_prompt(existing_skills=[
-            {"id": s.id, "name": s.name, "pattern": s.pattern}
-            for s in existing_skills
-        ])
+        full_prompt = get_reflection_prompt(
+            existing_skills=[
+                {"id": s.id, "name": s.name, "pattern": s.pattern}
+                for s in existing_skills
+            ],
+            episodes=episodes or [],
+        )
 
         # Format messages for API
         api_messages: list[dict[str, str]] = [{"role": "system", "content": full_prompt}]
@@ -41,7 +45,7 @@ class Reflector:
                 api_messages.append({"role": "user", "content": msg.content})
             elif hasattr(msg, "content") and msg.content:
                 api_messages.append({"role": "assistant", "content": msg.content})
-        api_messages.append({"role": "user", "content": "Extract the strategies. Output only JSON."})
+        api_messages.append({"role": "user", "content": "Extract execution workflows from this conversation. Output only JSON."})
 
         text = await create_json_completion(api_messages, max_tokens=4096)
         return self._parse(text)
