@@ -552,24 +552,16 @@ class Agent:
         if not self._last_query_matched:
             should_reflect = True
 
-        print(f"[DEBUG] _maybe_reflect: turn={self._turn_count}, last_query_matched={self._last_query_matched}, should_reflect={should_reflect}")
-
         if should_reflect:
             self._reflecting = True
-            print("[DEBUG] _maybe_reflect: starting reflection...")
             await self._do_reflect()
             self._reflecting = False
-            print("[DEBUG] _maybe_reflect: reflection done")
-
     async def _do_reflect(self) -> None:
         self._reflecting = True
         try:
-            print("[DEBUG] _do_reflect: fetching memory context...")
             recent = await self._memory.get_context()
             recent = recent[-20:]
-            print(f"[DEBUG] _do_reflect: got {len(recent)} messages, calling skill.reflect...")
             summary = await self._skills.reflect(recent, self._llm, episodes=self._skill_episodes)
-            print(f"[DEBUG] _do_reflect: summary={summary}")
             self._skill_episodes.clear()
             self._pending_notifications.append({
                 "type": "skill_reflect",
@@ -578,9 +570,7 @@ class Agent:
                 "deprecated": summary.get("deprecated", 0),
                 "names": summary.get("new_skill_names", []),
             })
-            print("[DEBUG] _do_reflect: added notification to pending list")
         except Exception as e:
-            print(f"[DEBUG] _do_reflect ERROR: {e}")
             logger.warning("Skill reflection failed", exc_info=True)
             self._pending_notifications.append({
                 "type": "skill_reflect_error",

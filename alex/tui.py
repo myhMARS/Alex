@@ -676,9 +676,7 @@ class AlexApp(App):
 
     async def _run_reflection(self) -> None:
         """Run skill reflection."""
-        print("[DEBUG TUI] _run_reflection: starting...")
         await self._agent._maybe_reflect()
-        print("[DEBUG TUI] _run_reflection: done")
 
         chat_view = self.query_one("#chat-view", VerticalScroll)
         self._trim_chat_view(chat_view)
