@@ -12,6 +12,7 @@
 | `token` | LLM 产出正式回复 token |
 | `tool_start` | 开始调用工具 |
 | `tool_end` | 工具调用完成 |
+| `skill_load` | Agent 通过 load_skill 工具加载技能详情 |
 | `done` | 整轮对话结束 |
 | `error` | 发生错误 |
 

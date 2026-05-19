@@ -38,8 +38,9 @@ Alex 是一个支持工具调用、流式输出的对话式 AI Agent 智能体�
 │                                                                     │
 │  ┌────────────┐ ┌──────────────┐ ┌────────────┐ ┌───────────────┐  │
 │  │ToolRegistry│ │StreamHandler │ │SkillManager│ │ AgentGraph    │  │
-│  └────────────┘ └──────────────┘ └────────────┘ │ (LangGraph)   │  │
-│                                                  └───────────────┘  │
+│  ├────────────┤ ├──────────────┤ ├────────────┤ │ (LangGraph)   │  │
+│  │ CronManager│ │Notifications │ │ Prompts    │ │               │  │
+│  └────────────┘ └──────────────┘ └────────────┘ └───────────────┘  │
 └───┬──────────────────┬──────────────────┬──────────────────┬────────┘
     │                  │                  │                  │
     ▼                  ▼                  ▼                  ▼
@@ -55,8 +56,8 @@ Alex 是一个支持工具调用、流式输出的对话式 AI Agent 智能体�
 
 | 模块 | 文档 | 摘要 |
 |------|------|------|
-| Agent 核心编排 | [agent.md](./agent.md) | 系统编排中心，协调 LLM、Memory、Tools、Skills、Streaming |
-| TUI 交互界面 | [display.md](./display.md) | Textual TUI 应用，支持滚动、折叠、会话管理 |
+| Agent 核心编排 | [agent.md](./agent.md) | 系统编排中心，协调 LLM、Memory、Tools、Skills、Cron |
+| TUI 交互界面 | [display.md](./display.md) | Textual TUI 应用，支持滚动、折叠、反馈、会话管理 |
 | LLM 工厂层 | [llm.md](./llm.md) | 工厂模式 + 装饰器注册，统一适配多平台 LLM |
 | 记忆管理层 | [memory.md](./memory.md) | 抽象记忆接口，支持缓冲记忆及未来 RAG 扩展 |
 | 流式输出 | [streaming.md](./streaming.md) | 基于 LangGraph astream_events 的流式事件分发 |
@@ -70,28 +71,51 @@ Alex 是一个支持工具调用、流式输出的对话式 AI Agent 智能体�
 ```
 alex/
 ├── __init__.py
-├── agent.py              # Agent 核心编排 + ChatResponse
-├── config.py             # 配置加载
-├── callbacks.py          # LangChain 回调 → 事件桥接
-├── display.py            # Rich 渲染工具（非 TUI 模式使用）
+├── agent.py              # Agent 核心编排 + ChatResponse + 通知系统
+├── config.py             # 配置加载（.env → LLMConfig）
+├── cron.py               # CronManager — APScheduler 后台任务调度
+├── callbacks.py          # LangChain 回调 → DisplayEvent 桥接
+├── display.py            # Rich 渲染工具 + ThinkingDisplay + EventQueue
 ├── tui.py                # Textual TUI 应用（交互模式）
 ├── llm/                  # LLM 工厂层
+│   ├── factory.py        # 工厂模式 + 装饰器注册
+│   ├── base.py           # LLMConfig 数据类
+│   ├── deepseek.py       # DeepSeek 适配器（reasoning_content 回传）
+│   ├── openai.py         # OpenAI 适配器
+│   ├── anthropic.py      # Anthropic 适配器
+│   └── json_client.py    # 结构化 JSON 补全（provider 无关）
 ├── memory/               # 记忆管理层
+│   ├── base.py           # MemoryBase 抽象接口
+│   └── buffer.py         # 滑动窗口缓冲记忆（默认实现）
 ├── skills/               # 自适应技能系统
-├── tools/                # 工具层（web_search, web_fetch）
-└── streaming/            # 流式事件定义
+│   ├── base.py           # Skill 数据模型 + SkillManager 编排
+│   ├── store.py          # JSON 文件持久化 + 模板管理
+│   ├── retriever.py      # 标签 + 关键词检索器
+│   ├── reflector.py      # LLM 反思引擎
+│   └── evolution.py      # 生命周期进化引擎
+├── streaming/            # 流式事件系统
+│   └── handler.py        # StreamEvent + StreamHandler
+├── tools/                # 工具层
+│   ├── web_search.py     # DuckDuckGo 网页搜索
+│   ├── web_fetch.py      # HTTP 网页内容抓取
+│   ├── time.py           # 当前时间查询
+│   └── cron.py           # 后台定时任务（间隔 / crontab）
+└── prompts/              # Jinja2 提示词模板
+    ├── system_prompt.j2
+    ├── reflection_prompt.j2
+    ├── skills_section.j2
+    ├── skill_card.j2
+    └── merge_skills_prompt.j2
 ```
 
 ---
 
 ## 后续演进方向
 
-1. **多 Agent 协作** — 基于 LangGraph 的 multi-agent 模式
-2. **持久化记忆** — 接入 Redis / PostgreSQL 存储对话历史
-3. **RAG 增强** — Memory 层集成向量检索
-4. **Web API** — FastAPI + SSE/WebSocket 暴露流式接口
-5. **可观测性** — 集成 LangSmith / OpenTelemetry 追踪
-6. **技能向量化检索** — SkillRetriever 升级为 embedding 语义匹配
-7. **跨用户技能共享** — 多用户场景下的技能市场/共享池
-8. **技能组合编排** — 多技能协同处理复杂场景
-9. **TUI 增强** — 多窗格布局、图片预览、文件拖放
+1. **持久化记忆** — 接入 Redis / PostgreSQL 存储对话历史
+2. **RAG 增强** — Memory 层集成向量检索
+3. **Web API** — FastAPI + SSE/WebSocket 暴露流式接口
+4. **可观测性** — 集成 LangSmith / OpenTelemetry 追踪
+5. **技能向量化检索** — SkillRetriever 升级为 embedding 语义匹配
+6. **跨用户技能共享** — 多用户场景下的技能市场/共享池
+7. **TUI 增强** — 多窗格布局、图片预览、文件拖放

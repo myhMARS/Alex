@@ -10,7 +10,7 @@ Agent 具备成长性：从历史对话中识别模式、提炼策略性技能�
 
 | 字段 | 说明 |
 |------|------|
-| `id` | 唯一标识 |
+| `id` | 唯一标识（12 位 hex） |
 | `name` | 技能名称 |
 | `pattern` | 触发场景描述（什么情况下使用） |
 | `instruction` | 响应策略（具体怎么做） |
@@ -27,34 +27,35 @@ Agent 具备成长性：从历史对话中识别模式、提炼策略性技能�
 | 组件 | 职责 |
 |------|------|
 | **SkillManager** | 对外统一接口，协调下面各组件 |
-| **Reflector** | 反思引擎 — 调用 LLM 分析对话，提炼新技能或给出更新建议 |
-| **SkillRetriever** | 检索器 — 根据当前 query 匹配最相关的活跃技能 |
+| **Reflector** | 反思引擎 — 调用 LLM 分析对话 + episodes，提炼新技能或给出更新建议 |
+| **SkillRetriever** | 检索器 — 标签匹配 + 关键词 + 置信度加权，匹配最相关技能 |
 | **EvolutionEngine** | 进化引擎 — 评估技能效果，执行晋升/废弃/合并 |
-| **SkillStore** | 持久化 — 技能的存取（JSON/SQLite，可替换） |
+| **SkillStore** | 持久化 — JSON 文件存取 + 自动管理 `~/.alex/skills/prompts/` 下的 Jinja2 模板 |
 
 ## 核心业务流程
 
-### 对话时：技能检索 & 注入
+### 对话时：技能目录注入 + 按需加载
 
 ```
 用户输入
   │
   ▼
-SkillRetriever.retrieve(query, top_k=3)
-  │  基于标签匹配 + pattern 关键词 + 置信度加权
-  │  (未来可升级为 embedding 语义检索)
+SkillManager.inject_skills_prompt(query)
+  │  渲染 skills_section.j2 模板
+  │  列出所有活跃技能的名称 + pattern（轻量目录）
   │
   ▼
-将匹配到的技能格式化为提示文本
+追加到 system prompt（仅在技能列表变化时重建 graph）
   │
   ▼
-动态追加到 system prompt 末尾
+Agent 执行对话流程
+  │  当 Agent 判断某技能匹配时：
+  │  调用 load_skill(skill_name) 工具
+  │  → 加载该技能的完整 instruction
+  │  → TUI 显示 skill_load 事件（🎯 Skills 标记）
   │
   ▼
-正常执行 Agent 对话流程
-  │
-  ▼
-记录本次使用了哪些 skill_id（用于后续反馈追踪）
+记录本轮的 loaded_skill_ids（用于反馈追踪）
 ```
 
 ### 对话后：反思 & 提炼
@@ -63,42 +64,55 @@ SkillRetriever.retrieve(query, top_k=3)
 判断是否触发反思（见触发策略）
   │
   ▼ (是)
-从 Memory 获取近期对话（最近 N 条）
+从 Memory 获取近期对话（最近 20 条）+ 积累的 episodes
   │
   ▼
-Reflector 调用 LLM 分析对话
-  │  Prompt 引导 LLM 判断：
-  │  - 是否存在可复用的响应模式？
-  │  - 该模式的触发场景是什么？
-  │  - 具体的响应策略是什么？
-  │  - 是否与已有技能重复？
+Reflector 调用 LLM（JSON mode）分析
+  │  输入：对话消息 + 已有技能列表 + problem-solving episodes
+  │  输出：ReflectionResult
   │
   ▼
-输出 ReflectionResult:
+ReflectionResult:
   ├─ new_skills: 新提炼的技能 (status=CANDIDATE)
   ├─ updated_skills: 需要更新的已有技能
-  └─ deprecated_skills: 建议废弃的技能
+  └─ deprecated_ids: 建议废弃的技能
   │
   ▼
-SkillStore 持久化变更
+SkillStore 持久化变更 + 更新 Jinja2 模板
   │
   ▼
 EvolutionEngine.evolve() — 执行生命周期评估
 ```
 
+### 多轮 Episode 采集
+
+Agent 每轮对话记录一个 episode：
+```python
+{
+    "query": "用户问题（前 200 字符）",
+    "skills_loaded": ["已加载技能名"],
+    "tools_used": ["web_search", "web_fetch"],
+    "outcome": "回复摘要（前 300 字符）"
+}
+```
+Episodes 在反思时传递给 Reflector，帮助 LLM 理解完整的问题解决过程。
+
 ### 用户反馈：效果追踪
 
 ```
-用户给出正/负反馈（显式或隐式）
+用户按 Ctrl+G / Ctrl+B
+  │
+  ▼
+Agent.provide_feedback(positive)
   │
   ▼
 SkillManager.record_usage(skill_id, success=True/False)
   │
   ▼
-更新 skill 的 use_count / success_count / failure_count
+更新 use_count / success_count / failure_count → 置信度自动重算
   │
-  ▼
-置信度自动重算（贝叶斯平滑）
+  ▼ (负反馈)
+异步触发 _do_reflect()
 ```
 
 ## 技能生命周期
@@ -119,18 +133,36 @@ SkillManager.record_usage(skill_id, success=True/False)
 | ACTIVE → DEPRECATED | `use_count >= 5` 且 `success_rate < 0.3`（持续表现差） |
 | ACTIVE → ACTIVE (更新) | 反思发现需要修正 instruction，version +1 |
 
+## 技能上限
+
+活跃技能数量默认限制 50 个。超出时按置信度升序淘汰最低分技能 → DEPRECATED。
+
+## LLM 驱动的技能合并（`/merge-skills`）
+
+- 将所有活跃技能提交给 LLM，识别语义重复或高度相似的技能
+- LLM 返回 `merged_groups`（保留 + 合并列表）和 `deprecate_ids`
+- 合并时更新 keeper 的 name/pattern/instruction/tags，删除冗余技能
+- 用于定期清理技能库，防止膨胀
+
+## 技能模板系统
+
+- 每个技能自动生成 `~/.alex/skills/prompts/{skill_id}.j2` Jinja2 模板
+- `load_skill` 工具返回渲染后的完整技能卡
+- 新增/更新技能时自动创建/更新模板，废弃/删除时自动清理
+- 用户可手动编辑模板文件进行微调
+
 ## 反思触发策略
 
 | 触发条件 | 说明 |
 |---------|------|
 | 定期反思 | 每 N 轮对话自动触发（默认 N=5） |
-| 负反馈触发 | 用户明确表示不满意时立即反思 |
-| 新领域检测 | 当前 query 无任何技能匹配时，标记为新领域，对话结束后反思 |
+| 负反馈触发 | 用户 Ctrl+B 差评时异步触发 |
+| 新领域检测 | 当前轮无任何技能匹配时触发 |
 | 手动触发 | 用户输入 `/reflect` 命令 |
 
 ## 安全约束
 
-- **技能上限**：活跃技能数量限制（默认 50），超出时按置信度淘汰最弱的
+- **技能上限**：活跃技能数量限制（默认 50），超出时按置信度淘汰
 - **幻觉防护**：技能 instruction 只存策略指导，不存具体事实
 - **版本控制**：每次更新递增 version，可回溯
 - **人工审核（可选）**：CANDIDATE → ACTIVE 可配置为需要用户确认
@@ -140,9 +172,9 @@ SkillManager.record_usage(skill_id, success=True/False)
 ```
 alex/skills/
 ├── __init__.py
-├── base.py           # Skill 数据模型 & SkillManager 接口
-├── store.py          # 技能持久化存储
-├── reflector.py      # 反思引擎
-├── retriever.py      # 技能检索匹配
-└── evolution.py      # 进化策略 & 生命周期
+├── base.py           # Skill 数据模型 & SkillManager 编排 + merge_skills
+├── store.py          # JSON 持久化 + Jinja2 模板管理
+├── retriever.py      # 标签 + 关键词检索匹配
+├── reflector.py      # LLM JSON-mode 反思引擎（支持 episodes）
+└── evolution.py      # 进化策略 & 生命周期 + 上限裁剪
 ```

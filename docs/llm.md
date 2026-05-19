@@ -23,14 +23,23 @@
 
 新增 provider = 新增一个文件 + 一个装饰器，零侵入。
 
+## json_client — 结构化 JSON 补全
+
+`json_client.py` 提供 `create_json_completion()` 函数，用于反射和技能合并等需要可靠 JSON 输出的场景：
+
+- 使用 OpenAI SDK 的 `response_format: {"type": "json_object"}` 确保 JSON 输出
+- DeepSeek provider 自动通过 `extra_body` 禁用 thinking mode（避免混入 reasoning_content）
+- 返回纯 JSON 字符串，由调用方配合 `json_repair` 解析
+
 ## 目录结构
 
 ```
 alex/llm/
-├── __init__.py       # LLMFactory 导出
-├── factory.py        # 工厂模式 + 注册器
+├── __init__.py       # LLMFactory 导出 + adapter 导入
+├── factory.py        # 工厂模式 + 装饰器注册
 ├── base.py           # LLMConfig 数据类
-├── deepseek.py       # DeepSeek 适配器
+├── json_client.py    # 结构化 JSON 补全（provider 无关）
+├── deepseek.py       # DeepSeek 适配器（reasoning_content 回传）
 ├── openai.py         # OpenAI 适配器
 └── anthropic.py      # Anthropic 适配器
 ```
