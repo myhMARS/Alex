@@ -19,33 +19,6 @@ class CronInput(BaseModel):
 
 
 def create_cron_tool(agent) -> StructuredTool:
-    async def _run_action(action: str, params: dict) -> str:
-        action = (action or "").strip()
-        params = params or {}
-
-        if action == "web_search":
-            from alex.tools.web_search import _web_search
-            return await _web_search(
-                query=str(params.get("query", "")),
-                max_results=int(params.get("max_results", 5)),
-            )
-
-        if action == "web_fetch":
-            from alex.tools.web_fetch import _web_fetch
-            return await _web_fetch(
-                url=str(params.get("url", "")),
-                max_length=int(params.get("max_length", 8000)),
-            )
-
-        if action == "time":
-            from alex.tools.time import _get_current_time
-            return await _get_current_time(timezone=str(params.get("timezone", "local")))
-
-        if action == "notify":
-            return str(params.get("message", ""))
-
-        raise ValueError(f"Unknown action: {action}")
-
     async def _cron(
         name: str = "job",
         interval_seconds: int | None = None,
@@ -74,6 +47,7 @@ def create_cron_tool(agent) -> StructuredTool:
             return "Error: provide interval_seconds or cron"
 
         job_id = await agent._cron.schedule(
+            session_id=agent.session_id,
             name=name,
             cron=cron_str,
             interval_seconds=iv,
@@ -82,7 +56,7 @@ def create_cron_tool(agent) -> StructuredTool:
             run_now=bool(run_now),
             action=action,
             params=params,
-            runner=_run_action,
+            runner=agent._run_cron_action,
         )
         return f"Scheduled: {job_id}"
 

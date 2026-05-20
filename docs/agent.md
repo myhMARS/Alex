@@ -8,11 +8,13 @@ Agent 是整个系统的编排中心，协调 LLM、Memory、Tools、Skills、Cr
 
 | 方法 | 说明 |
 |------|------|
-| `chat(message) → ChatResponse` | 非流式对话，返回 str 子类（附带 `.thinking` 属性） |
 | `chat_stream(message) → AsyncIterator[StreamEvent]` | 流式对话，yield thinking/token/tool_start/tool_end/skill_load/done 事件 |
 | `register_tool(tool)` / `unregister_tool(name)` | 动态工具管理，重建 LangGraph |
 | `clear_history()` | 清空对话记忆 |
+| `restore_history(turns)` | 从 ChatTurn 列表恢复对话历史（含 tool call 链） |
+| `history` (property) | 同步获取当前对话历史 |
 | `provide_feedback(positive: bool)` | 用户反馈（驱动技能进化 & 负反馈触发反思） |
+| `is_reflecting` (property) | 是否正在执行反思 |
 | `bind_event_loop(loop)` | 绑定事件循环（TUI 模式必需，用于 Cron 线程安全通知） |
 | `start_services()` | 启动后台服务（APScheduler） |
 | `shutdown()` | 关闭后台服务，释放资源 |
@@ -20,16 +22,11 @@ Agent 是整个系统的编排中心，协调 LLM、Memory、Tools、Skills、Cr
 | `cancel_cron_job(job_id) → bool` | 取消指定定时任务 |
 | `pop_notifications() → list[dict]` | 拉取并清空待处理通知队列 |
 | `push_notification(note)` | 推送系统通知到 UI 层 |
-
-## ChatResponse
-
-`str` 子类，保持向后兼容的同时携带 thinking 内容：
-
-```python
-response = await agent.chat("hello")
-print(response)           # 正常字符串行为
-print(response.thinking)  # 访问 reasoning_content
-```
+| `reflect() → dict` | 强制触发技能反思 |
+| `list_skills() → list[dict]` | 列出所有技能及元数据 |
+| `delete_skill(target) → str | None` | 按名称或 ID 前缀删除技能 |
+| `deprecate_skill(target) → str | None` | 按名称或 ID 前缀废弃技能 |
+| `merge_skills() → dict` | LLM 驱动的技能去重合并 |
 
 ## 流式事件类型
 
@@ -48,15 +45,22 @@ Agent 自动注册 `load_skill` 工具，允许 Agent 按需加载技能的完�
 
 ## 通知系统
 
-Agent 维护 `_pending_notifications` 队列，TUI 通过 `pop_notifications()` 轮询消费。通知类型：
+Agent 维护 `_pending_notifications` 队列，TUI 通过 `pop_notifications()` 轮询消费。内部使用 `alex/events.py` 中类型化的 dataclass 事件（`SkillReflectEvent`、`CronJobEvent` 等）替代裸 dict 分发。通知类型：
 
 | 类型 | 说明 |
 |------|------|
 | `skill_reflect` | 反思完成（新增/更新/废弃技能数） |
 | `skill_reflect_error` | 反思失败 |
+| `cron_debug` | Cron 调试消息 |
 | `cron_job_update` | 定时任务状态变更 |
 | `cron_job_done` | 定时任务执行完成 |
-| `cron_stream_*` | Cron 订阅流事件（stream_start/token/thinking/tool/done/error） |
+| `cron_stream_start` | Cron 订阅流开始（创建新 bubble） |
+| `cron_stream_token` | Cron 订阅流 token 增量 |
+| `cron_stream_thinking` | Cron 订阅流 thinking 增量 |
+| `cron_stream_tool_start` | Cron 订阅流工具调用开始 |
+| `cron_stream_tool_end` | Cron 订阅流工具调用完成 |
+| `cron_stream_done` | Cron 订阅流完成（bubble finalize） |
+| `cron_stream_error` | Cron 订阅流出错 |
 
 ## Cron 后台任务
 
@@ -64,6 +68,26 @@ Agent 维护 `_pending_notifications` 队列，TUI 通过 `pop_notifications()` 
 - 支持 `interval_seconds` 和 5-6 字段 **crontab** 两种触发方式
 - `subscribe=true` 时，每次执行结果以流式对话形式注入 TUI
 - Agent 重新构建 graph 注入 cron 结果作为 ToolMessage，生成自然语言回复
+- **`_turn_lock`**（`asyncio.Lock`）序列化整个对话轮次（read → stream → write），cron 流回复自动等待用户对话结束后执行
+
+## 并发模型
+
+`_turn_lock` 确保同一时间只有一个对话轮次在操作 Memory：
+
+```
+User chat (holds lock)        Cron reply (waits)
+     │                            │
+     ├─ read memory               │  ← await lock
+     ├─ stream LLM                │
+     ├─ write batch               │
+     └─ release lock ─────────────┤
+                                  ├─ read memory (latest state)
+                                  ├─ stream LLM
+                                  ├─ write batch
+                                  └─ release lock
+```
+
+BufferMemory 内部的 `_write_lock` 作为第二层防护，确保批量写入原子化。
 
 ## 完整对话流程
 

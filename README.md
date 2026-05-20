@@ -65,14 +65,8 @@ Edit `.env` — at minimum set your API key:
 ## Usage
 
 ```bash
-# Interactive TUI (default)
+# Interactive TUI
 python main.py
-
-# One-shot query
-python main.py "What's the weather in Tokyo today?"
-
-# Streaming output
-python main.py --stream "Explain the reactor pattern in async Python"
 ```
 
 ### TUI Shortcuts
@@ -133,26 +127,25 @@ Rate responses with <kbd>Ctrl+G</kbd> / <kbd>Ctrl+B</kbd> to steer which skills 
 ## Architecture
 
 ```
-main.py ──────────────────────────────────────────────────────
-  │                    │
-  ▼                    ▼
-TUI (Textual)     CLI (Rich)
-  │                    │
-  └────────┬───────────┘
-           ▼
-   ┌──────────────┐    ┌──────────────┐
-   │    Agent     │───▶│  LLM Factory │──▶ DeepSeek / OpenAI / Anthropic
-   │  (LangGraph) │    └──────────────┘
-   └──┬───┬───┬───┘
-      │   │   │
-      ▼   ▼   ▼
-   Tools  Memory  Skills
-   ┌──┐  ┌─────┐ ┌────────────┐
-   │WS│  │Buffer│ │Retrieve    │
-   │WF│  │Memory│ │Reflect     │
-   │TI│  └─────┘ │Evolve      │
-   │CR│          │SkillStore  │
-   └──┘          └────────────┘
+main.py ──────────────────────────────────
+  │
+  ▼
+TUI (Textual)
+  │
+  ▼
+┌──────────────┐    ┌──────────────┐
+│    Agent     │───▶│  LLM Factory │──▶ DeepSeek / OpenAI / Anthropic
+│  (LangGraph) │    └──────────────┘
+└──┬───┬───┬───┘
+   │   │   │
+   ▼   ▼   ▼
+Tools  Memory  Skills
+┌──┐  ┌─────┐ ┌────────────┐
+│WS│  │Buffer│ │Retrieve    │
+│WF│  │Memory│ │Reflect     │
+│TI│  └─────┘ │Evolve      │
+│CR│          │SkillStore  │
+└──┘          └────────────┘
 ```
 
 ## Project Structure
@@ -162,13 +155,12 @@ alex/
 ├── agent.py           Agent core — chat, streaming, notifications, reflection
 ├── config.py          .env → LLMConfig
 ├── cron.py            APScheduler-backed background job manager
-├── callbacks.py       LangChain callback → Rich display event bridge
-├── display.py         Rich terminal renderer, ThinkingDisplay, event queue
-├── tui.py             Textual TUI application (~1200 lines)
+├── events.py          Typed event dataclasses (SkillReflect, CronJob)
+├── tui.py             Textual TUI application
 ├── llm/               Multi-provider LLM factory (DeepSeek, OpenAI, Anthropic)
 ├── memory/            Pluggable memory (BufferMemory default, RAG-ready interface)
 ├── skills/            Adaptive skill lifecycle (retrieve, reflect, evolve, merge)
-├── streaming/         StreamEvent types + StreamHandler
+├── streaming/         StreamEvent + StreamHandler
 ├── tools/             web_search, web_fetch, time, cron
 └── prompts/           Jinja2 templates (system, reflection, skills, merge)
 ```
@@ -185,6 +177,7 @@ Full module docs in [`docs/`](docs/):
 | [llm.md](docs/llm.md) | Factory pattern, adapter registration, JSON mode client |
 | [memory.md](docs/memory.md) | Abstract memory interface, BufferMemory, extension points |
 | [streaming.md](docs/streaming.md) | Stream event types and handler |
+| [events.md](docs/events.md) | Typed event system (SkillReflect, CronJob, CronDebug) |
 | [skills.md](docs/skills.md) | Skill lifecycle, reflection, retrieval, merging, templates |
 | [config.md](docs/config.md) | Environment variable configuration |
 

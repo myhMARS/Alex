@@ -10,6 +10,7 @@ Alex 是一个支持工具调用、流式输出的对话式 AI Agent 智能体�
 - **模型适配**：工厂模式统一适配多平台 LLM（DeepSeek thinking mode 支持）
 - **自适应成长**：从历史对话中自主提炼技能，持续进化
 - **TUI 交互**：基于 Textual 的终端界面，支持滚动、折叠、会话持久化
+- **Cron 后台任务**：APScheduler 驱动的定时任务调度，支持 subscribe 流式推送
 
 ---
 
@@ -18,28 +19,27 @@ Alex 是一个支持工具调用、流式输出的对话式 AI Agent 智能体�
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                           main.py (入口)                             │
-│          TUI (Textual) / Single Query / Streaming CLI                │
+│                          TUI (Textual)                               │
 └──────────────────────────────┬──────────────────────────────────────┘
                                │
-                    ┌──────────┴──────────┐
-                    │                     │
-                    ▼                     ▼
-          ┌──────────────┐      ┌──────────────────┐
-          │  alex/tui.py │      │  Simple CLI      │
-          │  (Textual    │      │  (Rich Console)  │
-          │   App)       │      │                  │
-          └──────┬───────┘      └────────┬─────────┘
-                 │                       │
-                 └───────────┬───────────┘
-                             │
-                             ▼
+                               ▼
+                     ┌──────────────────┐
+                     │   alex/tui.py    │
+                     │  (Textual App)   │
+                     │  ChatHistory     │
+                     │  AlexBubble      │
+                     │  ToolBubble      │
+                     └────────┬─────────┘
+                              │
+                              ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                         Agent (核心编排层)                            │
 │                                                                     │
 │  ┌────────────┐ ┌──────────────┐ ┌────────────┐ ┌───────────────┐  │
-│  │ToolRegistry│ │StreamHandler │ │SkillManager│ │ AgentGraph    │  │
+│  │ Tools dict │ │ SkillManager │ │ CronManager│ │ AgentGraph    │  │
 │  ├────────────┤ ├──────────────┤ ├────────────┤ │ (LangGraph)   │  │
-│  │ CronManager│ │Notifications │ │ Prompts    │ │               │  │
+│  │ Events Q   │ │              │ │Events: Skill│ │               │  │
+│  │ (typed)    │ │              │ │/Cron/Debug  │ │               │  │
 │  └────────────┘ └──────────────┘ └────────────┘ └───────────────┘  │
 └───┬──────────────────┬──────────────────┬──────────────────┬────────┘
     │                  │                  │                  │
@@ -62,7 +62,9 @@ Alex 是一个支持工具调用、流式输出的对话式 AI Agent 智能体�
 | 记忆管理层 | [memory.md](./memory.md) | 抽象记忆接口，支持缓冲记忆及未来 RAG 扩展 |
 | 流式输出 | [streaming.md](./streaming.md) | 基于 LangGraph astream_events 的流式事件分发 |
 | 自适应技能系统 | [skills.md](./skills.md) | 技能提炼、检索、进化的完整生命周期管理 |
+| 类型化事件系统 | [events.md](./events.md) | 类型化事件数据类，替代裸 dict 通知分发 |
 | 配置管理 | [config.md](./config.md) | 多 provider 配置加载，支持文件和环境变量 |
+| 模块化重构方案 | [refactor-modular-architecture.md](./refactor-modular-architecture.md) | 面向 `tui/agent/tools/store/skill/memory` 的接口化拆分与事件总线重构方案 |
 
 ---
 
@@ -71,11 +73,10 @@ Alex 是一个支持工具调用、流式输出的对话式 AI Agent 智能体�
 ```
 alex/
 ├── __init__.py
-├── agent.py              # Agent 核心编排 + ChatResponse + 通知系统
+├── agent.py              # Agent 核心编排 + 通知系统
 ├── config.py             # 配置加载（.env → LLMConfig）
 ├── cron.py               # CronManager — APScheduler 后台任务调度
-├── callbacks.py          # LangChain 回调 → DisplayEvent 桥接
-├── display.py            # Rich 渲染工具 + ThinkingDisplay + EventQueue
+├── events.py             # 类型化事件数据类（Skill/Cron 通知）
 ├── tui.py                # Textual TUI 应用（交互模式）
 ├── llm/                  # LLM 工厂层
 │   ├── factory.py        # 工厂模式 + 装饰器注册
@@ -94,7 +95,7 @@ alex/
 │   ├── reflector.py      # LLM 反思引擎
 │   └── evolution.py      # 生命周期进化引擎
 ├── streaming/            # 流式事件系统
-│   └── handler.py        # StreamEvent + StreamHandler
+│   └── handler.py        # StreamEvent + StreamHandler（Listener 分发）
 ├── tools/                # 工具层
 │   ├── web_search.py     # DuckDuckGo 网页搜索
 │   ├── web_fetch.py      # HTTP 网页内容抓取

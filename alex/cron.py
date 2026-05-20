@@ -6,6 +6,9 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
+
+from alex.events import CronDebugEvent, CronJobEvent
 
 
 class CronParseError(ValueError):
@@ -72,6 +75,7 @@ def _next_cron_time(after_ts: float, cron_expr: str) -> float:
 @dataclass
 class CronJob:
     id: str
+    session_id: str
     name: str
     cron: str
     interval_seconds: int | None
@@ -91,6 +95,7 @@ class CronJob:
     def to_dict(self) -> dict:
         return {
             "id": self.id,
+            "session_id": self.session_id,
             "name": self.name,
             "cron": self.cron,
             "interval_seconds": self.interval_seconds,
@@ -107,7 +112,6 @@ class CronJob:
             "last_result": self.last_result,
             "next_run_at": self.next_run_at,
         }
-
 
 class CronManager:
     def __init__(self, notify: callable) -> None:
@@ -136,23 +140,20 @@ class CronManager:
             self._scheduler = None
             self._aps_job_ids.clear()
 
-    def _emit(self, note: dict) -> None:
+    def _emit(self, event: Any) -> None:
         loop = self._loop
         if loop is None:
-            self._notify_cb(note)
+            self._notify_cb(event)
             return
         try:
-            loop.call_soon_threadsafe(self._notify_cb, note)
+            loop.call_soon_threadsafe(self._notify_cb, event)
         except Exception:
-            self._notify_cb(note)
+            self._notify_cb(event)
 
     def _debug(self, message: str, *, job: CronJob | None = None) -> None:
         if os.environ.get("ALEX_CRON_DEBUG", "").strip().lower() not in ("1", "true", "yes", "on"):
             return
-        payload: dict = {"type": "cron_debug", "message": message}
-        if job is not None:
-            payload["job"] = job.to_dict()
-        self._emit(payload)
+        self._emit(CronDebugEvent(message=message))
 
     async def _ensure_scheduler(self) -> None:
         loop = self._loop
@@ -254,6 +255,7 @@ class CronManager:
     async def schedule(
         self,
         *,
+        session_id: str,
         name: str,
         cron: str,
         interval_seconds: int | None = None,
@@ -274,6 +276,7 @@ class CronManager:
                 fut = asyncio.run_coroutine_threadsafe(
                     self._schedule_inner(
                         name=name,
+                        session_id=session_id,
                         cron=cron,
                         interval_seconds=interval_seconds,
                         repeat=repeat,
@@ -288,6 +291,7 @@ class CronManager:
                 return await asyncio.wrap_future(fut)
         return await self._schedule_inner(
             name=name,
+            session_id=session_id,
             cron=cron,
             interval_seconds=interval_seconds,
             repeat=repeat,
@@ -301,6 +305,7 @@ class CronManager:
     async def _schedule_inner(
         self,
         *,
+        session_id: str,
         name: str,
         cron: str,
         interval_seconds: int | None,
@@ -322,6 +327,7 @@ class CronManager:
 
         job = CronJob(
             id=job_id,
+            session_id=session_id,
             name=name,
             cron=cron_str,
             interval_seconds=iv,
@@ -335,10 +341,17 @@ class CronManager:
         self._runners[job_id] = runner
         self._schedule_aps(job, runner)
         self._aps_job_ids[job_id] = job_id
-        self._emit({
-            "type": "cron_job_update",
-            "job": job.to_dict(),
-        })
+        self._emit(CronJobEvent(
+            job_id=job.id,
+            session_id=job.session_id,
+            name=job.name,
+            status=job.status,
+            action=job.action,
+            params=dict(job.params),
+            runs_done=job.runs_done,
+            started_at=job.last_started_at,
+            finished_at=job.last_finished_at,
+        ))
         return job_id
 
     async def cancel(self, job_id: str) -> bool:
@@ -361,10 +374,17 @@ class CronManager:
             if job:
                 job.status = "CANCELLED"
                 job.next_run_at = None
-                self._emit({
-                    "type": "cron_job_update",
-                    "job": job.to_dict(),
-                })
+                self._emit(CronJobEvent(
+                    job_id=job.id,
+                    session_id=job.session_id,
+                    name=job.name,
+                    status=job.status,
+                    action=job.action,
+                    params=dict(job.params),
+                    runs_done=job.runs_done,
+                    started_at=job.last_started_at,
+                    finished_at=job.last_finished_at,
+                ))
             return job is not None
         if aps_id and self._scheduler is not None:
             try:
@@ -374,10 +394,17 @@ class CronManager:
         if job:
             job.status = "CANCELLED"
             job.next_run_at = None
-            self._emit({
-                "type": "cron_job_update",
-                "job": job.to_dict(),
-            })
+            self._emit(CronJobEvent(
+                job_id=job.id,
+                session_id=job.session_id,
+                name=job.name,
+                status=job.status,
+                action=job.action,
+                params=dict(job.params),
+                runs_done=job.runs_done,
+                started_at=job.last_started_at,
+                finished_at=job.last_finished_at,
+            ))
         return aps_id is not None or job is not None
 
     def _schedule_aps(self, job: CronJob, runner: callable) -> str:
@@ -397,7 +424,17 @@ class CronManager:
 
                     job.status = "RUNNING"
                     job.last_started_at = time.time()
-                    self._emit({"type": "cron_job_update", "job": job.to_dict()})
+                    self._emit(CronJobEvent(
+                        job_id=job.id,
+                        session_id=job.session_id,
+                        name=job.name,
+                        status=job.status,
+                        action=job.action,
+                        params=dict(job.params),
+                        runs_done=job.runs_done,
+                        started_at=job.last_started_at,
+                        finished_at=job.last_finished_at,
+                    ))
 
                     try:
                         result = await runner(job.action, job.params)
@@ -421,15 +458,21 @@ class CronManager:
                         job.status = "SCHEDULED"
                         job.next_run_at = None
 
-                    self._emit({
-                        "type": "cron_job_done",
-                        "job": job.to_dict(),
-                        "run_status": run_status,
-                        "result": job.last_result,
-                        "error": job.last_error,
-                        "tool_name": "cron",
-                        "tool_call_id": f"cron:{job.id}:{run_seq}",
-                    })
+                    self._emit(CronJobEvent(
+                        job_id=job.id,
+                        session_id=job.session_id,
+                        name=job.name,
+                        status=run_status,
+                        subscribe=job.subscribe,
+                        action=job.action,
+                        params=dict(job.params),
+                        runs_done=job.runs_done,
+                        started_at=job.last_started_at,
+                        finished_at=job.last_finished_at,
+                        result=job.last_result or "",
+                        error=job.last_error or "",
+                        tool_call_id=f"cron:{job.id}:{run_seq}",
+                    ))
 
                     if done:
                         aps_id = self._aps_job_ids.pop(job.id, None) or job.id
@@ -452,15 +495,21 @@ class CronManager:
                 else:
                     job.status = "SCHEDULED"
                     job.next_run_at = None
-                self._emit({
-                    "type": "cron_job_done",
-                    "job": job.to_dict(),
-                    "run_status": run_status,
-                    "result": job.last_result,
-                    "error": job.last_error,
-                    "tool_name": "cron",
-                    "tool_call_id": f"cron:{job.id}:{run_seq}",
-                })
+                self._emit(CronJobEvent(
+                    job_id=job.id,
+                    session_id=job.session_id,
+                    name=job.name,
+                    status=run_status,
+                    subscribe=job.subscribe,
+                    action=job.action,
+                    params=dict(job.params),
+                    runs_done=job.runs_done,
+                    started_at=job.last_started_at,
+                    finished_at=job.last_finished_at,
+                    result=job.last_result or "",
+                    error=job.last_error or "",
+                    tool_call_id=f"cron:{job.id}:{run_seq}",
+                ))
                 if done:
                     aps_id = self._aps_job_ids.pop(job.id, None) or job.id
                     self._runners.pop(job.id, None)

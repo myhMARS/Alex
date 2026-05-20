@@ -123,6 +123,7 @@ class SkillManager:
         for skill in result.new_skills:
             self.store.add(skill)
 
+        updated_names: list[str] = []
         for update in result.updated_skills:
             skill_id = update.get("id", "")
             existing = self.store.get(skill_id)
@@ -134,6 +135,7 @@ class SkillManager:
                         setattr(existing, k, v)
                 existing.version += 1
                 self.store.update(existing)
+                updated_names.append(existing.name)
 
         for skill_id in result.deprecated_ids:
             self.store.deprecate(skill_id)
@@ -148,6 +150,7 @@ class SkillManager:
             "updated": len(result.updated_skills),
             "deprecated": len(result.deprecated_ids),
             "new_skill_names": [s.name for s in result.new_skills],
+            "updated_skill_names": updated_names,
         }
 
     # ── feedback ─────────────────────────────────────────────────────────

@@ -2,7 +2,7 @@
 
 ## 设计思路
 
-基于 LangGraph 的 `astream_events` API，将流式事件抽象为统一的 `StreamEvent`，通过 `StreamHandler` 分发给监听器。Agent 的 `chat_stream()` 方法直接 yield 这些事件，TUI 层消费并实时渲染。
+基于 LangGraph 的 `astream_events` API，将流式事件抽象为统一的 `StreamEvent`。Agent 的 `chat_stream()` 方法直接 yield `StreamEvent`，TUI 层消费并实时渲染。`StreamHandler` 提供可选的 Listener 分发机制供外部扩展使用。
 
 ## 事件类型
 
@@ -19,9 +19,9 @@
 ## 业务逻辑
 
 1. `chat_stream()` 内部调用 `graph.astream_events()`，逐事件解析
-2. DeepSeek 的 `reasoning_content` 通过 `additional_kwargs` 提取，作为 `thinking` 事件 yield
-3. `StreamHandler` 支持注册多个 listener（TUI 更新、日志记录等）
-4. 反思在流结束后异步执行（`asyncio.ensure_future`），不阻塞 `done` 事件
+2. DeepSeek 的 `reasoning_content` 通过 `chunk.additional_kwargs` 提取，作为 `thinking` 事件 yield
+3. 反思在流结束后通过 `_maybe_reflect()` 同步执行，不阻塞 `done` 事件
+4. `StreamHandler.wrap()` 可用于包装流，将事件自动分发给注册的 listener
 
 ## 目录结构
 

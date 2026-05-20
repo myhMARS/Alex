@@ -123,16 +123,9 @@
 }
 ```
 
-## 非 TUI 模式
-
-`main.py` 也支持非 TUI 的简单 CLI 模式：
-
-- `python main.py "query"` — 单次查询，Rich 输出（含 thinking panel）
-- `python main.py --stream "query"` — 流式输出，Rich Live
-
-这些模式使用 `alex/display.py` 中的 Rich Console 工具函数和 `ThinkingDisplay`。
-
 ## 依赖
 
 - `textual>=8.0.0` — TUI 框架（alternate screen、组件化、CSS 样式）
 - `rich>=13.7.0` — 终端渲染（Markdown、Panel，Textual 底层依赖）
+- `langchain` + `langgraph` — Agent 框架和图执行引擎
+- `APScheduler` — 后台定时任务调度

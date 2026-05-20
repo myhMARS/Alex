@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import json
+import threading
 import time
 
 from datetime import datetime
-from pathlib import Path
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
+
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 from textual import on, work
 from textual.app import App, ComposeResult
@@ -18,45 +19,150 @@ from textual.widgets import Header, Input, Static, OptionList
 from textual.widgets.option_list import Option
 from textual.reactive import reactive
 
+from alex.events import CronDebugEvent, CronJobEvent, SkillReflectErrorEvent, SkillReflectEvent
+from alex.streaming.handler import StreamEvent
+import alex.session as session_store
+
 
 # ── Data model ───────────────────────────────────────────────────────────────
 
-SESSIONS_DIR = Path.home() / ".alex" / "sessions"
-
-
 @dataclass
 class ChatTurn:
-    """One turn of conversation."""
+    """One turn of conversation — UI view-model derived from message sequences."""
     user_input: str
     response: str = ""
     thinking: str = ""
     tool_calls: list[dict] = field(default_factory=list)
     skills: list[dict] = field(default_factory=list)
+    kind: str = "user"  # "user" | "cron" — controls whether _render_turn shows a UserBubble
 
 
-@dataclass
-class SessionMeta:
-    """Metadata for a saved session."""
-    session_id: str
-    created_at: str  # ISO format
-    first_message: str
-    turn_count: int
+def _parse_load_skill_output(output: str) -> dict | None:
+    """Extract {name, pattern} from a load_skill tool output string.
+
+    The output format is:
+        [Skill: <name>]
+        When to apply: <pattern>
+        Execution methodology:
+        <instruction>
+    """
+    if not output.startswith("[Skill:"):
+        return None
+    lines = output.split("\n")
+    name = lines[0].removeprefix("[Skill:").removesuffix("]").strip() if lines else ""
+    pattern = ""
+    for line in lines[1:]:
+        stripped = line.strip()
+        if stripped.lower().startswith("when to apply:"):
+            pattern = stripped.split(":", 1)[1].strip()
+            break
+    return {"name": name, "pattern": pattern} if name else None
+
+
+def _messages_to_turns(messages: list[BaseMessage]) -> tuple[list[ChatTurn], list[BaseMessage]]:
+    """Convert a message sequence to UI view-models.
+
+    Uses tool_call_id → dict mapping so that multi-tool AIMessages are
+    correctly paired with their ToolMessage outputs.  A single-pointer
+    pending_tool would lose all but the last tool call per message.
+
+    Returns (turns, messages) — messages pass through unchanged so
+    Agent.restore_history() gets the exact sequence.
+    """
+    turns: list[ChatTurn] = []
+    current: ChatTurn | None = None
+    pending: dict[str, dict] = {}     # tool_call_id → tool_call dict
+    _order: list[str] = []             # insertion order for fallback
+
+    for msg in messages:
+        if isinstance(msg, HumanMessage):
+            if current is not None:
+                turns.append(current)
+            current = ChatTurn(user_input=str(msg.content), kind="user")
+            pending.clear()
+            _order.clear()
+
+        elif isinstance(msg, AIMessage) and msg.tool_calls:
+            ak = getattr(msg, "additional_kwargs", None)
+            turn_start = bool(isinstance(ak, dict) and ak.get("alex_turn_start"))
+            turn_kind = str(ak.get("alex_turn_kind", "cron")) if isinstance(ak, dict) else "cron"
+            if turn_start and current is not None:
+                turns.append(current)
+                current = None
+                pending.clear()
+                _order.clear()
+            if current is None:
+                current = ChatTurn(user_input="", kind=turn_kind)
+            for tc in msg.tool_calls:
+                tc_id = str(tc.get("id", ""))
+                tc_dict = {
+                    "name": tc.get("name", ""),
+                    "args": tc.get("args", {}),
+                    "id": tc_id,
+                    "output": "",
+                }
+                current.tool_calls.append(tc_dict)
+                if tc_id:
+                    pending[tc_id] = tc_dict
+                    _order.append(tc_id)
+
+        elif isinstance(msg, ToolMessage):
+            tc_id = str(getattr(msg, "tool_call_id", ""))
+            matched = pending.pop(tc_id, None) if tc_id else None
+            if matched is not None:
+                matched["output"] = str(msg.content)
+                if tc_id in _order:
+                    _order.remove(tc_id)
+                # Recover skill metadata from load_skill tool output
+                if matched.get("name") == "load_skill":
+                    skill_info = _parse_load_skill_output(str(msg.content))
+                    if skill_info:
+                        current.skills.append(skill_info)
+            elif _order:
+                # fallback: match oldest unmatched tool call
+                fallback_id = _order.pop(0)
+                fb = pending.pop(fallback_id, None)
+                if fb is not None:
+                    fb["output"] = str(msg.content)
+
+        elif isinstance(msg, AIMessage) and not msg.tool_calls:
+            if current is None:
+                current = ChatTurn(user_input="", kind="cron")
+            current.response = str(msg.content)
+            ak = getattr(msg, "additional_kwargs", None)
+            if ak and isinstance(ak, dict):
+                current.thinking = ak.get("reasoning_content", "") or ""
+
+    if current is not None:
+        turns.append(current)
+    return turns, messages
 
 
 class ChatHistory:
-    """Persists chat sessions to ~/.alex/sessions/."""
+    """UI-side session bookkeeping — delegates persistence to alex.session.
+
+    Maintains *both* a ChatTurn list (for rendering) and an authoritative
+    message sequence (for persistence).  New turns are added with the
+    exact message delta produced by Agent.chat_stream() / cron reply, so
+    _save() writes the precise message sequence — never a ChatTurn
+    reverse-engineering.
+
+    Thread safety: _save() uses a version counter so that only the most
+    recent write actually hits disk.
+    """
 
     def __init__(self, session_id: str | None = None) -> None:
         self._turns: list[ChatTurn] = []
-        SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+        self._messages: list[BaseMessage] = []
+        self._cron_history: list[dict] = []
 
         if session_id:
             self._session_id = session_id
         else:
-            # New session
             self._session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self._file = SESSIONS_DIR / f"{self._session_id}.json"
         self._meta: dict = {}
+        self._save_lock = threading.Lock()
+        self._save_version = 0
 
     @property
     def session_id(self) -> str:
@@ -66,62 +172,66 @@ class ChatHistory:
     def turns(self) -> list[ChatTurn]:
         return self._turns
 
-    def add(self, turn: ChatTurn) -> None:
+    @property
+    def loaded_messages(self) -> list[BaseMessage]:
+        """The authoritative message sequence — for Agent.restore_history()."""
+        return self._messages
+
+    @property
+    def cron_history(self) -> list[dict]:
+        return self._cron_history
+
+    def add(self, turn: ChatTurn, messages_delta: list[BaseMessage] | None = None) -> None:
+        """Record a turn with its exact message delta from the Agent.
+
+        messages_delta is the list of BaseMessage objects that Agent just
+        wrote to memory for this turn.  It is appended verbatim to the
+        authoritative sequence — no reverse-engineering from ChatTurn.
+        """
         self._turns.append(turn)
+        if messages_delta:
+            self._messages.extend(messages_delta)
+        self._save_deferred()
+
+    def add_cron_record(self, record: dict) -> None:
+        execution_id = str(record.get("execution_id", ""))
+        if execution_id and any(str(item.get("execution_id", "")) == execution_id for item in self._cron_history):
+            return
+        self._cron_history.append(record)
         self._save_deferred()
 
     def clear(self) -> None:
         self._turns.clear()
+        self._messages.clear()
+        self._cron_history.clear()
         self._save_deferred()
 
     def _save_deferred(self) -> None:
-        """Save to disk via thread to avoid blocking the event loop."""
+        self._save_version += 1
+        v = self._save_version
         try:
             loop = asyncio.get_running_loop()
-            loop.run_in_executor(None, self._save)
+            loop.run_in_executor(None, self._save, v)
         except RuntimeError:
-            self._save()  # no running loop, save synchronously
+            self._save(v)
 
-    def _save(self) -> None:
-        first_msg = self._turns[0].user_input if self._turns else ""
-        data = {
-            "session_id": self._session_id,
-            "created_at": self._meta.get("created_at", datetime.now().isoformat()),
-            "first_message": first_msg,
-            "turns": [asdict(t) for t in self._turns],
-        }
-        self._file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    def _save(self, version: int = 0) -> None:
+        with self._save_lock:
+            if version and version < self._save_version:
+                return
+            session_store.save_session_bundle(self._session_id, self._messages, self._cron_history)
 
     def load(self) -> bool:
-        """Load session from file. Returns True if loaded successfully."""
-        if self._file.exists():
-            try:
-                data = json.loads(self._file.read_text(encoding="utf-8"))
-                self._meta = data
-                self._turns = [ChatTurn(**t) for t in data.get("turns", [])]
-                return True
-            except (json.JSONDecodeError, TypeError):
-                self._turns = []
-        return False
+        """Load session from disk.  Returns True if the file was parsed successfully.
 
-    @staticmethod
-    def list_sessions() -> list[SessionMeta]:
-        """List all saved sessions, newest first."""
-        sessions = []
-        if not SESSIONS_DIR.exists():
-            return sessions
-        for f in sorted(SESSIONS_DIR.glob("*.json"), reverse=True):
-            try:
-                data = json.loads(f.read_text(encoding="utf-8"))
-                sessions.append(SessionMeta(
-                    session_id=data.get("session_id", f.stem),
-                    created_at=data.get("created_at", ""),
-                    first_message=data.get("first_message", "")[:20],
-                    turn_count=len(data.get("turns", [])),
-                ))
-            except (json.JSONDecodeError, TypeError):
-                continue
-        return sessions
+        An empty message list is a valid session (produced by /clear).
+        """
+        bundle = session_store.load_session_bundle(self._session_id)
+        if bundle is not None:
+            self._turns, self._messages = _messages_to_turns(bundle["messages"])
+            self._cron_history = list(bundle.get("cron_history", []) or [])
+            return True
+        return False
 
 
 # ── Widgets ──────────────────────────────────────────────────────────────────
@@ -330,10 +440,33 @@ class AlexApp(App):
     #main {
         height: 1fr;
     }
+    #left-pane {
+        height: 1fr;
+        width: 1fr;
+    }
     #chat-view {
         height: 1fr;
         overflow-y: scroll;
         padding: 0 1;
+    }
+    #page-view {
+        height: 1fr;
+        overflow-y: scroll;
+        padding: 1 2;
+    }
+    #page-view.hidden {
+        display: none;
+    }
+    #chat-view.hidden {
+        display: none;
+    }
+    #page-title {
+        text-style: bold;
+        margin: 0 0 1 0;
+        height: auto;
+    }
+    #page-content {
+        height: auto;
     }
     #status-bar {
         width: 34;
@@ -456,6 +589,7 @@ class AlexApp(App):
         self._thinking_expanded = False
         self._skills_expanded = False
         self._showing_session_list = False
+        self._page_mode: str | None = None
         self._last_response_rated = True  # start as rated (no pending feedback)
         self._feedback_widget: Static | None = None
         self._toast_widget: Static | None = None
@@ -466,7 +600,11 @@ class AlexApp(App):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Horizontal(id="main"):
-            yield VerticalScroll(id="chat-view")
+            with Vertical(id="left-pane"):
+                yield VerticalScroll(id="chat-view")
+                with VerticalScroll(id="page-view", classes="hidden"):
+                    yield Static("", id="page-title")
+                    yield Static("", id="page-content")
             with VerticalScroll(id="status-bar"):
                 yield Static("后台任务", id="status-title")
                 yield Static("", id="status-content")
@@ -479,6 +617,7 @@ class AlexApp(App):
             self._agent.bind_event_loop(asyncio.get_running_loop())
         except Exception:
             pass
+        self._agent.set_session_context(self._history.session_id, self._history.cron_history)
         self._start_services()
         self._status_timer = self.set_interval(0.1, self._poll_notifications)
         self._poll_notifications()
@@ -545,6 +684,10 @@ class AlexApp(App):
             self._show_help()
             return
 
+        if cmd == "/cron" or cmd.startswith("/cron "):
+            self._handle_cron_cmd(user_input[5:].strip() if len(user_input) > 5 else "")
+            return
+
         if cmd == "/skills" or cmd.startswith("/skills "):
             self._handle_skills_cmd(user_input[7:].strip() if len(user_input) > 7 else "")
             return
@@ -555,8 +698,7 @@ class AlexApp(App):
             return
 
         if not user_input.startswith(("/", ":")):
-            chat_view = self.query_one("#chat-view", VerticalScroll)
-            if len(chat_view.query("#help-block")) or len(chat_view.query("#skills-block")):
+            if self._page_mode is not None:
                 self._show_toast("当前在面板页，输入 :q 返回对话", duration=2)
                 return
 
@@ -591,6 +733,7 @@ class AlexApp(App):
         section_start = 0  # index into `collected` where current display section begins
         _last_ui_update = time.monotonic()
         _last_scroll = time.monotonic()
+        _message_batch: list[BaseMessage] | None = None
 
         try:
             async for event in self._agent.chat_stream(user_input):
@@ -634,6 +777,9 @@ class AlexApp(App):
                     if tb:
                         tb.set_done(output_str)
 
+                elif event.type == "message_batch":
+                    _message_batch = event.data if isinstance(event.data, list) else None
+
                 elif event.type == "done":
                     break
 
@@ -669,33 +815,30 @@ class AlexApp(App):
             tool_calls=tool_calls,
             skills=skills,
         )
-        self._history.add(turn)
+        self._history.add(turn, messages_delta=_message_batch)
         bubble.finalize(turn)
 
         # Show feedback prompt only when skills were actually used
         if skills:
             self._show_feedback_prompt()
 
-        # Run reflection in foreground after conversation turn
-        await self._run_reflection()
-
-    async def _run_reflection(self) -> None:
-        """Run skill reflection."""
-        await self._agent._maybe_reflect()
-
-        chat_view = self.query_one("#chat-view", VerticalScroll)
-        self._trim_chat_view(chat_view)
-        chat_view.scroll_end()
-
-        # Show reflection result as system message
+        # Show reflection result as system message (reflection triggered by agent internally)
         self._poll_notifications()
 
     def _render_turn(self, turn: ChatTurn) -> None:
-        """Render a full turn — used for history restore."""
+        """Render a full turn via finalize() — same path as live streaming.
+
+        Creating AlexBubble(turn) directly skips finalize(), which means
+        ToolBubble widgets are never mounted.  We instead create an empty
+        streaming bubble and call finalize(turn) to reproduce the full
+        live-chat rendering (skills, thinking, tool blocks, response).
+        """
         chat_view = self.query_one("#chat-view", VerticalScroll)
-        chat_view.mount(UserBubble(turn.user_input))
-        bubble = AlexBubble(turn, thinking_expanded=self._thinking_expanded, skills_expanded=self._skills_expanded)
+        if turn.kind != "cron":
+            chat_view.mount(UserBubble(turn.user_input))
+        bubble = AlexBubble(thinking_expanded=self._thinking_expanded, skills_expanded=self._skills_expanded)
         chat_view.mount(bubble)
+        bubble.finalize(turn)
 
     # ── feedback ─────────────────────────────────────────────────────────────
 
@@ -766,13 +909,80 @@ class AlexApp(App):
     def _dismiss_panels(self) -> None:
         """Remove overlay blocks (help, skills list, session list)."""
         chat_view = self.query_one("#chat-view", VerticalScroll)
-        for wid in ("help-block", "skills-block", "session-list"):
-            try:
-                chat_view.query_one(f"#{wid}").remove()
-            except Exception:
-                pass
+        page_view = self.query_one("#page-view", VerticalScroll)
+        chat_view.remove_class("hidden")
+        page_view.add_class("hidden")
+        self.query_one("#page-title", Static).update("")
+        self.query_one("#page-content", Static).update("")
         self._showing_session_list = False
+        self._page_mode = None
         chat_view.scroll_end()
+
+    def _show_page(self, title: str, content: str, *, mode: str) -> None:
+        self._page_mode = mode
+        chat_view = self.query_one("#chat-view", VerticalScroll)
+        page_view = self.query_one("#page-view", VerticalScroll)
+        chat_view.add_class("hidden")
+        page_view.remove_class("hidden")
+        self.query_one("#page-title", Static).update(title)
+        self.query_one("#page-content", Static).update(content)
+        page_view.scroll_home()
+
+    @staticmethod
+    def _fmt_ts(ts: float | None) -> str:
+        if not ts:
+            return "-"
+        return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+
+    def _format_cron_page(self, records: list[dict], query: str = "") -> str:
+        header = f"当前会话已完成 cron 执行记录 ({len(records)})"
+        if query:
+            header += f"\n筛选: {query}"
+        header += "\n"
+        if not records:
+            return header + "\n  [无已完成任务]\n"
+        lines = [header]
+        for rec in records:
+            result = str(rec.get("result") or rec.get("error") or "")
+            if len(result) > 120:
+                result = result[:120] + "..."
+            params = str(rec.get("params", {}))
+            if len(params) > 120:
+                params = params[:120] + "..."
+            lines.extend([
+                f"- [{rec.get('execution_id', '')}] {rec.get('name', '')} ({rec.get('status', '')})",
+                f"  job_id: {rec.get('job_id', '')}",
+                f"  action: {rec.get('action', '')}",
+                f"  started: {self._fmt_ts(rec.get('started_at'))}",
+                f"  finished: {self._fmt_ts(rec.get('finished_at'))}",
+                f"  params: {params}",
+                f"  result: {result}",
+                "",
+            ])
+        return "\n".join(lines).rstrip()
+
+    def _persist_cron_record(self, event: CronJobEvent) -> None:
+        if event.status not in ("SUCCESS", "FAILED"):
+            return
+        target_session_id = event.session_id or self._history.session_id
+        record = {
+            "execution_id": event.tool_call_id or f"cron:{event.job_id}:{event.runs_done}",
+            "job_id": event.job_id,
+            "name": event.name,
+            "status": event.status,
+            "action": event.action,
+            "params": dict(event.params or {}),
+            "runs_done": event.runs_done,
+            "started_at": event.started_at,
+            "finished_at": event.finished_at,
+            "result": event.result,
+            "error": event.error,
+        }
+        if target_session_id == self._history.session_id:
+            self._history.add_cron_record(record)
+            self._agent.set_session_context(self._history.session_id, self._history.cron_history)
+            return
+        session_store.append_cron_history(target_session_id, record)
 
     def _dismiss_toast(self) -> None:
         """Hide the toast notification."""
@@ -791,168 +1001,188 @@ class AlexApp(App):
         self._toast_widget.set_class(False, "toast-hidden")
         self._toast_timer = self.set_timer(duration, self._dismiss_toast)
 
-    def _format_reflect_toast(self, note: dict) -> str:
-        new = int(note.get("new", 0) or 0)
-        updated = int(note.get("updated", 0) or 0)
-        deprecated = int(note.get("deprecated", 0) or 0)
-        names = note.get("names") or []
-        if not isinstance(names, list):
-            names = [str(names)]
-
-        base = f"反思完成：新增 {new}，更新 {updated}，废弃 {deprecated}"
-        if names:
-            shown = ", ".join([str(n) for n in names[:3] if n])
-            more = "…" if len(names) > 3 else ""
+    def _format_reflect_toast(self, evt: SkillReflectEvent) -> str:
+        base = f"反思完成：新增 {evt.new}，更新 {evt.updated}，废弃 {evt.deprecated}"
+        if evt.names:
+            shown = ", ".join([str(n) for n in evt.names[:3] if n])
+            more = "…" if len(evt.names) > 3 else ""
             base += f"（新技能：{shown}{more}）"
+        if evt.updated_names:
+            shown = ", ".join([str(n) for n in evt.updated_names[:3] if n])
+            more = "…" if len(evt.updated_names) > 3 else ""
+            base += f"（更新：{shown}{more}）"
         return base
 
     def _poll_notifications(self) -> None:
-        """Poll agent notifications and update UI (status bar + chat)."""
+        """Poll agent events and update UI (status bar + chat).
+
+        Dispatches on concrete event types instead of string-matching on
+        bare dicts.  Cron stream events arrive as StreamEvent instances
+        (same type as regular chat) keyed by stream_id in metadata.
+        """
         chat_view = self.query_one("#chat-view", VerticalScroll)
-        last_reflect: dict | None = None
-        last_error: dict | None = None
+        last_reflect: SkillReflectEvent | None = None
+        last_error: SkillReflectErrorEvent | None = None
 
-        for note in self._agent.pop_notifications():
-            ntype = note.get("type")
-            stream_id = str(note.get("stream_id") or "")
+        for event in self._agent.pop_notifications():
+            # ── system events ──────────────────────────────────────────────
 
-            if ntype == "cron_debug":
-                msg = str(note.get("message") or "")
-                if msg:
-                    self._show_toast(msg, duration=3)
+            if isinstance(event, CronDebugEvent):
+                if event.message:
+                    self._show_toast(event.message, duration=3)
                 continue
 
-            if ntype == "skill_reflect_error":
-                last_error = note
+            if isinstance(event, SkillReflectErrorEvent):
+                last_error = event
                 continue
 
-            if ntype == "skill_reflect":
-                last_reflect = note
-                parts = []
-                if int(note.get("new", 0) or 0) > 0:
-                    parts.append(f"{note['new']} new: {', '.join(note.get('names') or [])}")
-                if int(note.get("updated", 0) or 0) > 0:
-                    parts.append(f"{note['updated']} updated")
-                if int(note.get("deprecated", 0) or 0) > 0:
-                    parts.append(f"{note['deprecated']} deprecated")
-                if parts:
-                    chat_view.mount(SystemBubble(
-                        f"\U0001f3af Skills refined — {'; '.join(parts)}"
-                    ))
+            if isinstance(event, SkillReflectEvent):
+                last_reflect = event
+                if event.new or event.updated or event.deprecated:
+                    chat_view.mount(SystemBubble(f"\U0001f3af {event.toast}"))
                 continue
 
-            if ntype in ("cron_job_update", "cron_job_done"):
-                if ntype == "cron_job_done":
-                    job = note.get("job") or {}
-                    name = str(job.get("name", "job"))
-                    status = str(note.get("run_status") or job.get("status", ""))
-                    if status == "FAILED":
-                        self._show_toast(f"任务失败：{name}", duration=3)
-                    elif status == "SUCCESS":
-                        self._show_toast(f"任务完成：{name}", duration=2)
+            if isinstance(event, CronJobEvent):
+                self._persist_cron_record(event)
+                if event.status == "FAILED":
+                    self._show_toast(f"任务失败：{event.name}", duration=3)
+                elif event.status == "SUCCESS":
+                    self._show_toast(f"任务完成：{event.name}", duration=2)
                 continue
 
-            if ntype == "cron_stream_start" and stream_id:
-                bubble = AlexBubble()
-                chat_view.mount(bubble)
-                chat_view.scroll_end()
-                self._cron_streams[stream_id] = {
-                    "bubble": bubble,
-                    "collected": "",
-                    "thinking": "",
-                    "tool_calls": [],
-                    "inflight_tools": {},
-                    "inflight_bubbles": {},
-                    "inflight_order": [],
-                }
-                continue
+            # ── cron stream events (StreamEvent with stream_id in metadata) ──
 
-            if ntype == "cron_stream_tool_start" and stream_id:
-                state = self._cron_streams.get(stream_id)
-                if not state:
+            if isinstance(event, StreamEvent):
+                meta = event.metadata or {}
+                stream_id = str(meta.get("stream_id") or "")
+
+                if not stream_id:
                     continue
-                data = note.get("data") or {}
-                tid = str(data.get("id") or "")
-                name = str(data.get("name") or "")
-                args = data.get("input", {})
-                if not isinstance(args, dict):
-                    args = {"input": str(args)}
-                if not tid:
-                    tid = f"{name}:{time.monotonic_ns()}"
-                state["inflight_tools"][tid] = {"id": tid, "name": name, "args": args, "output": ""}
-                state["inflight_order"].append(tid)
-                state["inflight_bubbles"][tid] = state["bubble"].insert_tool(name, args)
-                continue
 
-            if ntype == "cron_stream_tool_end" and stream_id:
-                state = self._cron_streams.get(stream_id)
-                if not state:
+                if meta.get("is_cron", False) and event.type == "tool_start":
+                    # First tool_start for a cron stream — create bubble + state
+                    bubble = AlexBubble()
+                    chat_view.mount(bubble)
+                    chat_view.scroll_end()
+                    self._cron_streams[stream_id] = {
+                        "bubble": bubble,
+                        "collected": "",
+                        "thinking": "",
+                        "tool_calls": [],
+                        "inflight_tools": {},
+                        "inflight_bubbles": {},
+                        "inflight_order": [],
+                        "message_batch": None,
+                    }
+                    # Fall through to handle the tool_start itself
+                    data = event.data or {}
+                    tid = str(data.get("id") or stream_id)
+                    name = str(data.get("name") or "")
+                    args = data.get("input", {})
+                    if not isinstance(args, dict):
+                        args = {"input": str(args)}
+                    state = self._cron_streams[stream_id]
+                    state["inflight_tools"][tid] = {"id": tid, "name": name, "args": args, "output": ""}
+                    state["inflight_order"].append(tid)
+                    state["inflight_bubbles"][tid] = state["bubble"].insert_tool(name, args)
                     continue
-                data = note.get("data") or {}
-                output_str = str(data.get("output", ""))
-                tid = str(data.get("id") or "")
-                if not tid or tid not in state["inflight_tools"]:
-                    while state["inflight_order"] and state["inflight_order"][-1] not in state["inflight_tools"]:
-                        state["inflight_order"].pop()
-                    tid = state["inflight_order"].pop() if state["inflight_order"] else ""
-                if tid and tid in state["inflight_tools"]:
-                    state["inflight_tools"][tid]["output"] = output_str
-                    state["tool_calls"].append(state["inflight_tools"].pop(tid))
-                    try:
-                        state["inflight_order"].remove(tid)
-                    except ValueError:
-                        pass
-                tb = state["inflight_bubbles"].pop(tid, None) if tid else None
-                if tb:
-                    tb.set_done(output_str)
-                continue
 
-            if ntype == "cron_stream_thinking" and stream_id:
-                state = self._cron_streams.get(stream_id)
-                if not state:
+                if event.type == "tool_start":
+                    state = self._cron_streams.get(stream_id)
+                    if not state:
+                        continue
+                    data = event.data or {}
+                    tid = str(data.get("id") or "")
+                    name = str(data.get("name") or "")
+                    args = data.get("input", {})
+                    if not isinstance(args, dict):
+                        args = {"input": str(args)}
+                    if not tid:
+                        tid = f"{name}:{time.monotonic_ns()}"
+                    state["inflight_tools"][tid] = {"id": tid, "name": name, "args": args, "output": ""}
+                    state["inflight_order"].append(tid)
+                    state["inflight_bubbles"][tid] = state["bubble"].insert_tool(name, args)
                     continue
-                state["thinking"] += str(note.get("data") or "")
-                continue
 
-            if ntype == "cron_stream_token" and stream_id:
-                state = self._cron_streams.get(stream_id)
-                if not state:
+                if event.type == "tool_end":
+                    state = self._cron_streams.get(stream_id)
+                    if not state:
+                        continue
+                    data = event.data or {}
+                    output_str = str(data.get("output", ""))
+                    tid = str(data.get("id") or "")
+                    if not tid or tid not in state["inflight_tools"]:
+                        while state["inflight_order"] and state["inflight_order"][-1] not in state["inflight_tools"]:
+                            state["inflight_order"].pop()
+                        tid = state["inflight_order"].pop() if state["inflight_order"] else ""
+                    if tid and tid in state["inflight_tools"]:
+                        state["inflight_tools"][tid]["output"] = output_str
+                        state["tool_calls"].append(state["inflight_tools"].pop(tid))
+                        try:
+                            state["inflight_order"].remove(tid)
+                        except ValueError:
+                            pass
+                    tb = state["inflight_bubbles"].pop(tid, None) if tid else None
+                    if tb:
+                        tb.set_done(output_str)
                     continue
-                state["collected"] += str(note.get("data") or "")
-                state["bubble"].set_response(state["collected"])
-                continue
 
-            if ntype == "cron_stream_done" and stream_id:
-                state = self._cron_streams.pop(stream_id, None)
-                if not state:
+                if event.type == "thinking":
+                    state = self._cron_streams.get(stream_id)
+                    if state:
+                        state["thinking"] += str(event.data or "")
                     continue
-                turn = ChatTurn(
-                    user_input="",
-                    response=state["collected"],
-                    thinking=state["thinking"],
-                    tool_calls=state["tool_calls"],
-                    skills=[],
-                )
-                state["bubble"].finalize(turn)
-                self._trim_chat_view(chat_view)
-                chat_view.scroll_end()
-                continue
 
-            if ntype == "cron_stream_error" and stream_id:
-                state = self._cron_streams.pop(stream_id, None)
-                err = str(note.get("error") or "")
-                if state:
-                    state["bubble"].finalize(ChatTurn(user_input="", response=f"Error: {err}", thinking="", tool_calls=state["tool_calls"], skills=[]))
-                else:
-                    chat_view.mount(SystemBubble(f"cron error: {err}"))
-                self._trim_chat_view(chat_view)
-                chat_view.scroll_end()
-                continue
+                if event.type == "token":
+                    state = self._cron_streams.get(stream_id)
+                    if state:
+                        state["collected"] += str(event.data or "")
+                        state["bubble"].set_response(state["collected"])
+                    continue
+
+                if event.type == "message_batch":
+                    state = self._cron_streams.get(stream_id)
+                    if state and isinstance(event.data, list):
+                        state["message_batch"] = event.data
+                    continue
+
+                if meta.get("is_cron_done"):
+                    state = self._cron_streams.pop(stream_id, None)
+                    if not state:
+                        continue
+                    turn = ChatTurn(
+                        user_input="",
+                        response=state["collected"],
+                        thinking=state["thinking"],
+                        tool_calls=state["tool_calls"],
+                        skills=[],
+                        kind="cron",
+                    )
+                    state["bubble"].finalize(turn)
+                    self._history.add(turn, messages_delta=state.get("message_batch"))
+                    self._trim_chat_view(chat_view)
+                    chat_view.scroll_end()
+                    continue
+
+                if meta.get("is_cron_error"):
+                    state = self._cron_streams.pop(stream_id, None)
+                    err = str(event.data or "")
+                    if state:
+                        state["bubble"].finalize(ChatTurn(
+                            user_input="", response=f"Error: {err}",
+                            thinking="", tool_calls=state["tool_calls"], skills=[],
+                            kind="cron",
+                        ))
+                    else:
+                        chat_view.mount(SystemBubble(f"cron error: {err}"))
+                    self._trim_chat_view(chat_view)
+                    chat_view.scroll_end()
+                    continue
 
         if last_reflect is not None:
             self._show_toast(self._format_reflect_toast(last_reflect), duration=3)
         if last_error is not None:
-            self._show_toast(f"反思失败：{last_error.get('error', '')}", duration=4)
+            self._show_toast(f"反思失败：{last_error.error}", duration=4)
         self._refresh_status_bar()
 
     def _refresh_status_bar(self) -> None:
@@ -960,6 +1190,7 @@ class AlexApp(App):
             jobs = self._agent.list_cron_jobs()
         except Exception:
             jobs = []
+        jobs = [j for j in jobs if str(j.get("status", "")) in ("RUNNING", "SCHEDULED")]
 
         lines: list[str] = []
         if not jobs:
@@ -969,13 +1200,7 @@ class AlexApp(App):
             for j in jobs[:20]:
                 name = str(j.get("name", ""))[:18]
                 status = str(j.get("status", ""))
-                icon = {
-                    "RUNNING": "⟳",
-                    "SCHEDULED": "⏱",
-                    "SUCCESS": "✓",
-                    "FAILED": "✗",
-                    "CANCELLED": "⦸",
-                }.get(status, "·")
+                icon = {"RUNNING": "⟳", "SCHEDULED": "⏱"}.get(status, "·")
                 next_at = j.get("next_run_at")
                 if isinstance(next_at, (int, float)) and next_at:
                     eta = max(0, int(next_at - now))
@@ -997,10 +1222,10 @@ class AlexApp(App):
 
     def _show_help(self) -> None:
         """Show help with all commands and keyboard shortcuts."""
-        chat_view = self.query_one("#chat-view", VerticalScroll)
         help_text = """  \U0001f4d6 Commands:
     /help             Show this help
     /skills           List all skills
+    /cron [query]     Query completed cron executions in this session
     /skills del <id>  Delete a skill by name or id prefix
     /skills dep <id>  Deprecate a skill by name or id prefix
     /merge-skills     LLM-based skill deduplication
@@ -1015,13 +1240,12 @@ class AlexApp(App):
     Ctrl+G / Ctrl+B   Rate last response (Good / Bad)
     Ctrl+T            Toggle thinking blocks
     Ctrl+K            Toggle skill blocks"""
-        chat_view.mount(Static(help_text, id="help-block"))
-        chat_view.scroll_end()
+        self._show_page("帮助", help_text, mode="help")
 
     @work(exclusive=True)
     async def _run_force_reflection(self) -> None:
         self._show_toast("正在反思…", duration=2)
-        await self._agent._do_reflect()
+        await self._agent.reflect()
         self._poll_notifications()
         chat_view = self.query_one("#chat-view", VerticalScroll)
         self._trim_chat_view(chat_view)
@@ -1029,25 +1253,21 @@ class AlexApp(App):
 
     def _handle_skills_cmd(self, args: str) -> None:
         """Handle /skills [del|dep] [id]"""
-        store = self._agent._skills.store
-        chat_view = self.query_one("#chat-view", VerticalScroll)
-
         if not args:
-            # List all skills
-            all_skills = store.list_all()
+            all_skills = self._agent.list_skills()
             if not all_skills:
-                chat_view.mount(Static("  [No skills]"))
+                content = "  [No skills]"
             else:
                 lines = ["  \U0001f3af Skills:"]
-                for s in sorted(all_skills, key=lambda s: (s.status, -s.use_count)):
-                    status_icon = {"ACTIVE": "✅", "CANDIDATE": "\U0001f535", "DEPRECATED": "⚪"}.get(s.status, "?")
+                for s in sorted(all_skills, key=lambda s: (s["status"], -s["use_count"])):
+                    status_icon = {"ACTIVE": "✅", "CANDIDATE": "\U0001f535", "DEPRECATED": "⚪"}.get(s["status"], "?")
                     lines.append(
-                        f"  {status_icon} [{s.status}] {s.name}"
-                        f"  | used:{s.use_count} ok:{s.success_count} fail:{s.failure_count}"
-                        f"  | id:{s.id[:8]}"
+                        f"  {status_icon} [{s['status']}] {s['name']}"
+                        f"  | used:{s['use_count']} ok:{s['success_count']} fail:{s['failure_count']}"
+                        f"  | id:{s['id'][:8]}"
                     )
-                chat_view.mount(Static("\n".join(lines), id="skills-block"))
-            chat_view.scroll_end()
+                content = "\n".join(lines)
+            self._show_page("技能列表", content, mode="skills")
             return
 
         parts = args.split(None, 1)
@@ -1055,42 +1275,34 @@ class AlexApp(App):
         target = parts[1] if len(parts) > 1 else ""
 
         if action in ("del", "delete") and target:
-            found = None
-            for s in store.list_all():
-                if s.id.startswith(target) or s.name.lower() == target.lower():
-                    found = s
-                    break
-            if found:
-                store.remove(found.id)
-                chat_view.mount(Static(f"  ✅ Deleted: {found.name}"))
+            name = self._agent.delete_skill(target)
+            if name:
+                self._show_toast(f"已删除技能：{name}", duration=2)
             else:
-                chat_view.mount(Static(f"  ❌ Not found: {target}"))
+                self._show_toast(f"未找到技能：{target}", duration=2)
         elif action in ("dep", "deprecate") and target:
-            found = None
-            for s in store.list_all():
-                if s.id.startswith(target) or s.name.lower() == target.lower():
-                    found = s
-                    break
-            if found:
-                store.deprecate(found.id)
-                chat_view.mount(Static(f"  ✅ Deprecated: {found.name}"))
+            name = self._agent.deprecate_skill(target)
+            if name:
+                self._show_toast(f"已废弃技能：{name}", duration=2)
             else:
-                chat_view.mount(Static(f"  ❌ Not found: {target}"))
+                self._show_toast(f"未找到技能：{target}", duration=2)
         else:
-            chat_view.mount(Static(f"  ❌ Unknown: /skills {args}"))
+            self._show_toast(f"未知命令: /skills {args}", duration=2)
 
-        chat_view.scroll_end()
+    def _handle_cron_cmd(self, args: str) -> None:
+        """Show completed cron execution history for the current session."""
+        records = self._agent.list_session_cron_history(query=args, limit=50)
+        content = self._format_cron_page(records, query=args)
+        self._show_page("Cron 历史", content, mode="cron")
 
     # ── session management ───────────────────────────────────────────────────
 
     def _show_session_list(self) -> None:
         """Show a list of saved sessions for the user to pick from."""
-        sessions = ChatHistory.list_sessions()
-        chat_view = self.query_one("#chat-view", VerticalScroll)
+        sessions = session_store.list_sessions()
 
         if not sessions:
-            chat_view.mount(Static("  [No saved sessions found]"))
-            chat_view.scroll_end()
+            self._show_page("会话列表", "  [No saved sessions found]", mode="resume")
             return
 
         self._showing_session_list = True
@@ -1098,27 +1310,19 @@ class AlexApp(App):
 
         lines = ["\U0001f4cb Saved sessions (type number to resume, or anything else to cancel):", ""]
         for i, s in enumerate(sessions, 1):
-            # Parse created_at for display
             try:
                 dt = datetime.fromisoformat(s.created_at)
                 time_str = dt.strftime("%Y-%m-%d %H:%M")
             except (ValueError, TypeError):
                 time_str = s.created_at[:16] if s.created_at else "unknown"
             preview = s.first_message if s.first_message else "(empty)"
-            lines.append(f"  {i}. [{time_str}] {preview}  ({s.turn_count} turns)")
+            lines.append(f"  {i}. [{time_str}] {preview}  ({s.message_count} msgs)")
 
-        chat_view.mount(Static("\n".join(lines), id="session-list"))
-        chat_view.scroll_end()
+        self._show_page("会话列表", "\n".join(lines), mode="resume")
 
     def _handle_session_selection(self, user_input: str) -> None:
         """Handle user's session selection."""
         self._showing_session_list = False
-
-        # Remove the session list widget
-        try:
-            self.query_one("#session-list").remove()
-        except Exception:
-            pass
 
         # Check if input is a valid number
         try:
@@ -1130,53 +1334,57 @@ class AlexApp(App):
         except (ValueError, AttributeError):
             pass
 
-        # Not a valid selection — just show a cancel message
-        chat_view = self.query_one("#chat-view", VerticalScroll)
-        chat_view.mount(Static("  [Resume cancelled]"))
-        chat_view.scroll_end()
+        self._dismiss_panels()
+        self._show_toast("已取消恢复会话", duration=2)
 
-    def _resume_session(self, session_id: str) -> None:
-        """Resume a saved session."""
-        # Clear current view
-        chat_view = self.query_one("#chat-view", VerticalScroll)
-        chat_view.remove_children()
+    @work(exclusive=True)
+    async def _resume_session(self, session_id: str) -> None:
+        """Resume a saved session — restore memory first, then render UI.
 
-        # Load the session
+        Uses @work(exclusive=True) to serialize with other lifecycle ops
+        (clear, merge).  Input is disabled during the operation to prevent
+        the user sending a message before agent memory is ready.
+        """
+        # Load the session and restore agent memory first
         self._history = ChatHistory(session_id=session_id)
-        self._history.load()
+        ok = self._history.load()
+        if not ok:
+            return
 
-        # Render all turns
-        for turn in self._history.turns:
-            self._render_turn(turn)
+        input_widget = self.query_one("#input-box", Input)
+        input_widget.disabled = True
+        try:
+            await self._agent.restore_history(self._history.loaded_messages)
+            self._agent.set_session_context(self._history.session_id, self._history.cron_history)
 
-        chat_view.scroll_end()
+            # Now render UI with the restored state
+            chat_view = self.query_one("#chat-view", VerticalScroll)
+            chat_view.remove_children()
+            for turn in self._history.turns:
+                self._render_turn(turn)
+            chat_view.scroll_end()
+            self._dismiss_panels()
+        finally:
+            input_widget.disabled = False
 
-        # Also restore agent memory
-        import asyncio
-        asyncio.ensure_future(self._restore_agent_memory())
+    @work(exclusive=True)
+    async def _clear_chat(self) -> None:
+        """Clear chat history and view — memory first, then UI.
 
-    async def _restore_agent_memory(self) -> None:
-        """Restore agent memory from loaded session."""
-        from langchain_core.messages import AIMessage, HumanMessage
-        await self._agent.clear_history()
-        for turn in self._history.turns:
-            await self._agent._memory.add_message(HumanMessage(content=turn.user_input))
-            if turn.response:
-                kwargs = {}
-                if turn.thinking:
-                    kwargs["reasoning_content"] = turn.thinking
-                await self._agent._memory.add_message(
-                    AIMessage(content=turn.response, additional_kwargs=kwargs)
-                )
-
-    def _clear_chat(self) -> None:
-        """Clear chat history and view."""
-        self._history.clear()
-        chat_view = self.query_one("#chat-view", VerticalScroll)
-        chat_view.remove_children()
-
-        import asyncio
-        asyncio.ensure_future(self._agent.clear_history())
+        Serialized via @work(exclusive=True); input is disabled during the
+        operation so the user cannot send a message against stale state.
+        """
+        input_widget = self.query_one("#input-box", Input)
+        input_widget.disabled = True
+        try:
+            await self._agent.clear_history()
+            self._history.clear()
+            self._agent.set_session_context(self._history.session_id, self._history.cron_history)
+            chat_view = self.query_one("#chat-view", VerticalScroll)
+            chat_view.remove_children()
+            self._dismiss_panels()
+        finally:
+            input_widget.disabled = False
 
     @work(exclusive=True)
     async def _run_merge_skills(self) -> None:
@@ -1184,13 +1392,13 @@ class AlexApp(App):
         chat_view = self.query_one("#chat-view", VerticalScroll)
 
         # Show status
-        before_count = len([s for s in self._agent._skills.store.list_all() if s.status != "DEPRECATED"])
+        before_count = len([s for s in self._agent.list_skills() if s["status"] != "DEPRECATED"])
         status_widget = Static(f"  \U0001f527 Merging skills... ({before_count} skills, this may take a moment)")
         chat_view.mount(status_widget)
         chat_view.scroll_end()
 
         try:
-            result = await self._agent._skills.merge_skills(self._agent._llm)
+            result = await self._agent.merge_skills()
             status_widget.remove()
 
             # Show result
