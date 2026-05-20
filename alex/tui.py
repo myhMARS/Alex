@@ -479,21 +479,26 @@ class AlexApp(App):
             self._agent.bind_event_loop(asyncio.get_running_loop())
         except Exception:
             pass
-        try:
-            asyncio.create_task(self._agent.start_services())
-        except Exception:
-            pass
+        self._start_services()
         self._status_timer = self.set_interval(0.1, self._poll_notifications)
         self._poll_notifications()
 
-    def action_quit(self) -> None:
+    @work(exclusive=True)
+    async def _start_services(self) -> None:
         try:
-            if self._status_timer:
-                self._status_timer.stop()
+            await self._agent.start_services()
         except Exception:
             pass
+
+    def action_quit(self) -> None:
+        if self._status_timer:
+            self._status_timer.stop()
+        self._do_shutdown()
+
+    @work(exclusive=True)
+    async def _do_shutdown(self) -> None:
         try:
-            asyncio.create_task(self._agent.shutdown())
+            await self._agent.shutdown()
         except Exception:
             pass
         self.exit()
@@ -841,11 +846,6 @@ class AlexApp(App):
                     job = note.get("job") or {}
                     name = str(job.get("name", "job"))
                     status = str(note.get("run_status") or job.get("status", ""))
-                    if bool(job.get("subscribe")):
-                        try:
-                            asyncio.create_task(self._agent._stream_cron_reply(note))
-                        except Exception:
-                            pass
                     if status == "FAILED":
                         self._show_toast(f"任务失败：{name}", duration=3)
                     elif status == "SUCCESS":

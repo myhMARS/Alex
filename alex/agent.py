@@ -83,7 +83,6 @@ class Agent:
         self._pending_notifications: list[dict] = []  # system notifications from background tasks
         self._cron = CronManager(self.push_notification)
         self._bg_lock = asyncio.Lock()
-        self._loop: asyncio.AbstractEventLoop | None = None
         self._active_cron_streams: set[str] = set()
         self._reflecting = False
         self._tools["load_skill"] = self._create_load_skill_tool()
@@ -140,7 +139,6 @@ class Agent:
         self._graph = self._build_graph()
 
     def bind_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
-        self._loop = loop
         self._cron.bind_event_loop(loop)
 
     async def start_services(self) -> None:
@@ -171,15 +169,8 @@ class Agent:
         if note.get("type") == "cron_job_done":
             job = (note.get("job") or {}) if isinstance(note.get("job"), dict) else {}
             if job.get("subscribe"):
-                loop = self._loop
-                if loop is not None and loop.is_running():
-                    try:
-                        loop.call_soon_threadsafe(lambda: asyncio.create_task(self._stream_cron_reply(note)))
-                        return
-                    except Exception:
-                        pass
                 try:
-                    asyncio.get_running_loop().create_task(self._stream_cron_reply(note))
+                    asyncio.create_task(self._stream_cron_reply(note))
                 except RuntimeError:
                     pass
 
@@ -243,6 +234,8 @@ class Agent:
             last_flush = time.monotonic()
             token_buf = ""
             thinking_buf = ""
+            cron_intermediate_msgs: list = []  # agent's own tool calls while processing cron reply
+            _cron_final_ai_msg: AIMessage | None = None
 
             try:
                 async for event in self._graph.astream_events(
@@ -282,6 +275,14 @@ class Agent:
                                 token_buf = ""
                             last_flush = now
 
+                    elif kind == "on_chat_model_end":
+                        msg = (event.get("data") or {}).get("output")
+                        if isinstance(msg, AIMessage):
+                            if msg.tool_calls:
+                                cron_intermediate_msgs.append(msg)
+                            else:
+                                _cron_final_ai_msg = msg
+
                     elif kind == "on_tool_start":
                         rid = str(event.get("run_id") or "")
                         tname = event.get("name", "")
@@ -295,6 +296,8 @@ class Agent:
                     elif kind == "on_tool_end":
                         rid = str(event.get("run_id") or "")
                         out = event.get("data", {}).get("output")
+                        if isinstance(out, ToolMessage):
+                            cron_intermediate_msgs.append(out)
                         self._pending_notifications.append({
                             "type": "cron_stream_tool_end",
                             "stream_id": tool_call_id,
@@ -314,10 +317,16 @@ class Agent:
                         "data": token_buf,
                     })
 
+                # Write isomorphic history: same structure as chat() / chat_stream()
                 await self._memory.add_message(AIMessage(content="", tool_calls=[{"name": "cron", "args": tool_args, "id": tool_call_id}]))
                 await self._memory.add_message(ToolMessage(content=tool_text, tool_call_id=tool_call_id))
-                ai_kwargs = {"reasoning_content": collected_thinking or ""}
-                await self._memory.add_message(AIMessage(content=collected_content, additional_kwargs=ai_kwargs))
+                for m in cron_intermediate_msgs:
+                    await self._memory.add_message(m)
+                if _cron_final_ai_msg is not None:
+                    await self._memory.add_message(_cron_final_ai_msg)
+                else:
+                    ai_kwargs = {"reasoning_content": collected_thinking or ""}
+                    await self._memory.add_message(AIMessage(content=collected_content, additional_kwargs=ai_kwargs))
 
                 self._pending_notifications.append({
                     "type": "cron_stream_done",
@@ -360,7 +369,6 @@ class Agent:
 
     async def shutdown(self) -> None:
         await self._cron.shutdown()
-        self._loop = None
 
     @property
     def is_reflecting(self) -> bool:
@@ -471,6 +479,8 @@ class Agent:
         loaded_skill_ids: list[str] = []
         tool_names: list[str] = []
         tool_run_ids: list[str] = []
+        intermediate_msgs: list = []  # AIMessage(tool_calls) + ToolMessage, matching chat() history
+        _final_ai_msg: AIMessage | None = None
 
         async for event in self._graph.astream_events(
             {"messages": messages},
@@ -481,7 +491,6 @@ class Agent:
             if kind == "on_chat_model_stream":
                 chunk = event.get("data", {}).get("chunk")
                 if chunk:
-                    # Check for reasoning/thinking content (DeepSeek thinking mode)
                     reasoning = None
                     if hasattr(chunk, "additional_kwargs"):
                         reasoning = chunk.additional_kwargs.get("reasoning_content")
@@ -491,6 +500,14 @@ class Agent:
                     if chunk.content:
                         collected_content += chunk.content
                         yield StreamEvent(type="token", data=chunk.content)
+
+            elif kind == "on_chat_model_end":
+                msg = (event.get("data") or {}).get("output")
+                if isinstance(msg, AIMessage):
+                    if msg.tool_calls:
+                        intermediate_msgs.append(msg)
+                    else:
+                        _final_ai_msg = msg
 
             elif kind == "on_tool_start":
                 name = event.get("name", "")
@@ -515,20 +532,28 @@ class Agent:
 
             elif kind == "on_tool_end":
                 run_id = str(event.get("run_id") or "")
+                output = event.get("data", {}).get("output")
+                if isinstance(output, ToolMessage):
+                    intermediate_msgs.append(output)
                 yield StreamEvent(
                     type="tool_end",
-                    data={"id": run_id, "output": event.get("data", {}).get("output")},
+                    data={"id": run_id, "output": output},
                 )
 
         self._last_used_skill_ids = loaded_skill_ids
         self._last_query_matched = len(loaded_skill_ids) > 0
 
+        # Write isomorphic history: same structure as chat()
         await self._memory.add_message(HumanMessage(content=user_message))
-        # Store reasoning_content in additional_kwargs for round-trip
-        ai_kwargs = {"reasoning_content": collected_thinking or ""}
-        await self._memory.add_message(
-            AIMessage(content=collected_content, additional_kwargs=ai_kwargs)
-        )
+        for m in intermediate_msgs:
+            await self._memory.add_message(m)
+        if _final_ai_msg is not None:
+            await self._memory.add_message(_final_ai_msg)
+        else:
+            ai_kwargs = {"reasoning_content": collected_thinking or ""}
+            await self._memory.add_message(
+                AIMessage(content=collected_content, additional_kwargs=ai_kwargs)
+            )
 
         # Record episode for multi-turn skill extraction
         loaded_names = [
