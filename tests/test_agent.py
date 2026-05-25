@@ -79,9 +79,10 @@ class TestHistory:
     @pytest.mark.asyncio
     async def test_clear_history(self):
         agent = Agent()
-        with patch.object(agent._prompt, "ensure_skills_prompt", return_value=False):
+        with patch.object(agent._chat._prompt, "ensure_skills_prompt", return_value=False):
             with patch.object(agent._feedback, "maybe_reflect", new_callable=AsyncMock):
-                with patch.object(agent._graph, "astream_events") as mock_stream:
+                with patch.object(agent._chat, "_graph") as mock_graph:
+                    mock_stream = mock_graph.astream_events
                     async def _events():
                         yield {"event": "on_chat_model_stream", "data": {"chunk": AIMessage(content="Hello!")}}
                         yield {"event": "on_chat_model_end", "data": {"output": AIMessage(content="Hello!")}}
@@ -97,9 +98,10 @@ class TestChatStream:
     @pytest.mark.asyncio
     async def test_returns_response(self):
         agent = Agent()
-        with patch.object(agent._prompt, "ensure_skills_prompt", return_value=False):
+        with patch.object(agent._chat._prompt, "ensure_skills_prompt", return_value=False):
             with patch.object(agent._feedback, "maybe_reflect", new_callable=AsyncMock):
-                with patch.object(agent._graph, "astream_events") as mock_stream:
+                with patch.object(agent._chat, "_graph") as mock_graph:
+                    mock_stream = mock_graph.astream_events
                     async def _events():
                         yield {"event": "on_chat_model_stream", "data": {"chunk": AIMessage(content="Hello, I'm Alex.")}}
                         yield {"event": "on_chat_model_end", "data": {"output": AIMessage(content="Hello, I'm Alex.")}}
@@ -118,9 +120,10 @@ class TestChatStream:
     @pytest.mark.asyncio
     async def test_passes_chat_history(self):
         agent = Agent()
-        with patch.object(agent._prompt, "ensure_skills_prompt", return_value=False):
+        with patch.object(agent._chat._prompt, "ensure_skills_prompt", return_value=False):
             with patch.object(agent._feedback, "maybe_reflect", new_callable=AsyncMock):
-                with patch.object(agent._graph, "astream_events") as mock_stream:
+                with patch.object(agent._chat, "_graph") as mock_graph:
+                    mock_stream = mock_graph.astream_events
                     async def _events1():
                         yield {"event": "on_chat_model_stream", "data": {"chunk": AIMessage(content="Replying")}}
                         yield {"event": "on_chat_model_end", "data": {"output": AIMessage(content="Replying")}}

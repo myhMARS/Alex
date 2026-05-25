@@ -1,20 +1,42 @@
-"""Store module public interfaces."""
+"""Store module public interfaces — aligned with SessionPersistence real API.
+
+SessionRepository uses bundle semantics: load_bundle returns a full session
+bundle (messages + cron_history + metadata), not just messages.
+"""
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Any, Protocol, TypedDict
 
 from langchain_core.messages import BaseMessage
 
 
-class SessionStore(Protocol):
-    """Session persistence — save/load BaseMessage sequences + cron history."""
+class SessionBundle(TypedDict):
+    session_id: str
+    created_at: str
+    first_message: str
+    messages: list[BaseMessage]
+    cron_history: list[dict[str, Any]]
 
-    async def load(self, session_id: str) -> list[BaseMessage]: ...
 
-    async def save(self, session_id: str, messages: list[BaseMessage]) -> None: ...
+class SessionRepository(Protocol):
+    """Session persistence — bundle-based save/load with cron history.
 
-    async def save_cron_history(self, session_id: str, records: list[dict[str, Any]]) -> None: ...
+    Matches the real SessionPersistence adapter API.
+    """
+
+    def save(self, session_id: str, messages: list[BaseMessage]) -> None: ...
+
+    def load(self, session_id: str) -> dict[str, Any] | None: ...
+
+    def list_sessions(self) -> list[dict[str, Any]]: ...
+
+    def delete(self, session_id: str) -> bool: ...
+
+    def append_cron_record(self, session_id: str, record: dict[str, Any]) -> None: ...
+
+    @staticmethod
+    async def subscribe(bus: Any) -> None: ...
 
 
 class SkillRepository(Protocol):

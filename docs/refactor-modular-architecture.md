@@ -13,25 +13,26 @@
 
 ## 结论摘要
 
-Alex 当前已经从早期的“`Agent + TUI + 工具集合`”单体，演进成一个可运行的模块化单体 v1：
+Alex 已经从早期的”`Agent + TUI + 工具集合`”单体，演进成模块化单体 v2：
 
 - 目录结构已经按模块拆分
-- typed event 已经统一
+- typed event 已统一，event bus 角色明确（event-only）
 - session、cron、stream 渲染等关键链路已经稳定
 - 多个高风险行为问题已经修复
+- Application Layer 已拆分为 5 个独立 service（Phase 2，2026-05-26）
+- Port/adapter 已全对齐：`SessionRepository`、`SkillServicePort`、`AgentFacade`
 
-但它距离“最佳长期演进架构”还有明显差距。当前最核心的问题不再是“有没有模块”，而是：
+当前剩余差距集中在：
 
-1. application layer 仍然不纯，`Agent` facade 还承担了过多 wiring 与具体实现依赖
-2. port / service / adapter 三层语言没有完全统一，多个 `Protocol` 已与真实实现漂移
-3. command bus 与 event bus 只完成了一半，系统仍处于“直接调用 + 事件观测”的混合模型
-4. session 级状态虽然已经收口了一部分，但仍散落在 TUI、feedback、cron 渲染、tool runtime 多处
-5. 工具、skill、store 的运行时上下文和持久化边界还不够硬，未来功能扩展仍会持续把复杂度推回 `agent/service.py`
+1. Agent facade 已薄化，但 wiring 仍手工完成；可引入 DI container
+2. event bus 语义已明确（event-only），但 Agent 内部仍是 direct-call + event 混合模型
+3. TUI controller 仍承担 session 切换、cron projection、feedback UI 状态等多类职责
+4. SessionService 仍直接 import `store.session.deserialize_message`
 
 因此，当前最准确的判断是：
 
-- 当前架构：模块化单体 v1，已经可维护，但还没有进入“可长期演化”的稳定边界阶段
-- 目标架构：模块化单体 v2，application、domain、adapter、projection、runtime 五层职责清晰
+- 当前架构：模块化单体 v2（application layer 已拆分，port/adapter 全对齐）
+- 目标架构：模块化单体 v2.x（projection 与 UI 薄化，测试治理完善）
 
 ---
 
@@ -128,49 +129,52 @@ TUI command
 ```text
 alex/
 ├── agent/
-│   ├── service.py
-│   ├── session_service.py
-│   ├── cron_service.py
-│   ├── orchestrator.py
-│   ├── cron_handler.py
-│   ├── feedback.py
-│   ├── prompt.py
-│   └── ports.py
+│   ├── service.py              # Agent — thin facade, wiring only
+│   ├── chat_service.py         # ChatAppService — chat_stream, tool exec, graph
+│   ├── session_service.py      # SessionService — session persistence boundary
+│   ├── cron_service.py         # CronService — cron schedule/cancel/lifecycle
+│   ├── feedback_service.py     # FeedbackAppService — rating, episode, reflection
+│   ├── skill_admin_service.py  # SkillAdminAppService — skill CRUD, merge
+│   ├── orchestrator.py         # TurnOrchestrator — single turn execution
+│   ├── cron_handler.py         # CronTurnHandler — cron-triggered LLM replies
+│   ├── feedback.py             # FeedbackRecorder (legacy, retained for compat)
+│   ├── prompt.py               # PromptAssembler — system prompt + skills section
+│   └── ports.py                # AgentFacade Protocol
 ├── bus/
-│   ├── events.py
-│   └── in_memory.py
+│   ├── events.py               # Event → Command/DomainEvent/UIEvent hierarchy
+│   └── in_memory.py            # AsyncEventBus — subscriber-based event dispatch
 ├── memory/
-│   ├── base.py
-│   ├── buffer.py
-│   └── ports.py
+│   ├── base.py                 # MemoryBase ABC
+│   ├── buffer.py               # BufferMemory — sliding window
+│   └── ports.py                # MemoryService Protocol
 ├── skill/
-│   ├── models.py
-│   ├── service.py
-│   ├── repository.py
-│   ├── matcher.py
-│   ├── reflector.py
-│   ├── evolution.py
-│   └── ports.py
+│   ├── models.py               # Skill dataclass, SkillManager (compat)
+│   ├── service.py              # SkillService — constructor injection
+│   ├── repository.py           # SkillStore — JSON persistence
+│   ├── matcher.py              # SkillRetriever — pattern/keyword matching
+│   ├── reflector.py            # Reflector — LLM-based skill reflection
+│   ├── evolution.py            # EvolutionEngine — lifecycle transitions
+│   └── ports.py                # SkillServicePort Protocol (aligned)
 ├── store/
-│   ├── session.py
-│   ├── session_adapter.py
-│   └── ports.py
+│   ├── session.py              # Session file I/O + serialize/deserialize
+│   ├── session_adapter.py      # SessionPersistence — event-driven auto-save
+│   └── ports.py                # SessionRepository Protocol (aligned)
 ├── tools/
-│   ├── cron.py
-│   ├── executor.py
-│   ├── registry.py
-│   ├── time.py
-│   ├── web_fetch.py
-│   ├── web_search.py
-│   └── ports.py
+│   ├── cron.py                 # cron tool interface
+│   ├── executor.py             # ToolExecutor
+│   ├── registry.py             # ToolRegistry
+│   ├── time.py                 # Time tool
+│   ├── web_fetch.py            # Web fetch tool
+│   ├── web_search.py           # Web search tool
+│   └── ports.py                # ToolRegistry/ToolExecutor Protocols
 ├── scheduler/
-│   └── manager.py
+│   └── manager.py              # CronManager — APScheduler wrapper
 ├── tui/
-│   ├── app.py
-│   ├── controller.py
-│   ├── presenter.py
-│   ├── view_models.py
-│   └── stream_renderer.py
+│   ├── app.py                  # AlexApp — Textual App (ChatControllerMixin)
+│   ├── controller.py           # ChatControllerMixin — commands, bus handlers, UI state
+│   ├── presenter.py            # Bubble components (AlexBubble, etc.)
+│   ├── view_models.py          # ChatHistory, ChatTurn
+│   └── stream_renderer.py      # StreamRenderer — shared user/cron rendering
 └── prompts/
 ```
 
@@ -178,40 +182,49 @@ alex/
 
 ```text
 TUI
-  -> AgentFacade
-      -> SessionService
-      -> CronService
-      -> PromptAssembler
-      -> TurnOrchestrator
-      -> CronTurnHandler
-      -> FeedbackRecorder
-      -> ToolRegistry + ToolExecutor
-      -> SkillManager / SkillService
-      -> Memory
+  -> AgentFacade (thin facade)
+      -> ChatAppService     (chat_stream, tool exec, graph, cron history)
+      -> SessionService     (session persistence boundary)
+      -> CronService        (cron schedule/cancel/lifecycle)
+      -> FeedbackAppService (feedback recording, per-session state, reflection)
+      -> SkillAdminAppService (skill CRUD, merge, load_skill)
       -> EventBus
-          -> SessionPersistence
+          -> SessionPersistence (auto-save on TurnCompleted / CronJobEvent)
           -> TUI subscribers / projectors
 ```
 
-### 当前架构已完成的部分
+### 当前架构已完成的里程碑
 
-以下能力已经可以视为 v1 架构基线：
+以下能力已经可以视为 v2 架构基线：
 
 1. `agent / bus / memory / skill / store / tools / scheduler / tui` 目录边界已经建立
 2. `Event -> Command / DomainEvent / UIEvent` 已统一
-3. `AsyncEventBus` 已接管主事件传播
+3. `AsyncEventBus` 已接管主事件传播，角色明确为 event-only bus
 4. `SessionPersistence` 已接管 `TurnCompleted` / `CronJobEvent` 的自动持久化
 5. `cron` 的 `session_id` 已贯穿调度与订阅回复链路
 6. `StreamRenderer` 已把用户 turn 和 cron turn 渲染状态统一
-7. 跨会话 cron 污染、运行中 cron 取消、反馈状态泄漏、反思角色映射、`web_search` 阻塞等高风险问题已经修复
+7. 跨会话 cron 污染、运行中 cron 取消、反馈状态泄漏等高风险问题已经修复
+
+**2026-05-25 (Phase 1 语义校正) 新增里程碑：**
+
+8. `store/ports.py` — `SessionRepository` Protocol + `SessionBundle` TypedDict，对齐 bundle 语义
+9. `skill/ports.py` — `SkillServicePort` 与真实 `SkillService` 接口完全对齐（10 methods）
+10. `agent/ports.py` — 清理漂移的旧 Protocol，`AgentFacade` 保持为 TUI 唯一契约
+11. `FeedbackSessionState` — per-session feedback 状态字典替代实例级可变字段
+
+**2026-05-26 (Phase 2 Application Layer 再拆分) 新增里程碑：**
+
+12. `ChatAppService` (`agent/chat_service.py`) — 聊天流、工具执行、图管理、cron 历史
+13. `FeedbackAppService` (`agent/feedback_service.py`) — 反馈/反思，注入式依赖
+14. `SkillAdminAppService` (`agent/skill_admin_service.py`) — 技能 CRUD/合并
+15. `Agent` (`agent/service.py`) — 降为薄 facade，只负责组合注入与代理调用
 
 ### 当前架构仍存在的核心问题
 
-1. `Agent` 仍是 application 层的大聚合对象
-2. `SessionService` 与 `store/ports.py` 还不是成熟、稳定的 repository 边界
-3. `skill/ports.py` 与 `skill/service.py` 的真实接口仍不一致
-4. `EventBus` 只有 event 语义，command handling 仍没有成为真正的一等执行入口
-5. `ToolExecutor.execute(session_id, ...)` 仍未把 session 上下文提升为正式 runtime model
+1. Agent facade 已薄化，但 wiring 仍手工完成（可引入 DI container）
+2. Bus 语义明确但 Agent 内部仍是 direct-call + event 混合模型
+3. TUI controller 仍承担 session 切换、cron projection、feedback UI 状态、toast 生命周期
+4. SessionService 仍直接 import `store.session.deserialize_message`
 
 ---
 
@@ -221,16 +234,16 @@ TUI
 
 | 领域 | 当前架构 | 理想架构 | 差距等级 |
 |------|----------|----------|----------|
-| Agent / Application | 一个大 facade 聚合多服务，仍直连具体实现 | 多个 application service 分治职责 | 高 |
-| Session / Store | `SessionService` 只是薄包装，store ports 漂移 | `SessionRepository + SessionSerializer + SessionAppService` 明确分层 | 高 |
-| Skill | 已拆出 `SkillService`，但 `SkillManager` 兼容层仍在主路径，ports 漂移 | `SkillApplication + SkillDomain + SkillRepository` 契约统一 | 高 |
-| Event System | typed event 完整，但 command handling 仍是半直调半事件 | command / event 语义一致，执行入口唯一 | 高 |
+| Agent / Application | ✅ 薄 facade 组合 5 个 app service，wiring 在 Agent.__init__ | DI container 替代手工 wiring | 低 |
+| Session / Store | `SessionService` + `SessionRepository` port 已对齐，但仍直接 import deserialize_message | `SessionRepository + SessionSerializer` 完全解耦 | 中 |
+| Skill | ✅ `SkillServicePort` 已对齐 `SkillService`，`SkillManager` 为兼容层 | `SkillManager` 完全移除，只用 `SkillService` | 低 |
+| Event System | ✅ typed event + event-only bus 语义明确，但 Agent 内仍混合 direct-call | 统一 direct-call application service 模式 | 中 |
 | TUI / Projection | controller 同时处理命令、投影、会话切换、toast、feedback | controller 薄化，projector 和 view state 分离 | 中 |
-| Tool Runtime | `session_id` 已透传但未形成真正上下文注入模型 | `ToolExecutionContext` 为一等对象 | 中 |
+| Tool Runtime | `ToolExecutor.execute(session_id, ...)` 已透传 session | `ToolExecutionContext` 为一等对象 | 中 |
 | Cron / Scheduler | 已稳定可用，但 handler、projection、cancel 语义仍分散 | `CronAppService + SchedulerAdapter + CronProjector` 明确收口 | 中 |
-| Feedback / Reflection | 已修会话泄漏，但状态仍是 recorder 内部可变字段 | 每 session 独立 feedback state，可显式 reset/persist | 中 |
+| Feedback / Reflection | ✅ `FeedbackAppService` + `FeedbackSessionState` per-session 字典 | episodes 持久化为独立日志（可选） | 低 |
 | Read Models | 主要靠 `ChatHistory` 与即时渲染状态 | 明确 projector + read model 边界 | 中 |
-| Tests / Governance | 有回归测试，但缺 contract tests 和语义级测试 | module contract / state model / concurrency tests 完整 | 中 |
+| Tests / Governance | 100 回归测试通过，缺 contract tests 和语义测试 | module contract / state model / concurrency tests 完整 | 中 |
 
 ---
 
@@ -243,68 +256,25 @@ TUI
 3. 重构路线
 4. 验收标准
 
-### 1. Agent / Application Layer
+### 1. Agent / Application Layer ✅ (2026-05-26 Phase 2 完成)
 
-#### 当前问题
+#### 当前状态
 
-当前 `alex/agent/service.py` 已经比早期轻很多，但仍然集中承担：
+`Agent` 已降为薄 facade，5 个 application service 已就位：
 
-- application facade
-- tool registry 生命周期
-- cron service 生命周期
-- graph 构建
-- skill CRUD 暴露
-- session context 广播
-- feedback / reflection 入口
+- `ChatAppService` (`agent/chat_service.py`) — chat_stream, tool exec, graph, cron history
+- `SessionService` (`agent/session_service.py`) — session persistence boundary
+- `CronService` (`agent/cron_service.py`) — cron schedule/cancel/lifecycle
+- `FeedbackAppService` (`agent/feedback_service.py`) — rating, episode, reflection
+- `SkillAdminAppService` (`agent/skill_admin_service.py`) — skill CRUD, merge
 
-这意味着新功能仍然很容易继续堆进 `Agent`。
+`Agent.__init__` 现在只负责组合注入和 wiring，业务逻辑入口均在 application service。
 
-#### 目标设计
+#### 验收状态
 
-把当前单一 `Agent` facade 继续拆成 5 个 application service：
-
-1. `ChatAppService`
-   负责用户 turn、流式执行、turn 生命周期
-2. `SessionAppService`
-   负责 load / restore / clear / list sessions
-3. `CronAppService`
-   负责 schedule / cancel / query / subscribe reply
-4. `FeedbackAppService`
-   负责 rating、episode、reflect trigger
-5. `SkillAdminAppService`
-   负责 list / delete / deprecate / merge skills
-
-`AgentFacade` 最终只保留：
-
-- 组合注入
-- 少量兼容入口
-- 面向 TUI 的统一门面
-
-#### 重构路线
-
-Phase A:
-
-1. 新建 `agent/chat_service.py`
-2. 将 `chat_stream()`、`last_turn_result`、prompt 刷新逻辑迁入 `ChatAppService`
-3. `Agent` 只保留代理调用
-
-Phase B:
-
-1. 新建 `agent/skill_admin_service.py`
-2. 将 `list_skills()`、`delete_skill()`、`deprecate_skill()`、`merge_skills()` 迁出 `Agent`
-3. 让 `TUI` 通过 facade 调 skill admin service，而不是直碰 `_skills`
-
-Phase C:
-
-1. 新建 `agent/context_service.py`
-2. 将 `set_session_context()` 的子组件广播行为迁出 `Agent`
-3. 所有 session-scoped service 改为向 context service 注册
-
-#### 验收标准
-
-1. `service.py` 不再包含大段聚合逻辑
-2. `Agent` 只负责 facade 和依赖装配
-3. 所有业务入口均落在 application service，而不是 facade 本体
+1. ✅ `service.py` 不再包含大段聚合逻辑
+2. ✅ `Agent` 只负责 facade 和依赖装配
+3. ✅ 所有业务入口均落在 application service，而不是 facade 本体
 
 ### 2. Session / Store Boundary
 
@@ -371,117 +341,35 @@ Phase C:
 2. `store/ports.py` 与真实实现一致
 3. session contract test 可以直接跑在 port 上
 
-### 3. Skill 模块
+### 3. Skill 模块 ✅ (Phase 1 ports 对齐, Phase 2 SkillAdminAppService)
 
-#### 当前问题
+#### 当前状态
 
-当前 skill 已经比旧架构健康，但仍有三类债：
+- `skill/ports.py` — `SkillServicePort` Protocol 与真实 `SkillService` 完全对齐（10 methods）
+- `SkillAdminAppService` (`agent/skill_admin_service.py`) — 封装 `SkillManager`，提供 list/delete/deprecate/merge/load_skill
+- `SkillManager` — 保留为 `SkillService` 子类的兼容层，带 lazy default construction
+- `Agent` 通过 `SkillAdminAppService` 间接访问 `SkillManager`
 
-1. `SkillManager` 兼容层仍在主路径
-2. `skill/ports.py` 与 `skill/service.py` 方法签名不一致
-3. repository 对坏数据过于宽容，容易静默退化
+#### 剩余工作 (Phase 5)
 
-#### 目标设计
+1. 从主路径完全移除 `SkillManager`
+2. 强化 `SkillStore` 的原子写与坏数据处理
 
-把 skill 模块明确分成三层：
+### 4. Event System：Command / Event 语义 ✅ (Phase 1 语义明确)
 
-1. `SkillApplicationService`
-   负责管理入口与 orchestration
-2. `SkillDomainService`
-   负责 match / reflect / evolve / feedback rules
-3. `SkillRepository`
-   负责持久化与模板文件同步
+#### 当前状态
 
-理想结构：
+已明确选择 **方案 B**（direct-call application service + event bus 仅做状态传播）：
 
-```text
-skill/
-  application.py
-  domain.py
-  repository.py
-  matcher.py
-  reflector.py
-  evolution.py
-  ports.py
-  models.py
-```
+- `AsyncEventBus` 角色明确为 event-only bus，不做 command dispatching
+- `UserTurnRequested` 仅作为 observability event 发布
+- `chat_stream()` 直接调用 `ChatAppService`（通过 Agent facade）
+- `CronTurnHandler` 触发入口在 `push_notification()` 中（混合模式，待 Phase 4 收口）
 
-#### 重构路线
+#### 剩余工作 (Phase 4)
 
-Phase A:
-
-1. 重写 `skill/ports.py`，让它完全匹配当前真实服务接口
-2. `Agent` 改依赖 `SkillServicePort` 而不是 `SkillManager`
-
-Phase B:
-
-1. 将 `SkillManager` 降级为纯兼容别名，逐步从主路径移除
-2. 把 `reflect()`、`list_all()`、`get_skill_by_name()`、`record_usage()`、`merge_skills()` 统一收口到 `SkillApplicationService`
-
-Phase C:
-
-1. 强化 `SkillStore` 的错误处理
-2. 引入原子写文件策略
-3. 损坏数据时 fail-fast 或明确告警，而不是静默吞错
-
-#### 验收标准
-
-1. `skill/ports.py` 与真实实现完全一致
-2. `Agent` 和 `TUI` 都不再依赖 `SkillManager`
-3. repository 损坏场景有明确行为和测试
-
-### 4. Event System：Command / Event 语义收口
-
-#### 当前问题
-
-当前是典型的“半命令总线”状态：
-
-- `UserTurnRequested` 已发布，但只用于观测，不驱动执行
-- `CronJobEvent` 既用于状态传播，也被业务链路拿来触发旁路处理
-- `AsyncEventBus` 当前是单消费者串行总线，但过去文档和预期曾把它描述成跨 session 并发总线
-
-#### 目标设计
-
-这部分必须做二选一，而不是继续模糊：
-
-方案 A：显式双总线
-
-- `CommandBus` 负责执行入口
-- `EventBus` 负责状态传播
-
-方案 B：保持 direct-call application service
-
-- TUI / scheduler 直接调用 app service
-- bus 只负责 domain / UI events
-
-推荐 **方案 B**。原因：
-
-1. 当前是单进程 TUI 应用，不需要为了形式引入 command bus
-2. direct-call 更容易调试和测试
-3. 只要边界够硬，application service + event bus 已足够
-
-#### 重构路线
-
-Phase A:
-
-1. 在文档中明确：当前 bus 是 event bus，不是 command bus
-2. 删除“用户 turn 已命令事件化”的误导表述
-
-Phase B:
-
-1. `chat_stream()` 改为直接调用 `ChatAppService.run_turn()`
-2. `UserTurnRequested` 仅作为 observability event
-
-Phase C:
-
-1. 统一 `push_notification()` 的语义，避免“publish + create_task 旁路处理”
-2. `CronTurnHandler` 的触发入口要么由 `CronAppService` 直接调用，要么由专门 subscriber 触发，二者只能保留一条
-
-#### 验收标准
-
-1. 文档、代码、心智模型都明确 bus 的角色
-2. 不再存在“发了 command event 但实际没人消费”的伪边界
-3. cron 订阅回复只有一条正式执行链
+1. 统一 `push_notification()` 语义，避免 “publish + create_task 旁路处理”
+2. CronTurnHandler 触发入口只能保留一条
 
 ### 5. TUI / Projection Layer
 
@@ -582,111 +470,37 @@ Phase C:
 2. TUI 只消费投影事件，不参与业务决策
 3. store 只消费持久化事件，不参与执行决策
 
-### 7. Tool Runtime
+### 7. Tool Runtime (Phase 1 partial, Phase 4 完成剩余)
 
-#### 当前问题
+#### 当前状态
 
-`ToolExecutor.execute(session_id, ...)` 已接受 `session_id`，但还没有把它提升为正式运行时上下文。
+`ToolExecutor.execute(session_id, ...)` 已接受 `session_id`，但尚未提升为正式 `ToolExecutionContext`。这在 Phase 1 中标记为后续工作。
 
-这会导致两个问题：
+#### 剩余工作 (Phase 4)
 
-1. 未来一旦有 session-aware tool，就会继续走隐式耦合
-2. tool API 与 runtime reality 不一致
+1. 引入 `ToolExecutionContext` dataclass
+2. `ToolExecutor.execute(ctx, name, args)` 签名升级
+3. `cron_history`、未来 session-aware tools 统一使用 context
 
-#### 目标设计
+### 8. Feedback / Reflection ✅ (2026-05-26 Phase 2 完成)
 
-新增：
+#### 当前状态
 
-```python
-@dataclass
-class ToolExecutionContext:
-    session_id: str
-    turn_id: str | None = None
-    source: str = "user"
-    metadata: dict[str, Any] = field(default_factory=dict)
-```
+`FeedbackAppService` (`agent/feedback_service.py`) 已实现：
 
-工具执行入口改为：
+- `FeedbackSessionState` dataclass — per-session turn_count, reflecting flag, episodes
+- `dict[session_id, FeedbackSessionState]` — 多 session 状态隔间
+- `_state()` 方法自动创建/返回当前 session 状态
+- `set_session_id()` — 新 session 自动创建新 state
+- `reset_session_state(session_id)` — 显式清除（用于 `/clear`）
 
-```python
-async def execute(self, ctx: ToolExecutionContext, name: str, args: dict) -> str:
-    ...
-```
+原 `FeedbackRecorder` (`agent/feedback.py`) 保留为兼容参考，但主路径已使用 `FeedbackAppService`。
 
-#### 重构路线
+#### 验收状态
 
-Phase A:
-
-1. 新建 `ToolExecutionContext`
-2. `Agent.execute_tool_action()` 与 orchestrator 统一构造 context
-
-Phase B:
-
-1. `ToolExecutor` 支持为 tool 注入 context
-2. 为内置工具定义是否接收 context 的统一规则
-
-Phase C:
-
-1. `cron_history`、future session-aware tools、审计日志统一使用 context
-
-#### 验收标准
-
-1. 不再只传裸 `session_id`
-2. tools runtime 的契约与实现一致
-3. 新工具不需要再通过闭包或宿主对象偷拿 session 信息
-
-### 8. Feedback / Reflection
-
-#### 当前问题
-
-虽然跨会话泄漏已修，但 recorder 仍然是“一个对象里塞所有 session 当前状态”的模式：
-
-- `_turn_count`
-- `_skill_episodes`
-- `_reflecting`
-
-这不利于未来多会话并行、恢复或调试。
-
-#### 目标设计
-
-改为每 session 一份 feedback state：
-
-```python
-@dataclass
-class FeedbackSessionState:
-    turn_count: int = 0
-    reflecting: bool = False
-    episodes: list[dict] = field(default_factory=list)
-```
-
-`FeedbackAppService` 管理：
-
-- `dict[session_id, FeedbackSessionState]`
-- record episode
-- provide rating
-- maybe reflect
-- clear session state
-
-#### 重构路线
-
-Phase A:
-
-1. 将 `FeedbackRecorder` 改名为 `FeedbackAppService`
-2. 引入 `FeedbackSessionState`
-
-Phase B:
-
-1. 所有与 session 切换相关的 reset 都只调用 `feedback_service.reset_session_state(session_id)`
-2. TUI 不再依赖除 `_pending_feedback_turn_id` 之外的隐式反馈状态
-
-Phase C:
-
-1. 若未来需要，可选择将 feedback episodes 持久化为独立调试日志
-
-#### 验收标准
-
-1. feedback 状态以 session 为键，而不是 recorder 单实例字段
-2. 会话切换逻辑不再需要了解内部字段名
+1. ✅ feedback 状态以 session 为键，而不是单实例字段
+2. ✅ 会话切换逻辑通过 `set_session_id` / `reset_session_state` 统一管理
+3. ✅ 10/10 feedback 回归测试通过
 
 ### 9. Read Models / Projection
 
@@ -775,7 +589,7 @@ Phase C:
 
 ## 分阶段路线图
 
-### Phase 1：语义校正
+### Phase 1：语义校正 ✅ (2026-05-25 完成)
 
 目标：
 
@@ -783,52 +597,36 @@ Phase C:
 
 工作项：
 
-1. 修正 `store/ports.py`
-2. 修正 `skill/ports.py`
-3. 明确 `EventBus` 仅为 event bus
-4. 删除文档中所有不符合当前实现的乐观描述
+1. ✅ 修正 `store/ports.py` — `SessionStore` → `SessionRepository` + `SessionBundle`
+2. ✅ 修正 `skill/ports.py` — `SkillServicePort` 与真实 `SkillService` 对齐
+3. ✅ 明确 `EventBus` 仅为 event bus（文档 + agent/ports.py 清理）
+4. ✅ 删除 agent/ports.py 中漂移的旧 Protocol
 
 完成标志：
 
-- 文档与代码语义对齐
-- port 不再漂移
+- 文档与代码语义对齐 ✅
+- port 不再漂移 ✅
 
-### Phase 2：Application Layer 再拆分
+### Phase 2：Application Layer 再拆分 ✅ (2026-05-26 完成)
 
 目标：
 
-- 让 `Agent` 从“大聚合根”继续瘦身
+- 让 `Agent` 从”大聚合根”继续瘦身
 
 工作项：
 
-1. 新建 `ChatAppService`
-2. 新建 `SessionAppService`
-3. 新建 `CronAppService`
-4. 新建 `FeedbackAppService`
-5. 新建 `SkillAdminAppService`
+1. ✅ 新建 `ChatAppService` (`agent/chat_service.py`)
+2. ✅ 保留并增强 `SessionService` (`agent/session_service.py`)
+3. ✅ 保留并增强 `CronService` (`agent/cron_service.py`)
+4. ✅ 新建 `FeedbackAppService` (`agent/feedback_service.py`)
+5. ✅ 新建 `SkillAdminAppService` (`agent/skill_admin_service.py`)
 
 完成标志：
 
-- `service.py` 只剩 facade 与 wiring
+- `service.py` 只剩 facade 与 wiring ✅
+- 100/100 回归测试通过 ✅
 
-### Phase 3：Runtime 与状态模型收口
-
-目标：
-
-- 建立稳定的 session-scoped 状态和 tool runtime
-
-工作项：
-
-1. 引入 `ToolExecutionContext`
-2. 引入 `FeedbackSessionState`
-3. 引入 `CronHistoryReadModel`
-4. 将 session reset 行为集中管理
-
-完成标志：
-
-- session 级状态可枚举、可重置、可测试
-
-### Phase 4：Projection 与 UI 薄化
+### Phase 3：Projection 与 UI 薄化 (计划: 2026-05-27)
 
 目标：
 
@@ -836,17 +634,35 @@ Phase C:
 
 工作项：
 
-1. 拆出 `InputRouter`
-2. 拆出 `ChatProjector`
-3. 拆出 `SessionViewState`
-4. 拆出 `NotificationController`
+1. 从 `controller.py` 拆出 `chat_projector.py`（bus handler → widget 更新）
+2. 创建 `tui/view_state.py`，收口 `_page_mode`、`_showing_session_list`、`_pending_feedback_turn_id` 等状态
+3. 从 `controller.py` 拆出 `notification_controller.py`（toast、feedback prompt、status bar）
+4. 将 `_cron_renderers` 管理逻辑移入 projector
+5. Session 切换时只重置 `SessionViewState`
 
 完成标志：
 
-- `controller.py` 明显缩短
+- `controller.py` 明显缩短（从 ~600 行降至 ~300 行以下）
 - UI 状态变更路径统一
 
-### Phase 5：Adapter 强化与测试治理
+### Phase 4：Runtime 与状态模型收口 (计划: 2026-05-28)
+
+目标：
+
+- 建立稳定的 session-scoped 状态和 tool runtime
+
+工作项：
+
+1. 引入 `ToolExecutionContext` 为一等运行时上下文
+2. 引入 `CronHistoryReadModel`
+3. 将 session reset 行为集中管理
+4. `SessionService` 不再直接 import `deserialize_message`
+
+完成标志：
+
+- session 级状态可枚举、可重置、可测试
+
+### Phase 5：Adapter 强化与测试治理 (计划: 2026-05-29)
 
 目标：
 
@@ -856,11 +672,11 @@ Phase C:
 
 1. 强化 `SkillStore` 的原子写与坏数据处理
 2. 完善 scheduler / bus / tool runtime 语义测试
-3. 增加 contract tests
+3. 增加 port contract tests
 
 完成标志：
 
-- 技术债从“边界不硬”转为“业务优化空间”
+- 技术债从”边界不硬”转为”业务优化空间”
 
 ---
 
@@ -879,10 +695,9 @@ Phase C:
 
 ## 一句话总结
 
-当前 Alex 已经不是“乱成一团的单体”，但离最佳长期演进架构还有一段距离。
+当前 Alex 已经是模块化单体 v2：Application Layer 拆分为 5 个独立 service，port/adapter 全对齐，Agent 降为薄 facade。
 
-下一阶段重构的重点，不是继续“拆目录”，而是把以下三件事做硬：
-
-1. 让 application / domain / adapter / projection 四层真正分开
-2. 让 port / service / runtime 说同一种语言
-3. 让 session 级状态成为一等模型，而不是散落在各个对象里的字段
+下一阶段（2026-05-27）的重点是 **Phase 3：Projection 与 UI 薄化**：
+1. 从 TUI controller 拆出 ChatProjector、SessionViewState、NotificationController
+2. controller.py 从 ~600 行降至 ~300 行以下
+3. UI 状态变更路径统一，session 切换时只有一个地方负责 reset

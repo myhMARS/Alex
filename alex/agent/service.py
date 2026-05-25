@@ -1,10 +1,17 @@
-"""Agent facade — wires together prompt, orchestration, cron, and feedback."""
+"""Agent facade — thin composition root that wires application services.
+
+The Agent is now a thin facade.  Business logic lives in:
+  - ChatAppService      (chat_stream, tool execution, graph)
+  - SessionService      (session persistence boundary)
+  - CronService         (cron scheduling / cancellation)
+  - FeedbackAppService  (feedback recording, reflection)
+  - SkillAdminAppService (skill CRUD, merging)
+"""
 
 from __future__ import annotations
 
 import asyncio
 import json
-import logging
 from collections.abc import AsyncIterator
 from datetime import datetime
 
@@ -15,23 +22,20 @@ from langchain_core.messages import BaseMessage
 from langchain_core.tools import BaseTool as LCBaseTool, StructuredTool
 from pydantic import BaseModel, Field
 
-from alex.agent.cron_handler import CronTurnHandler
-from alex.agent.feedback import FeedbackRecorder
-from alex.agent.orchestrator import TurnOrchestrator
-from alex.agent.prompt import PromptAssembler
+from alex.agent.chat_service import ChatAppService
+from alex.agent.cron_service import CronService
+from alex.agent.feedback_service import FeedbackAppService
 from alex.agent.session_service import SessionService
+from alex.agent.skill_admin_service import SkillAdminAppService
 from alex.bus import AsyncEventBus
 from alex.bus.events import CronJobEvent, UserTurnRequested
 from alex.config import get_llm_config
 from alex.llm.factory import LLMFactory
 from alex.memory.base import MemoryBase
 from alex.memory.buffer import BufferMemory
-from alex.agent.cron_service import CronService
 from alex.skill.models import SkillManager
-from alex.tools.executor import ToolExecutor
-from alex.tools.registry import ToolRegistry
 
-logger = logging.getLogger(__name__)
+logger = __import__("logging").getLogger(__name__)
 
 
 class LoadSkillInput(BaseModel):
@@ -46,9 +50,8 @@ class CronHistoryInput(BaseModel):
 class Agent:
     """Conversational agent with tool-use, memory, skills, and streaming.
 
-    Serves as a facade that wires together PromptAssembler, TurnOrchestrator,
-    CronTurnHandler, and FeedbackRecorder — each owning a distinct part of
-    the turn lifecycle.
+    Thin facade that wires together ChatAppService, SessionService,
+    CronService, FeedbackAppService, and SkillAdminAppService.
     """
 
     def __init__(
@@ -68,102 +71,74 @@ class Agent:
         self._callbacks = callbacks or []
         self._memory = memory or BufferMemory()
         self._skills = skill_manager or SkillManager()
-        self._tool_registry = ToolRegistry()
-        self._tool_executor = ToolExecutor(self._tool_registry)
         self._session_id: str = ""
-        self._cron_history: list[dict] = []
         self._bus = event_bus
-        self._turn_lock = asyncio.Lock()
-        self._reflecting = False
-        self._turn_skill_ids: dict[str, list[str]] = {}  # turn_id → skill_ids
+        self._turn_skill_ids: dict[str, list[str]] = {}
 
-        # Sub-components
+        # ── Application services (order matters: _skill_admin before _chat) ─
+
         self._session = SessionService()
-        self._prompt = PromptAssembler(self._system_prompt, self._skills)
-        self._feedback = FeedbackRecorder(self._memory, self._skills, self._llm, self.push_notification)
-        self._orchestrator = TurnOrchestrator(
-            self._llm, self._memory, self._skills,
-            self.push_notification, self._turn_lock,
-            max_iterations, self._callbacks,
-        )
-        self._cron_handler = CronTurnHandler(
-            self._llm, self._memory, self._tool_executor,
-            self.push_notification, self._turn_lock,
-            max_iterations, self._callbacks,
+
+        self._skill_admin = SkillAdminAppService(
+            skill_manager=self._skills,
+            llm=self._llm,
         )
 
-        # Cron service uses push_notification as its callback
-        self._cron = CronService(self.push_notification)
+        self._feedback = FeedbackAppService(
+            memory=self._memory,
+            skill_manager=self._skills,
+            llm=self._llm,
+            push_notification=self.push_notification,
+        )
 
-        # Register built-in tools
-        self._tool_registry.register(self._create_load_skill_tool())
-        self._tool_registry.register(self._create_cron_history_tool())
+        self._chat = ChatAppService(
+            llm=self._llm,
+            memory=self._memory,
+            skill_manager=self._skills,
+            system_prompt=self._system_prompt,
+            max_iterations=max_iterations,
+            callbacks=self._callbacks,
+            event_bus=event_bus,
+        )
+        self._chat.register_builtin_tools(
+            load_skill_fn=self._create_load_skill_fn(),
+            cron_history_fn=self._create_cron_history_fn(),
+        )
         if tools:
             for t in tools:
-                self._tool_registry.register(t)
-        self._graph = self._build_graph()
+                self._chat.register_tool(t)
 
-    # ── graph management ──────────────────────────────────────────────────
+        self._cron = CronService(self.push_notification)
 
-    def _build_graph(self):
-        tools = self._tool_registry.list() or None
-        return create_agent(
-            model=self._llm,
-            tools=tools,
-            system_prompt=self._prompt.augmented_prompt,
-        )
+    # ── built-in tool factories ──────────────────────────────────────────
 
-    def _create_load_skill_tool(self) -> StructuredTool:
+    def _create_load_skill_fn(self):
+        skill_admin = self._skill_admin
         async def _load_skill(skill_name: str) -> str:
-            skill = self._skills.get_skill_by_name(skill_name)
-            if skill:
-                return f"[Skill: {skill.name}]\n\nWhen to apply: {skill.pattern}\n\nExecution methodology:\n{skill.instruction}"
-            names = [s.name for s in self._skills.list_all() if s.status != "DEPRECATED"]
-            return f"Skill '{skill_name}' not found. Available: {', '.join(names)}"
+            return await skill_admin.load_skill(skill_name)
+        return _load_skill
 
-        return StructuredTool.from_function(
-            coroutine=_load_skill,
-            name="load_skill",
-            description=(
-                "Load the full execution methodology for a skill from the skill directory. "
-                "Use this when a skill's pattern matches the user's request and you need "
-                "the step-by-step execution guide to properly handle this type of task."
-            ),
-            args_schema=LoadSkillInput,
-        )
-
-    def _create_cron_history_tool(self) -> StructuredTool:
+    def _create_cron_history_fn(self):
+        agent_ref = self
         async def _cron_history(query: str = "", limit: int = 10) -> str:
-            return self.format_cron_history(query=query, limit=limit)
-
-        return StructuredTool.from_function(
-            coroutine=_cron_history,
-            name="cron_history",
-            description=(
-                "Query completed cron executions from the current chat session. "
-                "Returns status, start/end time, params, and result/error."
-            ),
-            args_schema=CronHistoryInput,
-        )
+            return agent_ref.format_cron_history(query=query, limit=limit)
+        return _cron_history
 
     # ── public API ───────────────────────────────────────────────────────
 
     @property
     def tools(self) -> list[LCBaseTool]:
-        return self._tool_registry.list()
+        return self._chat.tools
 
     def register_tool(self, tool: LCBaseTool) -> None:
-        self._tool_registry.register(tool)
-        self._graph = self._build_graph()
+        self._chat.register_tool(tool)
 
     def bind_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._cron.bind_event_loop(loop)
 
     def set_session_context(self, session_id: str, cron_history: list[dict] | None = None) -> None:
         self._session_id = session_id
-        self._cron_history = list(cron_history or [])
-        self._orchestrator.set_session_id(session_id)
-        self._cron_handler.set_session_id(session_id)
+        self._chat.set_session_context(session_id, cron_history)
         self._feedback.set_session_id(session_id)
 
     @property
@@ -180,55 +155,19 @@ class Agent:
         await self._session.subscribe_store(bus)
 
     def list_session_cron_history(self, query: str = "", limit: int = 20) -> list[dict]:
-        records = list(self._cron_history)
-        q = (query or "").strip().lower()
-        if q:
-            def _match(rec: dict) -> bool:
-                haystacks = [
-                    str(rec.get("execution_id", "")),
-                    str(rec.get("job_id", "")),
-                    str(rec.get("name", "")),
-                    str(rec.get("status", "")),
-                    str(rec.get("action", "")),
-                ]
-                return any(q in item.lower() for item in haystacks if item)
-            records = [rec for rec in records if _match(rec)]
-        records.sort(key=lambda rec: float(rec.get("finished_at") or rec.get("started_at") or 0), reverse=True)
-        return records[: max(1, min(int(limit), 50))]
+        return self._chat.list_session_cron_history(query=query, limit=limit)
 
     def format_cron_history(self, query: str = "", limit: int = 10) -> str:
-        records = self.list_session_cron_history(query=query, limit=limit)
-        if not records:
-            return "No completed cron executions in the current session."
-        blocks: list[str] = []
-        for rec in records:
-            started_at = rec.get("started_at")
-            finished_at = rec.get("finished_at")
-            started_s = datetime.fromtimestamp(started_at).isoformat(sep=" ", timespec="seconds") if started_at else "-"
-            finished_s = datetime.fromtimestamp(finished_at).isoformat(sep=" ", timespec="seconds") if finished_at else "-"
-            result = rec.get("result") or rec.get("error") or ""
-            blocks.append(
-                "\n".join([
-                    f"[{rec.get('execution_id', '')}] {rec.get('name', '')} ({rec.get('status', '')})",
-                    f"job_id: {rec.get('job_id', '')}",
-                    f"action: {rec.get('action', '')}",
-                    f"started_at: {started_s}",
-                    f"finished_at: {finished_s}",
-                    f"params: {json.dumps(rec.get('params', {}), ensure_ascii=False)}",
-                    f"result: {result}",
-                ])
-            )
-        return "\n\n".join(blocks)
+        return self._chat.format_cron_history(query=query, limit=limit)
 
     async def start_services(self) -> None:
         await self._cron.start_services()
 
     def unregister_tool(self, name: str) -> None:
-        self._tool_registry.unregister(name)
-        self._graph = self._build_graph()
+        self._chat.unregister_tool(name)
 
     def get_tool(self, name: str) -> LCBaseTool | None:
-        return self._tool_registry.get(name)
+        return self._chat.get_tool(name)
 
     async def clear_history(self) -> None:
         await self._memory.clear(session_id=self._session_id)
@@ -243,37 +182,16 @@ class Agent:
 
     def bind_event_bus(self, bus: AsyncEventBus) -> None:
         self._bus = bus
+        self._chat.set_event_bus(bus)
 
     def push_notification(self, event) -> None:
-        """Publish a typed event to the event bus.
-
-        CronJobEvents with subscribe=True automatically trigger an LLM
-        streaming reply via the CronTurnHandler.
-        """
         if self._bus is not None:
             self._bus.publish(event)
         if isinstance(event, CronJobEvent) and event.subscribe:
-            try:
-                asyncio.create_task(self._cron_handler.handle(event, self._graph))
-            except RuntimeError:
-                pass
+            self._chat.push_notification(event)
 
     async def execute_tool_action(self, session_id: str, action: str, params: dict) -> str:
-        """Execute a tool by name — public API for cron / scheduler.
-
-        session_id is the owning session for this cron job, not the
-        current foreground session.
-        """
-        action = (action or "").strip()
-        params = params or {}
-
-        if action == "notify":
-            return str(params.get("message", ""))
-
-        result = await self._tool_executor.execute(session_id, action, params)
-        if result.startswith("Error:"):
-            raise ValueError(result)
-        return result
+        return await self._chat.execute_tool_action(session_id, action, params)
 
     async def schedule_cron_job(
         self,
@@ -287,7 +205,6 @@ class Agent:
         action: str = "",
         params: dict | None = None,
     ) -> str:
-        """Schedule a new cron job — public API for the cron tool."""
         return await self._cron.schedule(
             session_id=self.session_id,
             name=name,
@@ -315,15 +232,10 @@ class Agent:
         return self._feedback.is_reflecting
 
     def provide_feedback(self, positive: bool, turn_id: str = "") -> None:
-        """User feedback — records skill usage and triggers reflection on negative.
-
-        When turn_id is provided, looks up skill IDs from the turn→skills
-        mapping.  Otherwise falls back to the most recent turn's skill IDs.
-        """
         if turn_id and turn_id in self._turn_skill_ids:
             skill_ids = self._turn_skill_ids.pop(turn_id)
         else:
-            result = self._orchestrator.last_result
+            result = self._chat.last_turn_result
             skill_ids = result.loaded_skill_ids if result else []
         self._feedback.provide_feedback(positive, skill_ids)
         if not positive:
@@ -335,91 +247,36 @@ class Agent:
     # ── reflection / skills (public) ──────────────────────────────────────
 
     async def reflect(self) -> dict:
-        """Force skill reflection. Returns {new, updated, deprecated, names}."""
         return await self._feedback.reflect()
 
     def list_skills(self) -> list[dict]:
-        """List all skills with metadata for display."""
-        all_skills = self._skills.list_all()
-        return [
-            {
-                "id": s.id,
-                "name": s.name,
-                "status": s.status,
-                "use_count": s.use_count,
-                "success_count": s.success_count,
-                "failure_count": s.failure_count,
-                "pattern": s.pattern,
-                "instruction": s.instruction,
-                "tags": s.tags,
-            }
-            for s in all_skills
-        ]
+        return self._skill_admin.list_skills()
 
     def delete_skill(self, target: str) -> str | None:
-        """Delete a skill by name or id prefix. Returns skill name or None."""
-        found = None
-        for s in self._skills.list_all():
-            if s.id.startswith(target) or s.name.lower() == target.lower():
-                found = s
-                break
-        if found:
-            self._skills.remove_skill(found.id)
-            return found.name
-        return None
+        return self._skill_admin.delete_skill(target)
 
     def deprecate_skill(self, target: str) -> str | None:
-        """Deprecate a skill by name or id prefix. Returns skill name or None."""
-        found = None
-        for s in self._skills.list_all():
-            if s.id.startswith(target) or s.name.lower() == target.lower():
-                found = s
-                break
-        if found:
-            self._skills.deprecate_skill(found.id)
-            return found.name
-        return None
+        return self._skill_admin.deprecate_skill(target)
 
     async def merge_skills(self) -> dict:
-        """LLM-based skill deduplication. Returns {merged, deprecated, remaining}."""
-        return await self._skills.merge_skills(self._llm)
+        return await self._skill_admin.merge_skills()
 
     # ── history restore (public) ──────────────────────────────────────────
 
     async def restore_history(self, messages: list) -> None:
-        """Clear memory and replay a standard message sequence."""
         await self._session.restore_history(messages, self._memory, self._session_id)
 
     # ── streaming chat ───────────────────────────────────────────────────
 
     @property
     def last_turn_result(self):
-        """Return the last TurnResult, or None if no turn has completed."""
-        return self._orchestrator.last_result
+        return self._chat.last_turn_result
 
     async def chat_stream(self, user_message: str) -> AsyncIterator:
-        """Streaming chat — delegates to TurnOrchestrator.
-
-        Yields typed UI events (TokenEmitted, ThinkingUpdated, ToolStarted,
-        ToolFinished, SkillLoaded).  Post-turn processing runs after the
-        orchestrator exhausts; the consumer reads last_turn_result for
-        finalization metadata.
-        """
-        # Publish command for observability
-        self.push_notification(UserTurnRequested(
-            session_id=self._session_id, user_text=user_message,
-        ))
-
-        # Ensure skills prompt is up-to-date
-        if self._prompt.ensure_skills_prompt(user_message):
-            self._graph = self._build_graph()
-
-        # Run the turn via orchestrator
-        async for event in self._orchestrator.run(user_message, self._graph):
+        async for event in self._chat.chat_stream(user_message):
             yield event
 
-        # Post-turn processing — orchestrator has published TurnCompleted
-        result = self._orchestrator.last_result
+        result = self._chat.last_turn_result
         if result:
             if result.turn_id and result.loaded_skill_ids:
                 self._turn_skill_ids[result.turn_id] = list(result.loaded_skill_ids)

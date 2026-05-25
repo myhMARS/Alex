@@ -1,6 +1,6 @@
 """Store module — disk persistence for session, skill, and config data."""
 
-from alex.store.ports import SessionStore, SkillRepository
+from alex.store.ports import SessionRepository, SkillRepository
 from alex.store.session_adapter import SessionPersistence
 
-__all__ = ["SessionStore", "SkillRepository", "SessionPersistence"]
+__all__ = ["SessionRepository", "SessionBundle", "SkillRepository", "SessionPersistence"]

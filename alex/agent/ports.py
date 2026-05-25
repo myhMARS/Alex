@@ -1,5 +1,9 @@
-"""Agent module public interfaces — Protocols that define the contracts
-between the TUI / frontend and the agent facade."""
+"""Agent module public interfaces — the sole boundary TUI / frontends depend on.
+
+AgentFacade is the main contract.  Legacy narrow protocols (LLMGateway,
+MemoryPort, SkillServicePort, ToolExecutorPort) are retained for
+reference but not used directly by TUI.
+"""
 
 from __future__ import annotations
 
@@ -82,7 +86,12 @@ class AgentFacade(Protocol):
     def list_session_cron_history(self, query: str = "", limit: int = 20) -> list[dict]: ...
 
 
-# ── Narrow legacy protocols (kept for reference, not used by TUI) ─────────
+# ── Narrow legacy protocols (kept for documentation, not used by TUI) ─────────
+# These are re-exports from their canonical module homes.  See:
+#   alex/skill/ports.py  for SkillServicePort
+#   alex/store/ports.py  for SessionRepository
+#   alex/tools/ports.py  for ToolExecutor / ToolRegistry
+
 
 class LLMGateway(Protocol):
     """Streaming LLM — the orchestrator calls this to get token/tool events."""
@@ -100,19 +109,3 @@ class MemoryPort(Protocol):
     async def append(self, session_id: str, messages: list[BaseMessage]) -> None: ...
 
     async def clear(self, session_id: str) -> None: ...
-
-
-class SkillServicePort(Protocol):
-    """Skill directory — prompt augmentation, loading, and feedback."""
-
-    async def build_prompt_section(self, query: str) -> str: ...
-
-    async def load_skill(self, name: str) -> str: ...
-
-    async def record_feedback(self, turn_id: str, positive: bool) -> None: ...
-
-
-class ToolExecutorPort(Protocol):
-    """Tool execution — run a tool by name and return its output string."""
-
-    async def execute(self, tool_name: str, args: dict[str, Any]) -> str: ...
