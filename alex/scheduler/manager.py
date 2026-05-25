@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from alex.events import CronDebugEvent, CronJobEvent
+from alex.bus.events import CronDebugEvent, CronJobEvent
 
 
 class CronParseError(ValueError):
@@ -121,7 +121,8 @@ class CronManager:
         self._runners: dict[str, callable] = {}
         self._aps_job_ids: dict[str, object] = {}
         self._scheduler = None
-        self._lock: asyncio.Lock | None = None
+        self._session_locks: dict[str, asyncio.Lock] = {}
+        self._running_tasks: dict[str, asyncio.Task] = {}
 
     def bind_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
@@ -177,8 +178,6 @@ class CronManager:
 
         loop = self._loop or asyncio.get_running_loop()
         self._loop = loop
-        if self._lock is None:
-            self._lock = asyncio.Lock()
         self._scheduler = AsyncIOScheduler(
             event_loop=loop,
             executors={"default": AsyncIOExecutor()},
@@ -370,6 +369,10 @@ class CronManager:
         aps_id = self._aps_job_ids.pop(job_id, None) or job_id
         job = self._jobs.get(job_id)
         self._runners.pop(job_id, None)
+        # Cancel the in-flight task if running
+        task = self._running_tasks.pop(job_id, None)
+        if task is not None and not task.done():
+            task.cancel()
         if self._scheduler is None:
             if job:
                 job.status = "CANCELLED"
@@ -412,13 +415,13 @@ class CronManager:
         trigger = _build_trigger(cron_expr=job.cron, interval_seconds=job.interval_seconds, tzinfo=base.tzinfo)
 
         async def _run_once_async() -> None:
+            self._running_tasks[job.id] = asyncio.current_task()
             run_status = "FAILED"
             try:
-                lock = self._lock
-                if lock is None:
-                    lock = asyncio.Lock()
-                    self._lock = lock
-                async with lock:
+                sid = job.session_id or ""
+                if sid not in self._session_locks:
+                    self._session_locks[sid] = asyncio.Lock()
+                async with self._session_locks[sid]:
                     if job.status == "CANCELLED":
                         return
 
@@ -437,11 +440,21 @@ class CronManager:
                     ))
 
                     try:
-                        result = await runner(job.action, job.params)
+                        result = await runner(job.session_id, job.action, job.params)
+                        # Re-check after runner returns — a long runner may
+                        # have been cancelled while awaiting I/O.
+                        if job.status == "CANCELLED":
+                            return
                         job.last_result = str(result)
                         job.last_error = ""
                         run_status = "SUCCESS"
+                    except asyncio.CancelledError:
+                        job.status = "CANCELLED"
+                        job.next_run_at = None
+                        return
                     except Exception as e:
+                        if job.status == "CANCELLED":
+                            return
                         job.last_result = ""
                         job.last_error = f"{type(e).__name__}: {e}"
                         run_status = "FAILED"
@@ -518,6 +531,8 @@ class CronManager:
                             self._scheduler.remove_job(aps_id)
                         except Exception:
                             pass
+            finally:
+                self._running_tasks.pop(job.id, None)
 
         def _run_once() -> None:
             self._debug("job_fire", job=job)

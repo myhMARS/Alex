@@ -112,17 +112,19 @@ def save_session_bundle(
     cron_history: list[dict[str, Any]] | None = None,
 ) -> Path:
     """Persist messages plus session-scoped cron execution history."""
+    path = _session_path(session_id)
+    existing = load_session_raw(session_id) or {}
+    created_at = existing.get("created_at") or datetime.now().isoformat()
     first_msg = messages[0].content if messages else ""
     if first_msg and len(first_msg) > 80:
         first_msg = first_msg[:80]
     data: dict[str, Any] = {
         "session_id": session_id,
-        "created_at": datetime.now().isoformat(),
+        "created_at": created_at,
         "first_message": first_msg,
         "messages": serialize_messages(messages),
         "cron_history": list(cron_history or []),
     }
-    path = _session_path(session_id)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
 

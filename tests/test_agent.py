@@ -9,6 +9,7 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from alex.agent import Agent
+from alex.bus.events import TokenEmitted
 
 
 class _TestInput(BaseModel):
@@ -78,8 +79,8 @@ class TestHistory:
     @pytest.mark.asyncio
     async def test_clear_history(self):
         agent = Agent()
-        with patch.object(agent, "_ensure_skills_prompt", return_value=None):
-            with patch.object(agent, "_maybe_reflect", new_callable=AsyncMock):
+        with patch.object(agent._prompt, "ensure_skills_prompt", return_value=False):
+            with patch.object(agent._feedback, "maybe_reflect", new_callable=AsyncMock):
                 with patch.object(agent._graph, "astream_events") as mock_stream:
                     async def _events():
                         yield {"event": "on_chat_model_stream", "data": {"chunk": AIMessage(content="Hello!")}}
@@ -96,8 +97,8 @@ class TestChatStream:
     @pytest.mark.asyncio
     async def test_returns_response(self):
         agent = Agent()
-        with patch.object(agent, "_ensure_skills_prompt", return_value=None):
-            with patch.object(agent, "_maybe_reflect", new_callable=AsyncMock):
+        with patch.object(agent._prompt, "ensure_skills_prompt", return_value=False):
+            with patch.object(agent._feedback, "maybe_reflect", new_callable=AsyncMock):
                 with patch.object(agent._graph, "astream_events") as mock_stream:
                     async def _events():
                         yield {"event": "on_chat_model_stream", "data": {"chunk": AIMessage(content="Hello, I'm Alex.")}}
@@ -106,8 +107,8 @@ class TestChatStream:
                     mock_stream.return_value = _events()
                     collected = []
                     async for event in agent.chat_stream("Hi"):
-                        if event.type == "token":
-                            collected.append(event.data)
+                        if isinstance(event, TokenEmitted):
+                            collected.append(event.delta)
                     response = "".join(collected)
                     assert response == "Hello, I'm Alex."
                     hist = agent.history
@@ -117,8 +118,8 @@ class TestChatStream:
     @pytest.mark.asyncio
     async def test_passes_chat_history(self):
         agent = Agent()
-        with patch.object(agent, "_ensure_skills_prompt", return_value=None):
-            with patch.object(agent, "_maybe_reflect", new_callable=AsyncMock):
+        with patch.object(agent._prompt, "ensure_skills_prompt", return_value=False):
+            with patch.object(agent._feedback, "maybe_reflect", new_callable=AsyncMock):
                 with patch.object(agent._graph, "astream_events") as mock_stream:
                     async def _events1():
                         yield {"event": "on_chat_model_stream", "data": {"chunk": AIMessage(content="Replying")}}

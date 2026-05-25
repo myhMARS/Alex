@@ -11,20 +11,31 @@ class MemoryBase(ABC):
     Agent depends only on this interface. Swap implementations
     (BufferMemory, Mem0, MemGPT, vector DB) without touching Agent code.
 
-    All methods are async to support networked backends (Redis, Mem0, etc.).
+    All methods accept session_id so implementations can partition
+    messages by session (e.g. networked backends).  In-process backends
+    may ignore the parameter.
     """
 
     @abstractmethod
-    async def add_message(self, msg: BaseMessage) -> None: ...
+    async def add_message(self, msg: BaseMessage, session_id: str = "") -> None: ...
 
     @abstractmethod
-    async def add_messages(self, msgs: list[BaseMessage]) -> None: ...
+    async def add_messages(self, msgs: list[BaseMessage], session_id: str = "") -> None: ...
+
+    async def append(self, session_id: str, messages: list[BaseMessage]) -> None:
+        """MemoryService-compatible batch append."""
+        await self.add_messages(messages, session_id=session_id)
 
     @abstractmethod
-    async def get_context(self, query: str | None = None) -> list[BaseMessage]: ...
+    async def get_context(self, session_id: str = "", query: str | None = None) -> list[BaseMessage]: ...
 
     @abstractmethod
-    async def clear(self) -> None: ...
+    async def clear(self, session_id: str = "") -> None: ...
+
+    async def replace(self, session_id: str, messages: list[BaseMessage]) -> None:
+        """MemoryService-compatible atomic replace — clear then append."""
+        await self.clear(session_id=session_id)
+        await self.add_messages(messages, session_id=session_id)
 
     @property
     @abstractmethod
@@ -38,7 +49,7 @@ class MemoryBase(ABC):
         """Optional — semantic search over memory (RAG-ready)."""
         return []
 
-    def get_context_sync(self) -> list[BaseMessage]:
+    def get_context_sync(self, session_id: str = "") -> list[BaseMessage]:
         """Synchronous fallback for internal reads (local backends only).
 
         Remote backends may raise NotImplementedError — Agent uses this

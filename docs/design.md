@@ -11,6 +11,67 @@ Alex 是一个支持工具调用、流式输出的对话式 AI Agent 智能体�
 - **自适应成长**：从历史对话中自主提炼技能，持续进化
 - **TUI 交互**：基于 Textual 的终端界面，支持滚动、折叠、会话持久化
 - **Cron 后台任务**：APScheduler 驱动的定时任务调度，支持 subscribe 流式推送
+- **事件总线**：`AsyncEventBus` 统一跨模块通信，替代轮询式通知队列
+
+---
+
+## 最终业务目标
+
+Alex 的最终目标，不只是做一个“能聊天、能调用工具”的终端 AI，而是成为一个**常驻终端的个人智能工作代理**。
+
+它在业务层面的终局形态可以概括为：
+
+1. **从一次性问答升级为长期协作**
+   用户不是临时提一个问题然后离开，而是把 Alex 当成持续协作的工作助手。它需要理解上下文、延续会话、恢复历史，并在多个工作回合中保持连贯。
+
+2. **从被动响应升级为主动服务**
+   用户不只是在需要时询问，还会把“定期搜索、跟踪、抓取、汇总、提醒”这类任务交给 Alex 后台执行。Alex 要能够把一次性的请求转化成持续运行的任务，并把结果主动回流到当前工作流中。
+
+3. **从即时能力升级为经验沉淀**
+   项目的核心差异化目标不是单次回答质量，而是“越用越懂用户”。Alex 要从历史对话中提炼稳定的方法论，形成可复用技能，并在未来类似任务中优先复用这些高成功率策略。
+
+4. **从工具集合升级为个人工作操作系统**
+   最终形态不是一个命令行聊天框，而是一个围绕终端工作流构建的智能工作台：能搜索、抓取、执行、跟踪、学习、恢复会话，并逐步承接用户的重复性知识工作。
+
+### 面向用户的核心价值
+
+从业务视角看，Alex 最终要解决的是以下几类问题：
+
+- **减少重复劳动**：把“搜资料、看网页、摘重点、隔一段时间再查一次”的重复流程自动化
+- **减少上下文切换**：用户不需要频繁在终端、浏览器、笔记和任务系统之间来回跳转
+- **建立长期可用性**：与普通聊天式 AI 不同，Alex 的价值会随着使用次数增加而上升
+- **形成个人工作闭环**：`提问 -> 调工具 -> 获得结果 -> 用户反馈 -> 提炼技能 -> 下次更好`
+
+### 最终产品定位
+
+如果用一句更产品化的话来定义：
+
+> Alex 的最终目标，是成为一个在终端里持续陪用户工作的个人 AI Agent：既能即时回答，也能后台执行；既能调用工具，也能沉淀方法；既能服务当前任务，也能随着长期使用不断进化。
+
+### 对应的阶段性业务演进
+
+这个业务目标可以分成四个阶段理解：
+
+1. **终端原生 AI 助手**
+   能在 TUI 中完成对话、工具调用、流式展示和会话恢复。
+
+2. **可订阅的后台代理**
+   能通过 cron 持续跟踪用户关心的信息和任务，并主动把结果送回来。
+
+3. **会成长的个人智能体**
+   能从历史问题解决过程里提炼技能，把有效策略沉淀成稳定能力。
+
+4. **个人智能工作系统**
+   能逐步承担更多重复性知识工作，并进一步扩展到 API、多前端、多用户与技能共享场景。
+
+### 对架构设计的直接要求
+
+正因为最终目标不是“会聊天”，而是“长期协作的个人工作代理”，所以架构必须支持：
+
+1. **长期状态管理**：会话、历史、任务、技能都需要稳定建模
+2. **后台执行能力**：不能只有前台问答，还要支持持续运行和结果回流
+3. **能力持续进化**：技能提炼、反馈闭环、反思机制必须是一等能力
+4. **多入口扩展能力**：未来不应只局限于 TUI，应能够扩展到 API、Web、自动化集成场景
 
 ---
 
@@ -24,23 +85,25 @@ Alex 是一个支持工具调用、流式输出的对话式 AI Agent 智能体�
                                │
                                ▼
                      ┌──────────────────┐
-                     │   alex/tui.py    │
+                     │   alex/tui/      │
                      │  (Textual App)   │
-                     │  ChatHistory     │
-                     │  AlexBubble      │
-                     │  ToolBubble      │
+                     │  app.py          │
+                     │  controller.py   │
+                     │  presenter.py    │
+                     │  view_models.py  │
+                     │  stream_renderer │
                      └────────┬─────────┘
-                              │
+                              │ AgentFacade Protocol
                               ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                         Agent (核心编排层)                            │
+│                    Agent 薄 Facade (alex/agent/)                      │
 │                                                                     │
-│  ┌────────────┐ ┌──────────────┐ ┌────────────┐ ┌───────────────┐  │
-│  │ Tools dict │ │ SkillManager │ │ CronManager│ │ AgentGraph    │  │
-│  ├────────────┤ ├──────────────┤ ├────────────┤ │ (LangGraph)   │  │
-│  │ Events Q   │ │              │ │Events: Skill│ │               │  │
-│  │ (typed)    │ │              │ │/Cron/Debug  │ │               │  │
-│  └────────────┘ └──────────────┘ └────────────┘ └───────────────┘  │
+│  ┌──────────────┐ ┌─────────────┐ ┌────────────┐ ┌──────────────┐  │
+│  │SessionService│ │ CronService │ │ToolRegistry│ │ AgentGraph   │  │
+│  ├──────────────┤ ├─────────────┤ │ToolExecutor│ │ (LangGraph)  │  │
+│  │TurnOrch'ator │ │CronTurnHand │ │            │ │              │  │
+│  │FeedbackRec   │ │PromptAssemb │ │            │ │              │  │
+│  └──────────────┘ └─────────────┘ └────────────┘ └──────────────┘  │
 └───┬──────────────────┬──────────────────┬──────────────────┬────────┘
     │                  │                  │                  │
     ▼                  ▼                  ▼                  ▼
@@ -48,6 +111,17 @@ Alex 是一个支持工具调用、流式输出的对话式 AI Agent 智能体�
 │ Tools  │     │   Memory   │     │   Skills   │     │ LLM       │
 │ Layer  │     │   Layer    │     │   Layer    │     │ Factory   │
 └────────┘     └────────────┘     └────────────┘     └───────────┘
+         ▲                          ▲
+         │      ┌──────────┐        │
+         └──────┤ EventBus ├────────┘
+                │ (async)  │
+        ┌───────┤          ├────────┐
+        │       └──────────┘        │
+        ▼                           ▼
+  ┌───────────┐              ┌───────────┐
+  │   Store   │              │    TUI    │
+  │  Session  │              │Subscribers│
+  └───────────┘              └───────────┘
 ```
 
 ---
@@ -56,15 +130,15 @@ Alex 是一个支持工具调用、流式输出的对话式 AI Agent 智能体�
 
 | 模块 | 文档 | 摘要 |
 |------|------|------|
-| Agent 核心编排 | [agent.md](./agent.md) | 系统编排中心，协调 LLM、Memory、Tools、Skills、Cron |
+| Agent 核心编排 | [agent.md](./agent.md) | 薄 facade 编排层，协调 LLM、Memory、Tools、Skills、Cron |
 | TUI 交互界面 | [display.md](./display.md) | Textual TUI 应用，支持滚动、折叠、反馈、会话管理 |
 | LLM 工厂层 | [llm.md](./llm.md) | 工厂模式 + 装饰器注册，统一适配多平台 LLM |
 | 记忆管理层 | [memory.md](./memory.md) | 抽象记忆接口，支持缓冲记忆及未来 RAG 扩展 |
 | 流式输出 | [streaming.md](./streaming.md) | 基于 LangGraph astream_events 的流式事件分发 |
-| 自适应技能系统 | [skills.md](./skills.md) | 技能提炼、检索、进化的完整生命周期管理 |
-| 类型化事件系统 | [events.md](./events.md) | 类型化事件数据类，替代裸 dict 通知分发 |
+| 自适应技能系统 | [skills.md](./skills.md) | SkillService + SkillStore 分层，技能提炼/检索/进化 |
+| 类型化事件系统 | [events.md](./events.md) | Event -> Command/DomainEvent/UIEvent 三层事件体系 |
 | 配置管理 | [config.md](./config.md) | 多 provider 配置加载，支持文件和环境变量 |
-| 模块化重构方案 | [refactor-modular-architecture.md](./refactor-modular-architecture.md) | 面向 `tui/agent/tools/store/skill/memory` 的接口化拆分与事件总线重构方案 |
+| 模块化重构方案 | [refactor-modular-architecture.md](./refactor-modular-architecture.md) | 重构全貌、已完成的里程碑、验收标准 |
 
 ---
 
@@ -72,41 +146,53 @@ Alex 是一个支持工具调用、流式输出的对话式 AI Agent 智能体�
 
 ```
 alex/
-├── __init__.py
-├── agent.py              # Agent 核心编排 + 通知系统
-├── config.py             # 配置加载（.env → LLMConfig）
-├── cron.py               # CronManager — APScheduler 后台任务调度
-├── events.py             # 类型化事件数据类（Skill/Cron 通知）
-├── tui.py                # Textual TUI 应用（交互模式）
-├── llm/                  # LLM 工厂层
-│   ├── factory.py        # 工厂模式 + 装饰器注册
-│   ├── base.py           # LLMConfig 数据类
-│   ├── deepseek.py       # DeepSeek 适配器（reasoning_content 回传）
-│   ├── openai.py         # OpenAI 适配器
-│   ├── anthropic.py      # Anthropic 适配器
-│   └── json_client.py    # 结构化 JSON 补全（provider 无关）
-├── memory/               # 记忆管理层
-│   ├── base.py           # MemoryBase 抽象接口
-│   └── buffer.py         # 滑动窗口缓冲记忆（默认实现）
-├── skills/               # 自适应技能系统
-│   ├── base.py           # Skill 数据模型 + SkillManager 编排
-│   ├── store.py          # JSON 文件持久化 + 模板管理
-│   ├── retriever.py      # 标签 + 关键词检索器
-│   ├── reflector.py      # LLM 反思引擎
-│   └── evolution.py      # 生命周期进化引擎
-├── streaming/            # 流式事件系统
-│   └── handler.py        # StreamEvent + StreamHandler（Listener 分发）
-├── tools/                # 工具层
-│   ├── web_search.py     # DuckDuckGo 网页搜索
-│   ├── web_fetch.py      # HTTP 网页内容抓取
-│   ├── time.py           # 当前时间查询
-│   └── cron.py           # 后台定时任务（间隔 / crontab）
-└── prompts/              # Jinja2 提示词模板
-    ├── system_prompt.j2
-    ├── reflection_prompt.j2
-    ├── skills_section.j2
-    ├── skill_card.j2
-    └── merge_skills_prompt.j2
+├── agent/                 # Agent 薄 facade
+│   ├── service.py         # Agent facade（编排入口）
+│   ├── session_service.py # Session 持久化边界
+│   ├── cron_service.py    # CronManager 生命周期
+│   ├── orchestrator.py    # TurnOrchestrator
+│   ├── cron_handler.py    # CronTurnHandler
+│   ├── feedback.py        # FeedbackRecorder
+│   ├── prompt.py          # PromptAssembler
+│   └── ports.py           # AgentFacade Protocol
+├── bus/                   # 事件总线
+│   ├── events.py          # Event -> Command/DomainEvent/UIEvent
+│   └── in_memory.py       # AsyncEventBus 实现
+├── memory/                # 记忆管理层
+│   ├── base.py            # MemoryBase ABC
+│   ├── buffer.py          # BufferMemory 滑动窗口
+│   └── ports.py           # MemoryService Protocol
+├── skill/                 # 自适应技能系统
+│   ├── models.py          # Skill 数据类 + SkillManager（兼容）
+│   ├── service.py         # SkillService 构造函数注入
+│   ├── repository.py      # SkillStore JSON 持久化
+│   ├── matcher.py         # SkillRetriever 检索
+│   ├── reflector.py       # Reflector LLM 反思
+│   ├── evolution.py       # EvolutionEngine 生命周期
+│   └── ports.py           # SkillService Protocol（遗留）
+├── store/                 # 持久化层
+│   ├── session.py         # 文件 I/O + serialize/deserialize
+│   ├── session_adapter.py # SessionPersistence 事件驱动
+│   └── ports.py           # SessionStore / SkillRepository Protocol
+├── scheduler/             # 后台调度
+│   └── manager.py         # CronManager APScheduler
+├── tools/                 # 工具层
+│   ├── cron.py            # cron 工具接口
+│   ├── executor.py        # ToolExecutor
+│   ├── registry.py        # ToolRegistry
+│   ├── time.py            # 时间工具
+│   ├── web_fetch.py       # 网页抓取
+│   ├── web_search.py      # 网页搜索
+│   └── ports.py           # 工具层 Protocol
+├── tui/                   # TUI 界面
+│   ├── app.py             # AlexApp 主类
+│   ├── controller.py      # ChatControllerMixin
+│   ├── presenter.py       # Bubble 组件
+│   ├── view_models.py     # ChatHistory / ChatTurn
+│   └── stream_renderer.py # StreamRenderer 共享渲染
+├── prompts/               # Jinja2 提示词模板
+├── config.py              # 配置加载
+└── llm/                   # LLM 工厂层
 ```
 
 ---

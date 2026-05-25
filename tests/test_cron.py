@@ -4,15 +4,15 @@ import pytest
 
 pytest.importorskip("apscheduler")
 
-from alex.cron import CronManager
-from alex.events import CronJobEvent
+from alex.scheduler import CronManager
+from alex.bus.events import CronJobEvent
 
 
 @pytest.mark.asyncio
 async def test_cron_manager_runs_and_notifies():
     notes: list = []
 
-    async def runner(action: str, params: dict) -> str:
+    async def runner(session_id: str, action: str, params: dict) -> str:
         await asyncio.sleep(0)
         return f"{action}:{params.get('x', '')}"
 

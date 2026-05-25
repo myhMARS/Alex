@@ -15,7 +15,8 @@ from alex.tui import (
     ToolBubble,
     _messages_to_turns,
 )
-import alex.session as session_store
+from alex.store import session as session_store
+from alex.store.session_adapter import SessionPersistence
 
 
 class _BubbleHarness(App[None]):
@@ -73,16 +74,56 @@ async def test_insert_tool_removes_pre_tool_response_from_top():
 
 
 class _AgentStub:
-    def __init__(self, notes: list) -> None:
-        self._notes = list(notes)
+    def __init__(self, notes: list | None = None) -> None:
+        self._notes = list(notes or [])
         self._history: list[BaseMessage] = []
         self._cron_history: list[dict] = []
         self._session_id: str = ""
+        self._bus = None
 
-    def pop_notifications(self) -> list:
-        notes = self._notes[:]
-        self._notes.clear()
-        return notes
+    @property
+    def bus(self):
+        return self._bus
+
+    def bind_event_bus(self, bus) -> None:
+        self._bus = bus
+
+    def bind_event_loop(self, loop) -> None:
+        pass
+
+    async def start_services(self) -> None:
+        pass
+
+    async def shutdown(self) -> None:
+        pass
+
+    def provide_feedback(self, positive: bool) -> None:
+        pass
+
+    def list_cron_jobs(self) -> list[dict]:
+        return []
+
+    def list_skills(self) -> list[dict]:
+        return []
+
+    def delete_skill(self, target: str) -> str | None:
+        return None
+
+    def deprecate_skill(self, target: str) -> str | None:
+        return None
+
+    async def merge_skills(self) -> dict:
+        return {}
+
+    async def reflect(self) -> None:
+        pass
+
+    @property
+    def last_turn_result(self):
+        return None
+
+    async def chat_stream(self, user_input: str):
+        yield None
 
     async def restore_history(self, messages: list) -> None:
         self._history = list(messages)
@@ -97,6 +138,17 @@ class _AgentStub:
     def list_session_cron_history(self, query: str = "", limit: int = 20) -> list[dict]:
         return list(self._cron_history)[:limit]
 
+    def list_sessions(self) -> list[dict]:
+        from alex.store.session_adapter import SessionPersistence
+        return SessionPersistence.list_sessions()
+
+    def load_session(self, session_id: str) -> dict | None:
+        from alex.store.session_adapter import SessionPersistence
+        return SessionPersistence.load(session_id)
+
+    async def subscribe_store(self, bus) -> None:
+        pass
+
     @property
     def history(self) -> list:
         return self._history
@@ -104,21 +156,28 @@ class _AgentStub:
 
 @pytest.mark.asyncio
 async def test_reflect_notification_shows_toast():
-    from alex.events import SkillReflectEvent
-    agent = _AgentStub([SkillReflectEvent(new=1, updated=0, deprecated=0, names=["foo"])])
-    app = AlexApp(agent)
+    from alex.bus.events import SkillReflectEvent
+    from alex.bus import AsyncEventBus
+
+    bus = AsyncEventBus()
+    await bus.start()
+    agent = _AgentStub()
+    app = AlexApp(agent, event_bus=bus)
 
     async with app.run_test() as pilot:
-        pilot.app._poll_notifications()
+        await bus.subscribe(SkillReflectEvent, pilot.app._on_skill_reflect_event)
+        bus.publish(SkillReflectEvent(new=1, updated=0, deprecated=0, names=["foo"]))
         await pilot.pause()
         toasts = list(pilot.app.query(".toast"))
         assert len(toasts) >= 1
         visible = [t for t in toasts if "toast-hidden" not in getattr(t, "classes", set())]
         assert len(visible) >= 1
 
+    await bus.shutdown()
+
 
 def test_reflect_event_shows_updated_skill_names():
-    from alex.events import SkillReflectEvent
+    from alex.bus.events import SkillReflectEvent
 
     evt = SkillReflectEvent(updated=1, updated_names=["Timer Reminder"])
     assert evt.toast == "Skills refined — 1 updated: Timer Reminder"
@@ -226,16 +285,22 @@ def test_chat_history_preserves_loaded_messages():
 
     # Load → add a new turn with its exact message delta → save → reload
     h1 = ChatHistory(session_id=session_id)
-    assert h1.load()
+    bundle = SessionPersistence.load(session_id)
+    assert bundle is not None
+    h1.restore_from_bundle(bundle)
     new_delta: list[BaseMessage] = [
         HumanMessage(content="Thanks"),
         AIMessage(content="You're welcome!"),
     ]
     h1.add(ChatTurn(user_input="Thanks", response="You're welcome!"), messages_delta=new_delta)
+    # Persistence is event-driven; explicitly save for this unit test
+    SessionPersistence.save(session_id, h1.loaded_messages)
 
     # Reload
     h2 = ChatHistory(session_id=session_id)
-    assert h2.load()
+    bundle2 = SessionPersistence.load(session_id)
+    assert bundle2 is not None
+    h2.restore_from_bundle(bundle2)
 
     assert len(h2.turns) == 2
     assert h2.turns[0].user_input == "What time is it?"
@@ -259,7 +324,9 @@ def test_chat_history_empty_session_is_valid():
     session_store.save_session(session_id, [])
 
     h = ChatHistory(session_id=session_id)
-    assert h.load() is True
+    bundle = SessionPersistence.load(session_id)
+    assert bundle is not None
+    h.restore_from_bundle(bundle)
     assert len(h.turns) == 0
     assert len(h.loaded_messages) == 0
     assert len(h.cron_history) == 0
@@ -281,7 +348,9 @@ def test_chat_history_persists_cron_records():
     }])
 
     h = ChatHistory(session_id=session_id)
-    assert h.load() is True
+    bundle = SessionPersistence.load(session_id)
+    assert bundle is not None
+    h.restore_from_bundle(bundle)
     assert len(h.cron_history) == 1
     assert h.cron_history[0]["name"] == "提醒"
 
