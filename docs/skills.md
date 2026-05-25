@@ -1,4 +1,4 @@
-# 自适应技能系统 (`alex/skills/`)
+# 自适应技能系统 (`alex/skill/`)
 
 ## 设计目标
 
@@ -22,15 +22,28 @@ Agent 具备成长性：从历史对话中识别模式、提炼策略性技能�
 | `confidence` | 置信度（基于使用次数 + 成功率的贝叶斯估计） |
 | `version` | 版本号，每次更新递增 |
 
+## 架构分层
+
+```
+SkillManager（向后兼容薄子类，懒加载默认构造）
+    └── SkillService（构造函数注入全部依赖）
+            ├── SkillStore      # JSON 文件持久化 + Jinja2 模板管理
+            ├── SkillRetriever  # 标签 + 关键词 + 置信度加权检索
+            ├── Reflector       # LLM JSON-mode 反思引擎
+            └── EvolutionEngine # 生命周期进化状态机
+```
+
 ## 组件职责
 
-| 组件 | 职责 |
-|------|------|
-| **SkillManager** | 对外统一接口，协调下面各组件 |
-| **Reflector** | 反思引擎 — 调用 LLM 分析对话 + episodes，提炼新技能或给出更新建议 |
-| **SkillRetriever** | 检索器 — 标签匹配 + 关键词 + 置信度加权，匹配最相关技能 |
-| **EvolutionEngine** | 进化引擎 — 评估技能效果，执行晋升/废弃/合并 |
-| **SkillStore** | 持久化 — JSON 文件存取 + 自动管理 `~/.alex/skills/prompts/` 下的 Jinja2 模板 |
+| 组件 | 文件 | 职责 |
+|------|------|------|
+| **SkillService** | `service.py` | 业务逻辑编排：检索、反思、合并、CRUD |
+| **SkillManager** | `models.py` | 向后兼容薄子类，构造函数可选参数 → 懒加载默认值 |
+| **Skill** | `models.py` | 纯数据类，不含业务逻辑 |
+| **SkillStore** | `repository.py` | JSON 文件持久化 + `~/.alex/skills/prompts/` 模板管理 |
+| **SkillRetriever** | `matcher.py` | 标签匹配 + 关键词 + 置信度加权，返回 top-K |
+| **Reflector** | `reflector.py` | LLM 反思引擎 — 分析对话 + episodes，返回 `ReflectionResult` |
+| **EvolutionEngine** | `evolution.py` | 生命周期状态机 — CANDIDATE → ACTIVE → DEPRECATED |
 
 ## 核心业务流程
 
@@ -40,7 +53,7 @@ Agent 具备成长性：从历史对话中识别模式、提炼策略性技能�
 用户输入
   │
   ▼
-SkillManager.inject_skills_prompt(query)
+SkillService.inject_skills_prompt(query)
   │  渲染 skills_section.j2 模板
   │  列出所有活跃技能的名称 + pattern（轻量目录）
   │
@@ -52,7 +65,7 @@ Agent 执行对话流程
   │  当 Agent 判断某技能匹配时：
   │  调用 load_skill(skill_name) 工具
   │  → 加载该技能的完整 instruction
-  │  → TUI 显示 skill_load 事件（🎯 Skills 标记）
+  │  → TUI 显示 SkillLoaded 事件
   │
   ▼
 记录本轮的 loaded_skill_ids（用于反馈追踪）
@@ -103,16 +116,16 @@ Episodes 在反思时传递给 Reflector，帮助 LLM 理解完整的问题解�
 用户按 Ctrl+G / Ctrl+B
   │
   ▼
-Agent.provide_feedback(positive)
+Agent.provide_feedback(positive, turn_id)
   │
   ▼
-SkillManager.record_usage(skill_id, success=True/False)
+SkillService.record_usage(skill_id, success=True/False)
   │
   ▼
 更新 use_count / success_count / failure_count → 置信度自动重算
   │
   ▼ (负反馈)
-异步触发 _do_reflect()
+异步触发反思
 ```
 
 ## 技能生命周期
@@ -170,11 +183,13 @@ SkillManager.record_usage(skill_id, success=True/False)
 ## 目录结构
 
 ```
-alex/skills/
+alex/skill/
 ├── __init__.py
-├── base.py           # Skill 数据模型 & SkillManager 编排 + merge_skills
-├── store.py          # JSON 持久化 + Jinja2 模板管理
-├── retriever.py      # 标签 + 关键词检索匹配
-├── reflector.py      # LLM JSON-mode 反思引擎（支持 episodes）
-└── evolution.py      # 进化策略 & 生命周期 + 上限裁剪
+├── models.py           # Skill 数据类 & SkillManager（向后兼容）
+├── service.py          # SkillService — 构造函数注入全部依赖
+├── repository.py       # SkillStore — JSON 持久化 + 模板管理
+├── matcher.py          # SkillRetriever — 标签 + 关键词检索
+├── reflector.py        # Reflector — LLM JSON-mode 反思引擎（支持 episodes）
+├── evolution.py        # EvolutionEngine — 进化策略 & 生命周期 + 上限裁剪
+└── ports.py            # SkillService Protocol（历史遗留）
 ```

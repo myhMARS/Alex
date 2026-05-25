@@ -6,6 +6,9 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
+
+from alex.bus.events import CronDebugEvent, CronJobEvent
 
 
 class CronParseError(ValueError):
@@ -72,6 +75,7 @@ def _next_cron_time(after_ts: float, cron_expr: str) -> float:
 @dataclass
 class CronJob:
     id: str
+    session_id: str
     name: str
     cron: str
     interval_seconds: int | None
@@ -91,6 +95,7 @@ class CronJob:
     def to_dict(self) -> dict:
         return {
             "id": self.id,
+            "session_id": self.session_id,
             "name": self.name,
             "cron": self.cron,
             "interval_seconds": self.interval_seconds,
@@ -108,7 +113,6 @@ class CronJob:
             "next_run_at": self.next_run_at,
         }
 
-
 class CronManager:
     def __init__(self, notify: callable) -> None:
         self._notify_cb = notify
@@ -117,7 +121,8 @@ class CronManager:
         self._runners: dict[str, callable] = {}
         self._aps_job_ids: dict[str, object] = {}
         self._scheduler = None
-        self._lock: asyncio.Lock | None = None
+        self._session_locks: dict[str, asyncio.Lock] = {}
+        self._running_tasks: dict[str, asyncio.Task] = {}
 
     def bind_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
@@ -136,23 +141,20 @@ class CronManager:
             self._scheduler = None
             self._aps_job_ids.clear()
 
-    def _emit(self, note: dict) -> None:
+    def _emit(self, event: Any) -> None:
         loop = self._loop
         if loop is None:
-            self._notify_cb(note)
+            self._notify_cb(event)
             return
         try:
-            loop.call_soon_threadsafe(self._notify_cb, note)
+            loop.call_soon_threadsafe(self._notify_cb, event)
         except Exception:
-            self._notify_cb(note)
+            self._notify_cb(event)
 
     def _debug(self, message: str, *, job: CronJob | None = None) -> None:
         if os.environ.get("ALEX_CRON_DEBUG", "").strip().lower() not in ("1", "true", "yes", "on"):
             return
-        payload: dict = {"type": "cron_debug", "message": message}
-        if job is not None:
-            payload["job"] = job.to_dict()
-        self._emit(payload)
+        self._emit(CronDebugEvent(message=message))
 
     async def _ensure_scheduler(self) -> None:
         loop = self._loop
@@ -176,8 +178,6 @@ class CronManager:
 
         loop = self._loop or asyncio.get_running_loop()
         self._loop = loop
-        if self._lock is None:
-            self._lock = asyncio.Lock()
         self._scheduler = AsyncIOScheduler(
             event_loop=loop,
             executors={"default": AsyncIOExecutor()},
@@ -254,6 +254,7 @@ class CronManager:
     async def schedule(
         self,
         *,
+        session_id: str,
         name: str,
         cron: str,
         interval_seconds: int | None = None,
@@ -274,6 +275,7 @@ class CronManager:
                 fut = asyncio.run_coroutine_threadsafe(
                     self._schedule_inner(
                         name=name,
+                        session_id=session_id,
                         cron=cron,
                         interval_seconds=interval_seconds,
                         repeat=repeat,
@@ -288,6 +290,7 @@ class CronManager:
                 return await asyncio.wrap_future(fut)
         return await self._schedule_inner(
             name=name,
+            session_id=session_id,
             cron=cron,
             interval_seconds=interval_seconds,
             repeat=repeat,
@@ -301,6 +304,7 @@ class CronManager:
     async def _schedule_inner(
         self,
         *,
+        session_id: str,
         name: str,
         cron: str,
         interval_seconds: int | None,
@@ -322,6 +326,7 @@ class CronManager:
 
         job = CronJob(
             id=job_id,
+            session_id=session_id,
             name=name,
             cron=cron_str,
             interval_seconds=iv,
@@ -335,10 +340,17 @@ class CronManager:
         self._runners[job_id] = runner
         self._schedule_aps(job, runner)
         self._aps_job_ids[job_id] = job_id
-        self._emit({
-            "type": "cron_job_update",
-            "job": job.to_dict(),
-        })
+        self._emit(CronJobEvent(
+            job_id=job.id,
+            session_id=job.session_id,
+            name=job.name,
+            status=job.status,
+            action=job.action,
+            params=dict(job.params),
+            runs_done=job.runs_done,
+            started_at=job.last_started_at,
+            finished_at=job.last_finished_at,
+        ))
         return job_id
 
     async def cancel(self, job_id: str) -> bool:
@@ -357,14 +369,25 @@ class CronManager:
         aps_id = self._aps_job_ids.pop(job_id, None) or job_id
         job = self._jobs.get(job_id)
         self._runners.pop(job_id, None)
+        # Cancel the in-flight task if running
+        task = self._running_tasks.pop(job_id, None)
+        if task is not None and not task.done():
+            task.cancel()
         if self._scheduler is None:
             if job:
                 job.status = "CANCELLED"
                 job.next_run_at = None
-                self._emit({
-                    "type": "cron_job_update",
-                    "job": job.to_dict(),
-                })
+                self._emit(CronJobEvent(
+                    job_id=job.id,
+                    session_id=job.session_id,
+                    name=job.name,
+                    status=job.status,
+                    action=job.action,
+                    params=dict(job.params),
+                    runs_done=job.runs_done,
+                    started_at=job.last_started_at,
+                    finished_at=job.last_finished_at,
+                ))
             return job is not None
         if aps_id and self._scheduler is not None:
             try:
@@ -374,10 +397,17 @@ class CronManager:
         if job:
             job.status = "CANCELLED"
             job.next_run_at = None
-            self._emit({
-                "type": "cron_job_update",
-                "job": job.to_dict(),
-            })
+            self._emit(CronJobEvent(
+                job_id=job.id,
+                session_id=job.session_id,
+                name=job.name,
+                status=job.status,
+                action=job.action,
+                params=dict(job.params),
+                runs_done=job.runs_done,
+                started_at=job.last_started_at,
+                finished_at=job.last_finished_at,
+            ))
         return aps_id is not None or job is not None
 
     def _schedule_aps(self, job: CronJob, runner: callable) -> str:
@@ -385,26 +415,46 @@ class CronManager:
         trigger = _build_trigger(cron_expr=job.cron, interval_seconds=job.interval_seconds, tzinfo=base.tzinfo)
 
         async def _run_once_async() -> None:
+            self._running_tasks[job.id] = asyncio.current_task()
             run_status = "FAILED"
             try:
-                lock = self._lock
-                if lock is None:
-                    lock = asyncio.Lock()
-                    self._lock = lock
-                async with lock:
+                sid = job.session_id or ""
+                if sid not in self._session_locks:
+                    self._session_locks[sid] = asyncio.Lock()
+                async with self._session_locks[sid]:
                     if job.status == "CANCELLED":
                         return
 
                     job.status = "RUNNING"
                     job.last_started_at = time.time()
-                    self._emit({"type": "cron_job_update", "job": job.to_dict()})
+                    self._emit(CronJobEvent(
+                        job_id=job.id,
+                        session_id=job.session_id,
+                        name=job.name,
+                        status=job.status,
+                        action=job.action,
+                        params=dict(job.params),
+                        runs_done=job.runs_done,
+                        started_at=job.last_started_at,
+                        finished_at=job.last_finished_at,
+                    ))
 
                     try:
-                        result = await runner(job.action, job.params)
+                        result = await runner(job.session_id, job.action, job.params)
+                        # Re-check after runner returns — a long runner may
+                        # have been cancelled while awaiting I/O.
+                        if job.status == "CANCELLED":
+                            return
                         job.last_result = str(result)
                         job.last_error = ""
                         run_status = "SUCCESS"
+                    except asyncio.CancelledError:
+                        job.status = "CANCELLED"
+                        job.next_run_at = None
+                        return
                     except Exception as e:
+                        if job.status == "CANCELLED":
+                            return
                         job.last_result = ""
                         job.last_error = f"{type(e).__name__}: {e}"
                         run_status = "FAILED"
@@ -421,15 +471,21 @@ class CronManager:
                         job.status = "SCHEDULED"
                         job.next_run_at = None
 
-                    self._emit({
-                        "type": "cron_job_done",
-                        "job": job.to_dict(),
-                        "run_status": run_status,
-                        "result": job.last_result,
-                        "error": job.last_error,
-                        "tool_name": "cron",
-                        "tool_call_id": f"cron:{job.id}:{run_seq}",
-                    })
+                    self._emit(CronJobEvent(
+                        job_id=job.id,
+                        session_id=job.session_id,
+                        name=job.name,
+                        status=run_status,
+                        subscribe=job.subscribe,
+                        action=job.action,
+                        params=dict(job.params),
+                        runs_done=job.runs_done,
+                        started_at=job.last_started_at,
+                        finished_at=job.last_finished_at,
+                        result=job.last_result or "",
+                        error=job.last_error or "",
+                        tool_call_id=f"cron:{job.id}:{run_seq}",
+                    ))
 
                     if done:
                         aps_id = self._aps_job_ids.pop(job.id, None) or job.id
@@ -452,15 +508,21 @@ class CronManager:
                 else:
                     job.status = "SCHEDULED"
                     job.next_run_at = None
-                self._emit({
-                    "type": "cron_job_done",
-                    "job": job.to_dict(),
-                    "run_status": run_status,
-                    "result": job.last_result,
-                    "error": job.last_error,
-                    "tool_name": "cron",
-                    "tool_call_id": f"cron:{job.id}:{run_seq}",
-                })
+                self._emit(CronJobEvent(
+                    job_id=job.id,
+                    session_id=job.session_id,
+                    name=job.name,
+                    status=run_status,
+                    subscribe=job.subscribe,
+                    action=job.action,
+                    params=dict(job.params),
+                    runs_done=job.runs_done,
+                    started_at=job.last_started_at,
+                    finished_at=job.last_finished_at,
+                    result=job.last_result or "",
+                    error=job.last_error or "",
+                    tool_call_id=f"cron:{job.id}:{run_seq}",
+                ))
                 if done:
                     aps_id = self._aps_job_ids.pop(job.id, None) or job.id
                     self._runners.pop(job.id, None)
@@ -469,6 +531,8 @@ class CronManager:
                             self._scheduler.remove_job(aps_id)
                         except Exception:
                             pass
+            finally:
+                self._running_tasks.pop(job.id, None)
 
         def _run_once() -> None:
             self._debug("job_fire", job=job)

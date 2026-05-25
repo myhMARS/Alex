@@ -22,6 +22,7 @@
 - `get_context` 直接返回全部缓冲消息
 - `get_context_sync()` 提供同步读取（Agent 内部使用）
 - 无持久化，进程结束即丢失
+- **线程安全**：内部 `_write_lock`（`asyncio.Lock`）序列化写操作，`add_messages()` 一次获取锁写入全部消息，保证批量写入原子性
 
 ## 扩展预留
 

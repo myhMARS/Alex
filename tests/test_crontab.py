@@ -4,7 +4,7 @@ import pytest
 
 pytest.importorskip("apscheduler")
 
-from alex.cron import _next_cron_time
+from alex.scheduler import _next_cron_time
 
 
 def test_next_cron_every_5_minutes():

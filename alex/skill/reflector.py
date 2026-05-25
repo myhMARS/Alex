@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from alex.prompts import get_reflection_prompt
-from alex.skills.base import Skill
+from alex.skill.models import Skill
 
 
 @dataclass
@@ -38,11 +38,21 @@ class Reflector:
             episodes=episodes or [],
         )
 
-        # Format messages for API
+        # Format messages for API — distinguish roles so the LLM sees
+        # user queries, assistant responses, tool outputs, and system
+        # messages as semantically distinct rather than collapsing all
+        # non-user content into "assistant".
         api_messages: list[dict[str, str]] = [{"role": "system", "content": full_prompt}]
         for msg in messages:
             if isinstance(msg, HumanMessage):
                 api_messages.append({"role": "user", "content": msg.content})
+            elif isinstance(msg, AIMessage):
+                api_messages.append({"role": "assistant", "content": msg.content})
+            elif isinstance(msg, ToolMessage):
+                label = f"[tool_result id={getattr(msg, 'tool_call_id', '')}] {msg.content}"
+                api_messages.append({"role": "user", "content": label})
+            elif isinstance(msg, SystemMessage):
+                api_messages.append({"role": "system", "content": msg.content})
             elif hasattr(msg, "content") and msg.content:
                 api_messages.append({"role": "assistant", "content": msg.content})
         api_messages.append({"role": "user", "content": "Extract execution workflows from this conversation. Output only JSON."})

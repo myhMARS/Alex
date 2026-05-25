@@ -1,8 +1,10 @@
-# TUI 交互界面 (`alex/tui.py`)
+# TUI 交互界面 (`alex/tui/`)
 
 ## 设计思路
 
 基于 **Textual** 框架构建终端 TUI 应用，运行在 alternate screen buffer 中。采用组件化架构，所有对话内容作为 widget 挂载到可滚动容器中，通过 CSS class 切换实现折叠/展开，避免 DOM 重建导致的页面跳动。
+
+用户 turn 通过 `Agent.chat_stream()` 的 async generator 获取流式事件，cron turn 通过 `AsyncEventBus` 订阅获取。两者的渲染逻辑由共享的 `StreamRenderer` 统一管理。
 
 ## 架构布局
 
@@ -29,15 +31,17 @@
 
 ## 核心组件
 
-| 组件 | 职责 |
-|------|------|
-| `AlexApp` | Textual App 主类，管理状态、事件、通知轮询 |
-| `UserBubble` | 用户消息气泡（cyan 圆角边框） |
-| `AlexBubble` | AI 回复容器（green 圆角边框），内含 skills/tools/thinking/response |
-| `ToolBubble` | 单个工具调用展示（实线边框，含参数和结果） |
-| `SystemBubble` | 系统通知消息（反思结果等） |
-| `ChatHistory` | 会话持久化，保存到 `~/.alex/sessions/` |
-| `ChatTurn` | 单轮对话数据模型（含 skills 字段） |
+| 组件 | 文件 | 职责 |
+|------|------|------|
+| `AlexApp` | `app.py` | Textual App 主类，管理状态、事件订阅、流式渲染 |
+| `ChatControllerMixin` | `controller.py` | 命令处理、总线事件订阅、会话管理、toast |
+| `StreamRenderer` | `stream_renderer.py` | 共享流式渲染状态管理（用户/cron turn 共用） |
+| `UserBubble` | `presenter.py` | 用户消息气泡（cyan 圆角边框） |
+| `AlexBubble` | `presenter.py` | AI 回复容器（green 圆角边框），内含 skills/tools/thinking/response |
+| `ToolBubble` | `presenter.py` | 单个工具调用展示（实线边框，含参数和结果） |
+| `SystemBubble` | `presenter.py` | 系统通知消息（反思结果等） |
+| `ChatHistory` | `view_models.py` | 会话视图模型，维护 ChatTurn 列表 + BaseMessage 序列 |
+| `ChatTurn` | `view_models.py` | 单轮对话数据模型（含 skills 字段和 kind） |
 
 ## 折叠/展开机制
 
@@ -46,7 +50,6 @@
 - `AlexBubble` 在 `compose()` / `finalize()` 时同时生成 expanded 和 collapsed 两个版本
 - 通过 `.hidden` CSS class（`display: none`）控制哪个可见
 - `set_thinking_expanded()` / `set_skills_expanded()` 只切换 class，不触发布局重建
-- 页面不会因为切换而产生滚动跳动
 
 ## 快捷键
 
@@ -71,6 +74,7 @@
 | `/skills dep <id>` | 按名称或 ID 前缀废弃技能 |
 | `/merge-skills` | LLM 驱动的技能去重合并 |
 | `/reflect` | 手动触发技能反思 |
+| `/cron [query]` | 查询当前会话 cron 执行历史 |
 | `:q` | 关闭覆盖面板（help/skills/sessions） |
 | `/x` | 关闭 Toast 通知 |
 
@@ -89,50 +93,58 @@
 ## 状态栏
 
 右侧 `#status-bar` 实时显示所有 Cron 后台任务：
-- 图标：⟳ (运行中) / ⏱ (已调度) / ✓ (成功) / ✗ (失败) / ⦸ (已取消)
+- 图标：⟳ (运行中) / ⏱ (已调度)
 - 显示任务名、状态、下次运行倒计时、已完成次数
-- 每 100ms 轮询刷新
 
-## Cron 流式响应
+## 流式响应
 
-当 cron job 设置 `subscribe=true` 时，执行结果以完整对话气泡形式注入聊天视图：
-- 创建 `AlexBubble`，实时流式渲染工具调用和 AI 回复
-- 支持 tool_start/tool_end/token/thinking 事件流
+### 用户 turn（async generator 路径）
+
+```
+AlexApp._run_chat()
+  -> Agent.chat_stream()
+  -> async for event:
+       -> StreamRenderer.on_*()
+       -> throttled UI update (~50ms)
+  -> StreamRenderer.build_turn() -> bubble.finalize()
+```
+
+### Cron turn（event bus 路径）
+
+```
+CronManager fire
+  -> CronJobEvent
+  -> CronTurnHandler.handle()
+  -> bus.publish(ToolStarted) -> TUI subscriber -> StreamRenderer.on_tool_started()
+  -> bus.publish(TokenEmitted) -> TUI subscriber -> StreamRenderer.on_token()
+  -> bus.publish(CronDone) -> TUI subscriber -> StreamRenderer.build_turn() -> finalize()
+```
+
+两者共用 `StreamRenderer` 管理 bubble 生命周期、token/thinking 收集、工具调用追踪和 turn 最终化。
 
 ## 会话持久化
 
-- 保存路径：`~/.alex/sessions/{timestamp}.json`
+- 保存路径：`~/.alex/sessions/{session_id}.json`
 - 每次启动默认新会话
-- `/resume` 列出历史会话（时间 + 首条消息前 20 字符 + 轮次数）
+- `/resume` 列出历史会话（时间 + 首条消息 + 轮次数）
 - 恢复时还原 TUI 视图 + Agent Memory
-
-```json
-{
-  "session_id": "20250514_170327",
-  "created_at": "2025-05-14T17:03:27",
-  "first_message": "你好",
-  "turns": [
-    {
-      "user_input": "你好",
-      "response": "你好！我是 Alex...",
-      "thinking": "用户用中文打招呼...",
-      "tool_calls": [],
-      "skills": []
-    }
-  ]
-}
-```
-
-## 非 TUI 模式
-
-`main.py` 也支持非 TUI 的简单 CLI 模式：
-
-- `python main.py "query"` — 单次查询，Rich 输出（含 thinking panel）
-- `python main.py --stream "query"` — 流式输出，Rich Live
-
-这些模式使用 `alex/display.py` 中的 Rich Console 工具函数和 `ThinkingDisplay`。
+- 持久化通过 `TurnCompleted` 事件自动触发（`SessionPersistence.subscribe(bus)`）
 
 ## 依赖
 
-- `textual>=8.0.0` — TUI 框架（alternate screen、组件化、CSS 样式）
-- `rich>=13.7.0` — 终端渲染（Markdown、Panel，Textual 底层依赖）
+- `textual>=8.0.0` — TUI 框架
+- `rich>=13.7.0` — 终端渲染（Textual 底层依赖）
+- `langchain` + `langgraph` — Agent 框架和图执行引擎
+- `APScheduler` — 后台定时任务调度
+
+## 目录结构
+
+```
+alex/tui/
+├── __init__.py
+├── app.py              # AlexApp — Textual TUI 主类
+├── controller.py       # ChatControllerMixin — 命令、总线订阅、会话管理
+├── presenter.py        # AlexBubble / UserBubble / ToolBubble / SystemBubble
+├── view_models.py      # ChatHistory / ChatTurn / _messages_to_turns
+└── stream_renderer.py  # StreamRenderer — 用户/cron turn 共用渲染状态
+```

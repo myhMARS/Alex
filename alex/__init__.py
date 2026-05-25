@@ -1,10 +1,10 @@
 """Alex - An AI agent with tools, memory, skills, and streaming."""
 
-__all__ = ["Agent", "ChatResponse"]
+__all__ = ["Agent"]
 
 
 def __getattr__(name: str):
-    if name in ("Agent", "ChatResponse"):
-        from alex.agent import Agent, ChatResponse
-        return {"Agent": Agent, "ChatResponse": ChatResponse}[name]
+    if name == "Agent":
+        from alex.agent import Agent
+        return Agent
     raise AttributeError(name)

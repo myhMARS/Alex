@@ -1,6 +1,6 @@
 """Skill lifecycle evolution engine."""
 
-from alex.skills.store import SkillStore
+from alex.skill.repository import SkillStore
 
 
 class EvolutionEngine:

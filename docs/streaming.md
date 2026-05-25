@@ -1,32 +1,61 @@
-# 流式输出 (`alex/streaming/`)
+# 流式输出
 
 ## 设计思路
 
-基于 LangGraph 的 `astream_events` API，将流式事件抽象为统一的 `StreamEvent`，通过 `StreamHandler` 分发给监听器。Agent 的 `chat_stream()` 方法直接 yield 这些事件，TUI 层消费并实时渲染。
+基于 LangGraph 的 `astream_events` API，`TurnOrchestrator` 和 `CronTurnHandler` 直接 yield / publish 类型化的 UI 事件（`ThinkingUpdated`、`TokenEmitted`、`ToolStarted`、`ToolFinished`、`SkillLoaded`）。这些事件类定义在 `alex/bus/events.py` 中。
+
+> **注意**：早期 `alex/streaming/` 模块（`StreamEvent` + `StreamHandler`）已在事件总线重构中移除。流式事件类型现在统一纳入 `Event -> UIEvent` 继承体系。
 
 ## 事件类型
 
 | 事件 | 触发时机 |
 |------|---------|
-| `thinking` | LLM 产出推理/思考内容（DeepSeek reasoning_content） |
-| `token` | LLM 产出正式回复 token |
-| `tool_start` | 开始调用工具 |
-| `tool_end` | 工具调用完成 |
-| `skill_load` | Agent 通过 load_skill 工具加载技能详情 |
-| `done` | 整轮对话结束 |
-| `error` | 发生错误 |
+| `ThinkingUpdated` | LLM 产出推理/思考内容（DeepSeek reasoning_content） |
+| `TokenEmitted` | LLM 产出正式回复 token |
+| `ToolStarted` | 开始调用工具 |
+| `ToolFinished` | 工具调用完成 |
+| `SkillLoaded` | Agent 通过 load_skill 工具加载技能详情 |
 
-## 业务逻辑
-
-1. `chat_stream()` 内部调用 `graph.astream_events()`，逐事件解析
-2. DeepSeek 的 `reasoning_content` 通过 `additional_kwargs` 提取，作为 `thinking` 事件 yield
-3. `StreamHandler` 支持注册多个 listener（TUI 更新、日志记录等）
-4. 反思在流结束后异步执行（`asyncio.ensure_future`），不阻塞 `done` 事件
-
-## 目录结构
+## 用户 turn 流式路径
 
 ```
-alex/streaming/
-├── __init__.py
-└── handler.py        # StreamEvent 数据类 + StreamHandler
+TurnOrchestrator.run()
+  └── graph.astream_events()
+        ├── on_chat_model_stream → yield ThinkingUpdated / TokenEmitted
+        ├── on_tool_start       → yield SkillLoaded + ToolStarted
+        └── on_tool_end         → yield ToolFinished
 ```
+
+事件通过 async generator 直接从 `Agent.chat_stream()` 传递到 TUI 的 `_run_chat()` 循环。
+
+## Cron turn 流式路径
+
+```
+CronTurnHandler.handle()
+  └── graph.astream_events()
+        ├── on_chat_model_stream → bus.publish(ThinkingUpdated(stream_id=...))
+        ├── on_tool_start       → bus.publish(ToolStarted(is_cron=True, stream_id=...))
+        └── on_tool_end         → bus.publish(ToolFinished(is_cron=True, stream_id=...))
+```
+
+事件通过 `AsyncEventBus` 分发到 TUI 的 cron 订阅者，由 `StreamRenderer` 统一处理。
+
+## 渲染统一
+
+用户 turn 和 cron turn 的流式渲染逻辑由 `alex/tui/stream_renderer.py` 中的 `StreamRenderer` 类统一管理：
+
+- `on_thinking(delta)` — 累积 thinking
+- `on_token(delta)` — 累积文本 + 更新 bubble
+- `on_tool_started(tool_id, name, args)` — 创建 inflight 工具 + ToolBubble
+- `on_tool_finished(tool_id, output)` — 标记工具完成
+- `on_skill_loaded(name, pattern)` — 记录技能
+- `build_turn(user_input, kind)` — 构建 ChatTurn
+- `finalize(turn)` — 完成 bubble 渲染
+
+用户 turn 在此基础上增加 ~50ms UI 节流以保持流畅。
+
+## DeepSeek thinking 支持
+
+- `reasoning_content` 通过 `chunk.additional_kwargs` 提取
+- 作为 `ThinkingUpdated` 事件 yield/publish
+- 反思在流结束后通过 `maybe_reflect()` 异步执行，不阻塞流式输出

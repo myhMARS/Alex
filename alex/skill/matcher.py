@@ -1,7 +1,7 @@
 """Tag + keyword-based skill retriever."""
 
-from alex.skills.base import Skill
-from alex.skills.store import SkillStore
+from alex.skill.models import Skill
+from alex.skill.repository import SkillStore
 
 
 class SkillRetriever:

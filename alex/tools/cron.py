@@ -3,6 +3,8 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
 
+from alex.tools.ports import CronScheduler
+
 
 TOOL_HINT = "Use `cron` to schedule background jobs (web_search/web_fetch/time/notify) using either interval_seconds or a crontab expression (5 fields, or 6 fields with seconds); enable subscribe=true to let the agent reply to each run result."
 
@@ -18,34 +20,7 @@ class CronInput(BaseModel):
     params: dict = Field(default_factory=dict, description="Action params or cancel target: {'id': '...'}")
 
 
-def create_cron_tool(agent) -> StructuredTool:
-    async def _run_action(action: str, params: dict) -> str:
-        action = (action or "").strip()
-        params = params or {}
-
-        if action == "web_search":
-            from alex.tools.web_search import _web_search
-            return await _web_search(
-                query=str(params.get("query", "")),
-                max_results=int(params.get("max_results", 5)),
-            )
-
-        if action == "web_fetch":
-            from alex.tools.web_fetch import _web_fetch
-            return await _web_fetch(
-                url=str(params.get("url", "")),
-                max_length=int(params.get("max_length", 8000)),
-            )
-
-        if action == "time":
-            from alex.tools.time import _get_current_time
-            return await _get_current_time(timezone=str(params.get("timezone", "local")))
-
-        if action == "notify":
-            return str(params.get("message", ""))
-
-        raise ValueError(f"Unknown action: {action}")
-
+def create_cron_tool(scheduler: CronScheduler) -> StructuredTool:
     async def _cron(
         name: str = "job",
         interval_seconds: int | None = None,
@@ -63,7 +38,7 @@ def create_cron_tool(agent) -> StructuredTool:
             target = str(params.get("id", "")).strip()
             if not target:
                 return "Error: cancel requires params.id"
-            ok = await agent.cancel_cron_job(target)
+            ok = await scheduler.cancel_cron_job(target)
             return "Cancelled" if ok else f"Not found: {target}"
 
         cron_str = str(cron or "").strip()
@@ -73,7 +48,7 @@ def create_cron_tool(agent) -> StructuredTool:
         if iv is None and not cron_str:
             return "Error: provide interval_seconds or cron"
 
-        job_id = await agent._cron.schedule(
+        job_id = await scheduler.schedule_cron_job(
             name=name,
             cron=cron_str,
             interval_seconds=iv,
@@ -82,7 +57,6 @@ def create_cron_tool(agent) -> StructuredTool:
             run_now=bool(run_now),
             action=action,
             params=params,
-            runner=_run_action,
         )
         return f"Scheduled: {job_id}"
 

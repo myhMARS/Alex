@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from alex.prompts import SKILLS_DIR, save_skill_template, remove_skill_template
-from alex.skills.base import Skill
+from alex.skill.models import Skill
 
 
 class SkillStore:

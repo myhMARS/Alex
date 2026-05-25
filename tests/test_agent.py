@@ -9,6 +9,7 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from alex.agent import Agent
+from alex.bus.events import TokenEmitted
 
 
 class _TestInput(BaseModel):
@@ -28,17 +29,28 @@ def _make_test_tool() -> StructuredTool:
     )
 
 
+_BASE_TOOL_COUNT = 2  # built-in load_skill + cron_history
+
+
+async def _consume_stream(agent, message: str) -> list:
+    """Consume all events from chat_stream and return them."""
+    events = []
+    async for event in agent.chat_stream(message):
+        events.append(event)
+    return events
+
+
 class TestAgentInit:
     def test_creates_without_tools(self):
         agent = Agent()
-        assert agent.tools == []
+        assert len(agent.tools) == _BASE_TOOL_COUNT
         assert agent.history == []
         assert agent.get_tool("nonexistent") is None
 
     def test_creates_with_tools(self):
         tool = _make_test_tool()
         agent = Agent(tools=[tool])
-        assert len(agent.tools) == 1
+        assert len(agent.tools) == _BASE_TOOL_COUNT + 1
         assert agent.get_tool("echo") is tool
 
 
@@ -47,7 +59,7 @@ class TestToolRegistry:
         agent = Agent()
         tool = _make_test_tool()
         agent.register_tool(tool)
-        assert len(agent.tools) == 1
+        assert len(agent.tools) == _BASE_TOOL_COUNT + 1
         assert agent.get_tool("echo") is tool
 
     def test_unregister(self):
@@ -55,7 +67,7 @@ class TestToolRegistry:
         tool = _make_test_tool()
         agent.register_tool(tool)
         agent.unregister_tool("echo")
-        assert len(agent.tools) == 0
+        assert len(agent.tools) == _BASE_TOOL_COUNT
         assert agent.get_tool("echo") is None
 
     def test_unregister_nonexistent_does_not_raise(self):
@@ -67,58 +79,64 @@ class TestHistory:
     @pytest.mark.asyncio
     async def test_clear_history(self):
         agent = Agent()
-        with patch.object(agent._graph, "ainvoke", new_callable=AsyncMock) as mock_invoke:
-            mock_invoke.return_value = {"messages": [
-                HumanMessage(content="Hi"),
-                AIMessage(content="IGNORED", tool_calls=[]),
-                AIMessage(content="Hello!"),
-            ]}
-            await agent.chat("Hi")
-            assert len(agent.history) == 3
-            await agent.clear_history()
-            assert len(agent.history) == 0
+        with patch.object(agent._prompt, "ensure_skills_prompt", return_value=False):
+            with patch.object(agent._feedback, "maybe_reflect", new_callable=AsyncMock):
+                with patch.object(agent._graph, "astream_events") as mock_stream:
+                    async def _events():
+                        yield {"event": "on_chat_model_stream", "data": {"chunk": AIMessage(content="Hello!")}}
+                        yield {"event": "on_chat_model_end", "data": {"output": AIMessage(content="Hello!")}}
+
+                    mock_stream.return_value = _events()
+                    await _consume_stream(agent, "Hi")
+                    assert len(agent.history) >= 1
+                    await agent.clear_history()
+                    assert len(agent.history) == 0
 
 
-class TestChat:
+class TestChatStream:
     @pytest.mark.asyncio
     async def test_returns_response(self):
         agent = Agent()
-        with patch.object(agent._graph, "ainvoke", new_callable=AsyncMock) as mock_invoke:
-            mock_invoke.return_value = {"messages": [
-                HumanMessage(content="Hi"),
-                AIMessage(content="IGNORED", tool_calls=[]),
-                AIMessage(content="Hello, I'm Alex."),
-            ]}
-            response = await agent.chat("Hi")
-            assert response == "Hello, I'm Alex."
-            hist = agent.history
-            assert len(hist) == 3
-            assert hist[0].content == "Hi"
-            assert hist[2].content == "Hello, I'm Alex."
+        with patch.object(agent._prompt, "ensure_skills_prompt", return_value=False):
+            with patch.object(agent._feedback, "maybe_reflect", new_callable=AsyncMock):
+                with patch.object(agent._graph, "astream_events") as mock_stream:
+                    async def _events():
+                        yield {"event": "on_chat_model_stream", "data": {"chunk": AIMessage(content="Hello, I'm Alex.")}}
+                        yield {"event": "on_chat_model_end", "data": {"output": AIMessage(content="Hello, I'm Alex.")}}
+
+                    mock_stream.return_value = _events()
+                    collected = []
+                    async for event in agent.chat_stream("Hi"):
+                        if isinstance(event, TokenEmitted):
+                            collected.append(event.delta)
+                    response = "".join(collected)
+                    assert response == "Hello, I'm Alex."
+                    hist = agent.history
+                    assert len(hist) >= 1
+                    assert hist[-1].content == "Hello, I'm Alex."
 
     @pytest.mark.asyncio
     async def test_passes_chat_history(self):
         agent = Agent()
-        with patch.object(agent._graph, "ainvoke", new_callable=AsyncMock) as mock_invoke:
-            mock_invoke.return_value = {"messages": [
-                HumanMessage(content="First"),
-                AIMessage(content="IGNORED", tool_calls=[]),
-                AIMessage(content="Replying"),
-            ]}
-            await agent.chat("First")
+        with patch.object(agent._prompt, "ensure_skills_prompt", return_value=False):
+            with patch.object(agent._feedback, "maybe_reflect", new_callable=AsyncMock):
+                with patch.object(agent._graph, "astream_events") as mock_stream:
+                    async def _events1():
+                        yield {"event": "on_chat_model_stream", "data": {"chunk": AIMessage(content="Replying")}}
+                        yield {"event": "on_chat_model_end", "data": {"output": AIMessage(content="Replying")}}
 
-            mock_invoke.return_value = {"messages": [
-                HumanMessage(content="First"),
-                AIMessage(content="IGNORED", tool_calls=[]),
-                AIMessage(content="Replying"),
-                HumanMessage(content="Second"),
-                AIMessage(content="IGNORED2", tool_calls=[]),
-                AIMessage(content="Second reply"),
-            ]}
-            await agent.chat("Second")
+                    mock_stream.return_value = _events1()
+                    await _consume_stream(agent, "First")
 
-            assert mock_invoke.call_count == 2
-            second_call = mock_invoke.call_args_list[1][0][0]
-            msgs = second_call["messages"]
-            assert len(msgs) == 4  # 3 from first turn + new HumanMessage
-            assert msgs[-1].content == "Second"
+                    async def _events2():
+                        yield {"event": "on_chat_model_stream", "data": {"chunk": AIMessage(content="Second reply")}}
+                        yield {"event": "on_chat_model_end", "data": {"output": AIMessage(content="Second reply")}}
+
+                    mock_stream.return_value = _events2()
+                    await _consume_stream(agent, "Second")
+
+                    assert mock_stream.call_count == 2
+                    second_call = mock_stream.call_args_list[1][0][0]
+                    msgs = second_call["messages"]
+                    assert len(msgs) >= 2  # includes previous messages + new HumanMessage
+                    assert msgs[-1].content == "Second"

@@ -1,5 +1,7 @@
 """WebSearch tool - search the web using DuckDuckGo."""
 
+import asyncio
+
 from ddgs import DDGS
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
@@ -13,6 +15,11 @@ class WebSearchInput(BaseModel):
     max_results: int = Field(default=5, description="Maximum number of results to return (max: 15)")
 
 
+def _do_search(query: str, max_results: int) -> list[dict]:
+    """Synchronous search — runs in a thread to avoid blocking the event loop."""
+    return list(DDGS().text(query, max_results=max_results))
+
+
 async def _web_search(query: str, max_results: int = 5) -> str:
     """Search the web using DuckDuckGo and return formatted results."""
     max_results = min(max_results, 15)
@@ -21,7 +28,7 @@ async def _web_search(query: str, max_results: int = 5) -> str:
         return "Error: Search query is required."
 
     try:
-        results = list(DDGS().text(query, max_results=max_results))
+        results = await asyncio.to_thread(_do_search, query, max_results)
 
         if not results:
             return f"No results found for query: '{query}'"
