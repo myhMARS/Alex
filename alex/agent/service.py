@@ -270,7 +270,10 @@ class Agent:
         if action == "notify":
             return str(params.get("message", ""))
 
-        result = await self._tool_executor.execute(session_id, action, params)
+        from alex.tools.ports import ToolExecutionContext
+
+        ctx = ToolExecutionContext(session_id=session_id, source="cron")
+        result = await self._tool_executor.execute(ctx, action, params)
         if result.startswith("Error:"):
             raise ValueError(result)
         return result

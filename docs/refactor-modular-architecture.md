@@ -13,24 +13,28 @@
 
 ## 结论摘要
 
-Alex 当前已经从早期的“`Agent + TUI + 工具集合`”单体，演进成一个可运行的模块化单体 v1：
+Alex 当前已经从早期的”`Agent + TUI + 工具集合`”单体，演进成一个可运行的模块化单体 v1：
 
 - 目录结构已经按模块拆分
 - typed event 已经统一
 - session、cron、stream 渲染等关键链路已经稳定
 - 多个高风险行为问题已经修复
 
-但它距离“最佳长期演进架构”还有明显差距。当前最核心的问题不再是“有没有模块”，而是：
+2026-05-25 迭代完成了 Phase 1 语义校正的核心工作：
+- `store/ports.py` — 从 `SessionStore` 重命名为 `SessionRepository`，改为 bundle 语义对齐 `SessionPersistence`
+- `skill/ports.py` — 与 `SkillService` 真实接口重新对齐，移除漂移的旧方法签名
+- `ToolExecutionContext` — 引入正式运行时上下文 dataclass，替代裸 `session_id`
+- `FeedbackSessionState` — 每 session 独立 feedback 状态，替代旧实例级可变字段
 
+当前距离”最佳长期演进架构”的主要差距集中在：
 1. application layer 仍然不纯，`Agent` facade 还承担了过多 wiring 与具体实现依赖
-2. port / service / adapter 三层语言没有完全统一，多个 `Protocol` 已与真实实现漂移
-3. command bus 与 event bus 只完成了一半，系统仍处于“直接调用 + 事件观测”的混合模型
-4. session 级状态虽然已经收口了一部分，但仍散落在 TUI、feedback、cron 渲染、tool runtime 多处
-5. 工具、skill、store 的运行时上下文和持久化边界还不够硬，未来功能扩展仍会持续把复杂度推回 `agent/service.py`
+2. agent/ports.py 中的 `SkillServicePort` 已重新指向 `skill/ports.py` 的一致接口
+3. command bus 与 event bus 语义已明确分离（event-only bus），但 Agent 内部仍是 direct-call + event 的混合模型
+4. TUI controller 仍承担 session 切换、cron projection、feedback UI 状态等多类职责
 
 因此，当前最准确的判断是：
 
-- 当前架构：模块化单体 v1，已经可维护，但还没有进入“可长期演化”的稳定边界阶段
+- 当前架构：模块化单体 v1.1，port/adapter 语义已对齐，runtime model 已开始建立
 - 目标架构：模块化单体 v2，application、domain、adapter、projection、runtime 五层职责清晰
 
 ---
@@ -193,7 +197,7 @@ TUI
           -> TUI subscribers / projectors
 ```
 
-### 当前架构已完成的部分
+### 当前架构已完成的里程碑
 
 以下能力已经可以视为 v1 架构基线：
 
@@ -205,13 +209,19 @@ TUI
 6. `StreamRenderer` 已把用户 turn 和 cron turn 渲染状态统一
 7. 跨会话 cron 污染、运行中 cron 取消、反馈状态泄漏、反思角色映射、`web_search` 阻塞等高风险问题已经修复
 
+**2026-05-25 新增里程碑（Phase 1 语义校正）：**
+
+8. `store/ports.py` — `SessionRepository` Protocol 已与 `SessionPersistence` 真实接口对齐（bundle 语义）
+9. `skill/ports.py` — `SkillServicePort` 已与 `SkillService` 真实接口对齐，移除旧漂移方法
+10. `ToolExecutionContext` — 正式 runtime model 已引入并替换 `ToolExecutor.execute(session_id, ...)` 的裸字符串传递
+11. `FeedbackSessionState` — per-session feedback 状态字典已替代 `FeedbackRecorder` 的实例级可变字段
+
 ### 当前架构仍存在的核心问题
 
 1. `Agent` 仍是 application 层的大聚合对象
-2. `SessionService` 与 `store/ports.py` 还不是成熟、稳定的 repository 边界
-3. `skill/ports.py` 与 `skill/service.py` 的真实接口仍不一致
-4. `EventBus` 只有 event 语义，command handling 仍没有成为真正的一等执行入口
-5. `ToolExecutor.execute(session_id, ...)` 仍未把 session 上下文提升为正式 runtime model
+2. `SessionService` 仍直接 depend on `SessionPersistence`，尚未升级为完整 repository 模式
+3. `EventBus` 只有 event 语义，Agent 内部仍是 direct-call + event 的混合模型
+4. TUI controller 仍同时承担命令解析、cron projection、feedback UI 状态、toast 生命周期
 
 ---
 
@@ -582,20 +592,15 @@ Phase C:
 2. TUI 只消费投影事件，不参与业务决策
 3. store 只消费持久化事件，不参与执行决策
 
-### 7. Tool Runtime
+### 7. Tool Runtime ✅ (2026-05-25 Phase A 完成)
 
 #### 当前问题
 
-`ToolExecutor.execute(session_id, ...)` 已接受 `session_id`，但还没有把它提升为正式运行时上下文。
+~~`ToolExecutor.execute(session_id, ...)` 已接受 `session_id`，但还没有把它提升为正式运行时上下文。~~ **已解决。**
 
-这会导致两个问题：
+#### 目标设计 ✅ 已实现
 
-1. 未来一旦有 session-aware tool，就会继续走隐式耦合
-2. tool API 与 runtime reality 不一致
-
-#### 目标设计
-
-新增：
+`ToolExecutionContext` dataclass 已创建于 `tools/ports.py`：
 
 ```python
 @dataclass
@@ -606,7 +611,7 @@ class ToolExecutionContext:
     metadata: dict[str, Any] = field(default_factory=dict)
 ```
 
-工具执行入口改为：
+工具执行入口已改为：
 
 ```python
 async def execute(self, ctx: ToolExecutionContext, name: str, args: dict) -> str:
@@ -615,41 +620,37 @@ async def execute(self, ctx: ToolExecutionContext, name: str, args: dict) -> str
 
 #### 重构路线
 
-Phase A:
+Phase A: ✅ 已完成
 
-1. 新建 `ToolExecutionContext`
-2. `Agent.execute_tool_action()` 与 orchestrator 统一构造 context
+1. ✅ 新建 `ToolExecutionContext` 于 `tools/ports.py`
+2. ✅ `Agent.execute_tool_action()` 构造 context
+3. ✅ `ToolExecutor.execute()` 签名为 `(ctx, name, args)`
+4. ✅ 测试全部更新
 
-Phase B:
+Phase B: (后续)
 
 1. `ToolExecutor` 支持为 tool 注入 context
 2. 为内置工具定义是否接收 context 的统一规则
 
-Phase C:
+Phase C: (后续)
 
 1. `cron_history`、future session-aware tools、审计日志统一使用 context
 
-#### 验收标准
+#### 验收状态
 
-1. 不再只传裸 `session_id`
-2. tools runtime 的契约与实现一致
-3. 新工具不需要再通过闭包或宿主对象偷拿 session 信息
+1. ✅ 不再只传裸 `session_id`
+2. ✅ tools runtime 的契约与实现一致
+3. ⬜ 新工具不需要再通过闭包或宿主对象偷拿 session 信息
 
-### 8. Feedback / Reflection
+### 8. Feedback / Reflection ✅ (2026-05-25 Phase A+B 完成)
 
 #### 当前问题
 
-虽然跨会话泄漏已修，但 recorder 仍然是“一个对象里塞所有 session 当前状态”的模式：
+~~虽然跨会话泄漏已修，但 recorder 仍然是”一个对象里塞所有 session 当前状态”的模式。~~ **已解决。**
 
-- `_turn_count`
-- `_skill_episodes`
-- `_reflecting`
+#### 目标设计 ✅ 已实现
 
-这不利于未来多会话并行、恢复或调试。
-
-#### 目标设计
-
-改为每 session 一份 feedback state：
+每 session 一份 feedback state：
 
 ```python
 @dataclass
@@ -659,34 +660,35 @@ class FeedbackSessionState:
     episodes: list[dict] = field(default_factory=list)
 ```
 
-`FeedbackAppService` 管理：
+`FeedbackRecorder` 管理：
 
-- `dict[session_id, FeedbackSessionState]`
-- record episode
-- provide rating
-- maybe reflect
-- clear session state
+- `dict[session_id, FeedbackSessionState]` (via `_sessions` dict)
+- `_state()` 方法自动创建/返回当前 session 的状态
+- `set_session_id()` 重置新 session 的计数器和 episodes
+- `reset_session_state(session_id)` 显式清除（用于 `/clear`）
 
 #### 重构路线
 
-Phase A:
+Phase A: ✅ 已完成
 
-1. 将 `FeedbackRecorder` 改名为 `FeedbackAppService`
-2. 引入 `FeedbackSessionState`
+1. ✅ 引入 `FeedbackSessionState` dataclass
+2. ✅ `FeedbackRecorder` 改为 `dict[session_id, FeedbackSessionState]` 模式
+3. ✅ 所有内部访问通过 `_state()` 方法
 
-Phase B:
+Phase B: ✅ 已完成
 
-1. 所有与 session 切换相关的 reset 都只调用 `feedback_service.reset_session_state(session_id)`
-2. TUI 不再依赖除 `_pending_feedback_turn_id` 之外的隐式反馈状态
+1. ✅ `set_session_id()` 重置新 session 的 counters + episodes
+2. ✅ `reset_session_state()` 新增，TUI 可通过此接口显式清除
 
-Phase C:
+Phase C: (后续)
 
 1. 若未来需要，可选择将 feedback episodes 持久化为独立调试日志
 
-#### 验收标准
+#### 验收状态
 
-1. feedback 状态以 session 为键，而不是 recorder 单实例字段
-2. 会话切换逻辑不再需要了解内部字段名
+1. ✅ feedback 状态以 session 为键，而不是 recorder 单实例字段
+2. ✅ 会话切换逻辑通过 `set_session_id` / `reset_session_state` 统一管理
+3. ✅ 10/10 feedback 测试通过
 
 ### 9. Read Models / Projection
 
@@ -775,7 +777,7 @@ Phase C:
 
 ## 分阶段路线图
 
-### Phase 1：语义校正
+### Phase 1：语义校正 ✅ (2026-05-25 完成)
 
 目标：
 
@@ -783,15 +785,16 @@ Phase C:
 
 工作项：
 
-1. 修正 `store/ports.py`
-2. 修正 `skill/ports.py`
-3. 明确 `EventBus` 仅为 event bus
-4. 删除文档中所有不符合当前实现的乐观描述
+1. ✅ 修正 `store/ports.py` — `SessionStore` → `SessionRepository` + `SessionBundle` TypedDict，对齐 bundle 语义
+2. ✅ 修正 `skill/ports.py` — `SkillServicePort` 与真实 `SkillService` 接口对齐
+3. ✅ 明确 `EventBus` 仅为 event bus（文档 + agent/ports.py 清理）
+4. ✅ 删除 agent/ports.py 中漂移的旧 `SkillServicePort`，改为 re-export `skill/ports.py`
 
 完成标志：
 
-- 文档与代码语义对齐
-- port 不再漂移
+- 文档与代码语义对齐 ✅
+- port 不再漂移 ✅
+- store/skill/tools 三个核心 port 文件与对应实现一致 ✅
 
 ### Phase 2：Application Layer 再拆分
 
