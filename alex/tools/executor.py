@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from alex.tools.ports import ToolExecutionContext
 from alex.tools.registry import ToolRegistry
 
 
@@ -18,7 +19,7 @@ class ToolExecutor:
     def __init__(self, registry: ToolRegistry) -> None:
         self._registry = registry
 
-    async def execute(self, session_id: str, name: str, args: dict[str, Any]) -> str:
+    async def execute(self, ctx: ToolExecutionContext, name: str, args: dict[str, Any]) -> str:
         tool = self._registry.get(name)
         if tool is None:
             return f"Error: tool '{name}' not found"

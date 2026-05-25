@@ -4,6 +4,7 @@ import pytest
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+from alex.tools.ports import ToolExecutionContext
 from alex.tools.registry import ToolRegistry
 from alex.tools.executor import ToolExecutor
 
@@ -74,14 +75,14 @@ class TestToolExecutor:
         reg = ToolRegistry()
         reg.register(_make_tool())
         executor = ToolExecutor(reg)
-        result = await executor.execute("s1", "echo", {"text": "hello"})
+        result = await executor.execute(ToolExecutionContext(session_id="s1"), "echo", {"text": "hello"})
         assert result == "ECHO: hello"
 
     @pytest.mark.asyncio
     async def test_execute_nonexistent_tool(self):
         reg = ToolRegistry()
         executor = ToolExecutor(reg)
-        result = await executor.execute("s1", "nonexistent", {})
+        result = await executor.execute(ToolExecutionContext(session_id="s1"), "nonexistent", {})
         assert result.startswith("Error:")
 
     @pytest.mark.asyncio
@@ -99,5 +100,5 @@ class TestToolExecutor:
         )
         reg.register(tool)
         executor = ToolExecutor(reg)
-        result = await executor.execute("session-abc", "capture", {"text": "hi"})
+        result = await executor.execute(ToolExecutionContext(session_id="session-abc"), "capture", {"text": "hi"})
         assert result == "hi"

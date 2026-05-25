@@ -1,29 +1,56 @@
-"""Store module public interfaces."""
+"""Store module public interfaces — stable repository contracts.
+
+Defines the SessionBundle shape and SessionRepository port that
+SessionPersistence (adapter) implements. The agent layer depends
+only on these interfaces, never on store internals.
+"""
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Any, Protocol, TypedDict
 
 from langchain_core.messages import BaseMessage
 
 
-class SessionStore(Protocol):
-    """Session persistence — save/load BaseMessage sequences + cron history."""
+class SessionBundle(TypedDict):
+    """A complete session snapshot: messages + cron history + metadata."""
 
-    async def load(self, session_id: str) -> list[BaseMessage]: ...
+    session_id: str
+    created_at: str
+    first_message: str
+    messages: list[BaseMessage]
+    cron_history: list[dict[str, Any]]
 
-    async def save(self, session_id: str, messages: list[BaseMessage]) -> None: ...
 
-    async def save_cron_history(self, session_id: str, records: list[dict[str, Any]]) -> None: ...
+class SessionRepository(Protocol):
+    """Session persistence — load/save/list/delete session bundles.
+
+    Matches the actual SessionPersistence adapter interface so the
+    port no longer drifts from the implementation.
+    """
+
+    def save(self, session_id: str, messages: list[BaseMessage]) -> None: ...
+
+    def load(self, session_id: str) -> SessionBundle | None: ...
+
+    def append_cron_record(self, session_id: str, record: dict[str, Any]) -> None: ...
+
+    def list_sessions(self) -> list[dict[str, Any]]: ...
+
+    def delete(self, session_id: str) -> bool: ...
 
 
 class SkillRepository(Protocol):
     """Skill metadata persistence — CRUD for skill definitions."""
 
-    async def list_all(self) -> list[Any]: ...
+    def list_all(self) -> list[Any]: ...
 
-    async def get_by_name(self, name: str) -> Any | None: ...
+    def get(self, skill_id: str) -> Any | None: ...
 
-    async def save(self, skill: Any) -> None: ...
+    def add(self, skill: Any) -> None: ...
 
-    async def delete(self, skill_id: str) -> None: ...
+    def update(self, skill: Any) -> None: ...
+
+    def remove(self, skill_id: str) -> None: ...
+
+    def deprecate(self, skill_id: str) -> None: ...

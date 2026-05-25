@@ -19,7 +19,8 @@ def _make_feedback(push=None):
         "new_skill_names": [], "updated_skill_names": [],
     })
     llm = MagicMock()
-    return FeedbackRecorder(memory, skill_manager, llm, push)
+    fb = FeedbackRecorder(memory, skill_manager, llm, push, session_id="test")
+    return fb
 
 
 class TestFeedbackRecorder:
@@ -48,8 +49,9 @@ class TestFeedbackRecorder:
             ["web_search"],
             "Use sorted() function",
         )
-        assert len(fb._skill_episodes) == 1
-        ep = fb._skill_episodes[0]
+        st = fb._state()
+        assert len(st.episodes) == 1
+        ep = st.episodes[0]
         assert ep["query"] == "how do I sort a list?"
         assert ep["skills_loaded"] == ["python_skill"]
         assert ep["tools_used"] == ["web_search"]
@@ -59,7 +61,7 @@ class TestFeedbackRecorder:
     async def test_maybe_reflect_periodic(self):
         fb = _make_feedback()
         # Set turn_count so next maybe_reflect triggers (every 5 turns)
-        fb._turn_count = 4
+        fb._state().turn_count = 4
         assert await fb.maybe_reflect(True) is None
         assert fb._skills.reflect.called
 
@@ -67,14 +69,14 @@ class TestFeedbackRecorder:
     async def test_maybe_reflect_new_domain(self):
         fb = _make_feedback()
         # New domain (no skills matched) should trigger reflection immediately
-        fb._turn_count = 1  # not a multiple of 5
+        fb._state().turn_count = 1  # not a multiple of 5
         assert await fb.maybe_reflect(False) is None
         assert fb._skills.reflect.called
 
     @pytest.mark.asyncio
     async def test_maybe_reflect_no_trigger(self):
         fb = _make_feedback()
-        fb._turn_count = 1  # not periodic, last_query_matched=True
+        fb._state().turn_count = 1  # not periodic, last_query_matched=True
         assert await fb.maybe_reflect(True) is None
         assert not fb._skills.reflect.called
 
