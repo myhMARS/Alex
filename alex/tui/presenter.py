@@ -73,6 +73,21 @@ class ToolBubble(Vertical):
         self.mount(Static(f"└─ ✓ {out_line}", id="tool-output"))
 
 
+def _mount_tool(container: Vertical, tc: dict) -> ToolBubble:
+    """Mount a prefix widget (if any) and a ToolBubble into *container*."""
+    prefix = tc.get("prefix", "")
+    if prefix:
+        container.mount(Static(prefix, classes="response-prefix"))
+    name = tc.get("name", "")
+    args = tc.get("args", {})
+    tb = ToolBubble(name, args)
+    container.mount(tb)
+    output = tc.get("output", "")
+    if output:
+        tb.set_done(output)
+    return tb
+
+
 class AlexBubble(Vertical):
     """One bubble per agent response — renders thinking, skills, and streamed text."""
 
@@ -146,6 +161,8 @@ class AlexBubble(Vertical):
     def insert_tool(self, name: str, args: dict) -> ToolBubble:
         """Insert a ToolBubble and keep assistant text below active tool output."""
         if self._current_response is not None:
+            if self._turn.response:
+                self.mount(Static(self._turn.response, classes="response-prefix"))
             self._current_response.remove()
             self._current_response = None
         tb = ToolBubble(name, args)
@@ -163,27 +180,13 @@ class AlexBubble(Vertical):
         for child in list(self.children):
             child.remove()
         for widget in self._build_sections():
-            # Keep the final layout aligned with the streaming layout:
-            # tool calls render before the post-tool assistant response.
             if "response-text" in widget.classes and turn.tool_calls:
                 for tc in turn.tool_calls:
-                    name = tc.get("name", "")
-                    args = tc.get("args", {})
-                    tb = ToolBubble(name, args)
-                    self.mount(tb)
-                    output = tc.get("output", "")
-                    if output:
-                        tb.set_done(output)
+                    _mount_tool(self, tc)
             self.mount(widget)
         if turn.tool_calls and not turn.response:
             for tc in turn.tool_calls:
-                name = tc.get("name", "")
-                args = tc.get("args", {})
-                tb = ToolBubble(name, args)
-                self.mount(tb)
-                output = tc.get("output", "")
-                if output:
-                    tb.set_done(output)
+                _mount_tool(self, tc)
 
     def set_thinking_expanded(self, expanded: bool) -> None:
         """Toggle thinking visibility via CSS classes (no rebuild)."""

@@ -150,6 +150,11 @@ class AlexApp(ChatControllerMixin, App):
         margin: 0 0 1 0;
         height: auto;
     }
+    AlexBubble > .response-prefix {
+        padding: 0;
+        margin: 0 0 1 0;
+        height: auto;
+    }
     AlexBubble > .response-text {
         padding: 0;
         margin: 0;

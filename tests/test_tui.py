@@ -69,7 +69,9 @@ async def test_insert_tool_removes_pre_tool_response_from_top():
 
         children = list(bubble.children)
 
-        assert isinstance(children[0], ToolBubble)
+        # Pre-tool text is preserved as a prefix widget before the ToolBubble
+        assert "response-prefix" in getattr(children[0], "classes", set())
+        assert isinstance(children[1], ToolBubble)
         assert "response-text" in getattr(children[-1], "classes", set())
 
 

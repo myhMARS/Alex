@@ -43,7 +43,9 @@ class StreamRenderer:
 
     def on_tool_started(self, tool_id: str, tool_name: str, tool_input: dict | None = None) -> None:
         args = tool_input if isinstance(tool_input, dict) else {"input": str(tool_input or "")}
-        self._inflight_tools[tool_id] = {"id": tool_id, "name": tool_name, "args": args, "output": ""}
+        prefix = self.collected
+        self.collected = ""
+        self._inflight_tools[tool_id] = {"id": tool_id, "name": tool_name, "args": args, "output": "", "prefix": prefix}
         self._inflight_order.append(tool_id)
         self._inflight_bubbles[tool_id] = self.bubble.insert_tool(tool_name, args)
 
