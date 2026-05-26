@@ -2,7 +2,23 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any, Protocol
+
+
+@dataclass
+class ToolExecutionContext:
+    """Runtime context injected into every tool execution.
+
+    Replaces the bare ``session_id`` string so future session-aware
+    tools (audit, logging, cron_history) can receive context without
+    implicit coupling to the agent host.
+    """
+
+    session_id: str
+    turn_id: str | None = None
+    source: str = "user"  # "user" | "cron" | "system"
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class ToolRegistry(Protocol):
@@ -17,7 +33,7 @@ class ToolRegistry(Protocol):
 class ToolExecutor(Protocol):
     """Tool execution — run a registered tool by name with arguments."""
 
-    async def execute(self, session_id: str, name: str, args: dict[str, Any]) -> str: ...
+    async def execute(self, ctx: ToolExecutionContext, name: str, args: dict[str, Any]) -> str: ...
 
 
 class CronScheduler(Protocol):

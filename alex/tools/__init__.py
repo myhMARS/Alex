@@ -3,7 +3,7 @@
 from alex.tools.cron import TOOL_HINT as CRON_HINT, create_cron_tool
 from alex.tools.registry import ToolRegistry
 from alex.tools.executor import ToolExecutor
-from alex.tools.ports import CronScheduler
+from alex.tools.ports import CronScheduler, ToolExecutionContext
 from alex.tools.time import TimeInput, create_time_tool, TOOL_HINT as TIME_HINT
 from alex.tools.web_fetch import WebFetchInput, create_web_fetch_tool, TOOL_HINT as WEB_FETCH_HINT
 from alex.tools.web_search import WebSearchInput, create_web_search_tool, TOOL_HINT as WEB_SEARCH_HINT
@@ -29,4 +29,5 @@ __all__ = [
     "ToolRegistry",
     "ToolExecutor",
     "CronScheduler",
+    "ToolExecutionContext",
 ]

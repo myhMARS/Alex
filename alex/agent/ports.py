@@ -1,8 +1,8 @@
 """Agent module public interfaces — the sole boundary TUI / frontends depend on.
 
-AgentFacade is the main contract.  Legacy narrow protocols (LLMGateway,
-MemoryPort, SkillServicePort, ToolExecutorPort) are retained for
-reference but not used directly by TUI.
+AgentFacade is the main contract.  Narrow protocols (LLMGateway,
+MemoryPort, ToolExecutorPort) are referenced by orchestrator and
+sub-components.
 """
 
 from __future__ import annotations
@@ -12,6 +12,8 @@ from collections.abc import AsyncIterator
 from typing import Any, Protocol
 
 from langchain_core.messages import BaseMessage
+
+from alex.skill.ports import SkillServicePort
 
 
 class AgentFacade(Protocol):
@@ -86,12 +88,7 @@ class AgentFacade(Protocol):
     def list_session_cron_history(self, query: str = "", limit: int = 20) -> list[dict]: ...
 
 
-# ── Narrow legacy protocols (kept for documentation, not used by TUI) ─────────
-# These are re-exports from their canonical module homes.  See:
-#   alex/skill/ports.py  for SkillServicePort
-#   alex/store/ports.py  for SessionRepository
-#   alex/tools/ports.py  for ToolExecutor / ToolRegistry
-
+# ── Narrow internal protocols (referenced by orchestrator / sub-components) ──
 
 class LLMGateway(Protocol):
     """Streaming LLM — the orchestrator calls this to get token/tool events."""
@@ -109,3 +106,19 @@ class MemoryPort(Protocol):
     async def append(self, session_id: str, messages: list[BaseMessage]) -> None: ...
 
     async def clear(self, session_id: str) -> None: ...
+
+
+class ToolExecutorPort(Protocol):
+    """Tool execution — run a tool by name and return its output string."""
+
+    async def execute(self, tool_name: str, args: dict[str, Any]) -> str: ...
+
+
+# Re-export for convenience
+__all__ = [
+    "AgentFacade",
+    "LLMGateway",
+    "MemoryPort",
+    "SkillServicePort",
+    "ToolExecutorPort",
+]
