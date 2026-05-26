@@ -146,15 +146,18 @@ Alex 的最终目标，不只是做一个“能聊天、能调用工具”的终
 
 ```
 alex/
-├── agent/                 # Agent 薄 facade
-│   ├── service.py         # Agent facade（编排入口）
-│   ├── session_service.py # Session 持久化边界
-│   ├── cron_service.py    # CronManager 生命周期
+├── agent/                 # Agent 薄 facade（应用层）
+│   ├── service.py         # Agent facade（编排入口 + wiring）
+│   ├── chat_service.py    # ChatAppService（聊天流、工具执行、图管理）
+│   ├── session_service.py # SessionService（session 持久化边界）
+│   ├── cron_service.py    # CronService（cron schedule/cancel/lifecycle）
+│   ├── feedback_service.py # FeedbackAppService（rating/episode/reflection）
+│   ├── skill_admin_service.py # SkillAdminAppService（skill CRUD/merge）
 │   ├── orchestrator.py    # TurnOrchestrator
 │   ├── cron_handler.py    # CronTurnHandler
-│   ├── feedback.py        # FeedbackRecorder
+│   ├── feedback.py        # FeedbackRecorder（legacy compat）
 │   ├── prompt.py          # PromptAssembler
-│   └── ports.py           # AgentFacade Protocol
+│   └── ports.py           # AgentFacade / LLMGateway / MemoryPort / ToolExecutorPort
 ├── bus/                   # 事件总线
 │   ├── events.py          # Event -> Command/DomainEvent/UIEvent
 │   └── in_memory.py       # AsyncEventBus 实现
@@ -169,11 +172,11 @@ alex/
 │   ├── matcher.py         # SkillRetriever 检索
 │   ├── reflector.py       # Reflector LLM 反思
 │   ├── evolution.py       # EvolutionEngine 生命周期
-│   └── ports.py           # SkillService Protocol（遗留）
+│   └── ports.py           # SkillServicePort Protocol
 ├── store/                 # 持久化层
 │   ├── session.py         # 文件 I/O + serialize/deserialize
 │   ├── session_adapter.py # SessionPersistence 事件驱动
-│   └── ports.py           # SessionStore / SkillRepository Protocol
+│   └── ports.py           # SessionRepository Protocol
 ├── scheduler/             # 后台调度
 │   └── manager.py         # CronManager APScheduler
 ├── tools/                 # 工具层
@@ -183,10 +186,13 @@ alex/
 │   ├── time.py            # 时间工具
 │   ├── web_fetch.py       # 网页抓取
 │   ├── web_search.py      # 网页搜索
-│   └── ports.py           # 工具层 Protocol
+│   └── ports.py           # 工具层 Protocol + ToolExecutionContext
 ├── tui/                   # TUI 界面
-│   ├── app.py             # AlexApp 主类
-│   ├── controller.py      # ChatControllerMixin
+│   ├── app.py             # AlexApp 主类（wiring center）
+│   ├── controller.py      # ChatControllerMixin（命令分发、session、toggles）
+│   ├── chat_projector.py  # ChatProjector（bus→widget 投影、cron renderers）
+│   ├── notification_controller.py # NotificationController（toast、feedback）
+│   ├── view_state.py      # SessionViewState（UI 状态 dataclass）
 │   ├── presenter.py       # Bubble 组件
 │   ├── view_models.py     # ChatHistory / ChatTurn
 │   └── stream_renderer.py # StreamRenderer 共享渲染
