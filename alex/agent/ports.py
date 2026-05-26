@@ -14,6 +14,7 @@ from typing import Any, Protocol
 from langchain_core.messages import BaseMessage
 
 from alex.skill.ports import SkillServicePort
+from alex.tools.ports import ToolExecutionContext
 
 
 class AgentFacade(Protocol):
@@ -109,9 +110,9 @@ class MemoryPort(Protocol):
 
 
 class ToolExecutorPort(Protocol):
-    """Tool execution — run a tool by name and return its output string."""
+    """Tool execution — run a registered tool by name within a session context."""
 
-    async def execute(self, tool_name: str, args: dict[str, Any]) -> str: ...
+    async def execute(self, ctx: ToolExecutionContext, name: str, args: dict[str, Any]) -> str: ...
 
 
 # Re-export for convenience
