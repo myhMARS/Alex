@@ -75,6 +75,7 @@ def _messages_to_turns(messages: list[BaseMessage]) -> tuple[list[ChatTurn], lis
                 _order.clear()
             if current is None:
                 current = ChatTurn(user_input="", kind=turn_kind)
+            prefix = str(msg.content) if msg.content else ""
             for tc in msg.tool_calls:
                 tc_id = str(tc.get("id", ""))
                 tc_dict = {
@@ -82,6 +83,7 @@ def _messages_to_turns(messages: list[BaseMessage]) -> tuple[list[ChatTurn], lis
                     "args": tc.get("args", {}),
                     "id": tc_id,
                     "output": "",
+                    "prefix": prefix,
                 }
                 current.tool_calls.append(tc_dict)
                 if tc_id:
