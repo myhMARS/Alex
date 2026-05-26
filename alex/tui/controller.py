@@ -7,10 +7,13 @@ page/session management, and key-binding actions.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from textual import work
 from textual.containers import VerticalScroll
 from textual.widgets import Input, Static
 
+from alex.tui.chat_projector import ChatProjector
 from alex.tui.view_models import ChatHistory
 from alex.tui.presenter import AlexBubble, render_turn
 
@@ -146,7 +149,6 @@ class ChatControllerMixin:
 
     def _handle_cron_cmd(self, args: str) -> None:
         """Show completed cron execution history for the current session."""
-        from alex.tui.chat_projector import ChatProjector
         records = self._agent.list_session_cron_history(query=args, limit=50)
         content = ChatProjector.format_cron_page(records, query=args)
         self._show_page("Cron 历史", content, mode="cron")
@@ -168,7 +170,6 @@ class ChatControllerMixin:
         for i, s in enumerate(sessions, 1):
             created = s.get("created_at", "")
             try:
-                from datetime import datetime
                 dt = datetime.fromisoformat(created)
                 time_str = dt.strftime("%Y-%m-%d %H:%M")
             except (ValueError, TypeError):

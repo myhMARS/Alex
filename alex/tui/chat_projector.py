@@ -29,7 +29,6 @@ from alex.bus.events import (
 )
 from alex.tui.presenter import AlexBubble, SystemBubble
 from alex.tui.stream_renderer import StreamRenderer
-from alex.tui.view_state import SessionViewState
 
 
 class ChatProjector:
@@ -57,10 +56,6 @@ class ChatProjector:
     @property
     def _agent(self):
         return self._app._agent
-
-    @property
-    def _view(self) -> SessionViewState:
-        return self._app._view_state
 
     @property
     def _notifications(self):
