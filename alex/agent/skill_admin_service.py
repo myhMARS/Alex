@@ -35,23 +35,21 @@ class SkillAdminAppService:
             for s in all_skills
         ]
 
-    def delete_skill(self, target: str) -> str | None:
-        found = None
+    def _find_skill(self, target: str):
         for s in self._skills.list_all():
             if s.id.startswith(target) or s.name.lower() == target.lower():
-                found = s
-                break
+                return s
+        return None
+
+    def delete_skill(self, target: str) -> str | None:
+        found = self._find_skill(target)
         if found:
             self._skills.remove_skill(found.id)
             return found.name
         return None
 
     def deprecate_skill(self, target: str) -> str | None:
-        found = None
-        for s in self._skills.list_all():
-            if s.id.startswith(target) or s.name.lower() == target.lower():
-                found = s
-                break
+        found = self._find_skill(target)
         if found:
             self._skills.deprecate_skill(found.id)
             return found.name
@@ -67,6 +65,6 @@ class SkillAdminAppService:
         names = [s.name for s in self._skills.list_all() if s.status != "DEPRECATED"]
         return f"Skill '{skill_name}' not found. Available: {', '.join(names)}"
 
-    @property
-    def skill_manager(self) -> SkillManager:
-        return self._skills
+    def get_skill_name(self, skill_id: str) -> str:
+        skill = self._skills.get_skill(skill_id)
+        return skill.name if skill else skill_id

@@ -11,16 +11,12 @@ The Agent is now a thin facade.  Business logic lives in:
 from __future__ import annotations
 
 import asyncio
-import json
+import logging
 from collections.abc import AsyncIterator
-from datetime import datetime
 
-from langchain.agents import create_agent
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import BaseMessage
-from langchain_core.tools import BaseTool as LCBaseTool, StructuredTool
-from pydantic import BaseModel, Field
+from langchain_core.tools import BaseTool as LCBaseTool
 
 from alex.agent.chat_service import ChatAppService
 from alex.agent.cron_service import CronService
@@ -28,23 +24,14 @@ from alex.agent.feedback_service import FeedbackAppService
 from alex.agent.session_service import SessionService
 from alex.agent.skill_admin_service import SkillAdminAppService
 from alex.bus import AsyncEventBus
-from alex.bus.events import CronJobEvent, UserTurnRequested
+from alex.bus.events import CronJobEvent
 from alex.config import get_llm_config
 from alex.llm.factory import LLMFactory
 from alex.memory.base import MemoryBase
 from alex.memory.buffer import BufferMemory
 from alex.skill.models import SkillManager
 
-logger = __import__("logging").getLogger(__name__)
-
-
-class LoadSkillInput(BaseModel):
-    skill_name: str = Field(description="Name of the skill to load from the directory")
-
-
-class CronHistoryInput(BaseModel):
-    query: str = Field(default="", description="Optional job id, execution id, status, or partial task name")
-    limit: int = Field(default=10, ge=1, le=50, description="Maximum number of history entries to return")
+logger = logging.getLogger(__name__)
 
 
 class Agent:
@@ -105,8 +92,7 @@ class Agent:
             cron_history_fn=self._create_cron_history_fn(),
         )
         if tools:
-            for t in tools:
-                self._chat.register_tool(t)
+            self._chat.register_tools_batch(tools)
 
         self._cron = CronService(self.push_notification)
 
@@ -119,9 +105,9 @@ class Agent:
         return _load_skill
 
     def _create_cron_history_fn(self):
-        agent_ref = self
+        format_fn = self._chat.format_cron_history
         async def _cron_history(query: str = "", limit: int = 10) -> str:
-            return agent_ref.format_cron_history(query=query, limit=limit)
+            return format_fn(query=query, limit=limit)
         return _cron_history
 
     # ── public API ───────────────────────────────────────────────────────
@@ -171,6 +157,7 @@ class Agent:
 
     async def clear_history(self) -> None:
         await self._memory.clear(session_id=self._session_id)
+        self._feedback.reset_session_state(self._session_id)
 
     @property
     def history(self) -> list:
@@ -185,10 +172,10 @@ class Agent:
         self._chat.set_event_bus(bus)
 
     def push_notification(self, event) -> None:
-        if self._bus is not None:
-            self._bus.publish(event)
         if isinstance(event, CronJobEvent) and event.subscribe:
             self._chat.push_notification(event)
+        elif self._bus is not None:
+            self._bus.publish(event)
 
     async def execute_tool_action(self, session_id: str, action: str, params: dict) -> str:
         return await self._chat.execute_tool_action(session_id, action, params)
@@ -281,8 +268,8 @@ class Agent:
             if result.turn_id and result.loaded_skill_ids:
                 self._turn_skill_ids[result.turn_id] = list(result.loaded_skill_ids)
             loaded_names = [
-                s.name for sid in result.loaded_skill_ids
-                if (s := self._skills.get_skill(sid))
+                self._skill_admin.get_skill_name(sid)
+                for sid in result.loaded_skill_ids
             ]
             self._feedback.record_episode(
                 user_message, loaded_names, result.tool_names, result.content,

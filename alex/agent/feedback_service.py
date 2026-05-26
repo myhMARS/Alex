@@ -97,8 +97,10 @@ class FeedbackAppService:
 
         if should_reflect:
             state.reflecting = True
-            await self._do_reflect()
-            state.reflecting = False
+            try:
+                await self._do_reflect()
+            finally:
+                state.reflecting = False
 
     async def reflect(self) -> dict:
         state = self._state()
@@ -110,7 +112,6 @@ class FeedbackAppService:
 
     async def _do_reflect(self) -> dict:
         state = self._state()
-        state.reflecting = True
         try:
             recent = await self._memory.get_context(session_id=self._session_id)
             recent = recent[-20:]
@@ -124,9 +125,7 @@ class FeedbackAppService:
                 updated_names=summary.get("updated_skill_names", []),
             ))
             return summary
-        except Exception as e:
+        except Exception:
             logger.warning("Skill reflection failed", exc_info=True)
-            self._push_notification(SkillReflectErrorEvent(error=str(e)))
-            return {}
-        finally:
-            state.reflecting = False
+            self._push_notification(SkillReflectErrorEvent(error="reflection failed"))
+            return None

@@ -18,7 +18,6 @@ from langchain_core.tools import BaseTool as LCBaseTool, StructuredTool
 from pydantic import BaseModel, Field
 
 from alex.agent.cron_handler import CronTurnHandler
-from alex.agent.feedback import FeedbackRecorder
 from alex.agent.orchestrator import TurnOrchestrator
 from alex.agent.prompt import PromptAssembler
 from alex.bus import AsyncEventBus
@@ -105,6 +104,11 @@ class ChatAppService:
 
     def register_tool(self, tool: LCBaseTool) -> None:
         self._tool_registry.register(tool)
+        self._graph = self._build_graph()
+
+    def register_tools_batch(self, tools: list[LCBaseTool]) -> None:
+        for t in tools:
+            self._tool_registry.register(t)
         self._graph = self._build_graph()
 
     def register_builtin_tools(
@@ -211,16 +215,7 @@ class ChatAppService:
         records = list(self._cron_history)
         q = (query or "").strip().lower()
         if q:
-            def _match(rec: dict) -> bool:
-                haystacks = [
-                    str(rec.get("execution_id", "")),
-                    str(rec.get("job_id", "")),
-                    str(rec.get("name", "")),
-                    str(rec.get("status", "")),
-                    str(rec.get("action", "")),
-                ]
-                return any(q in item.lower() for item in haystacks if item)
-            records = [rec for rec in records if _match(rec)]
+            records = [rec for rec in records if _cron_record_matches(rec, q)]
         records.sort(key=lambda rec: float(rec.get("finished_at") or rec.get("started_at") or 0), reverse=True)
         return records[: max(1, min(int(limit), 50))]
 
@@ -251,3 +246,14 @@ class ChatAppService:
     @property
     def cron_history(self) -> list[dict]:
         return self._cron_history
+
+
+def _cron_record_matches(rec: dict, q: str) -> bool:
+    haystacks = [
+        str(rec.get("execution_id", "")),
+        str(rec.get("job_id", "")),
+        str(rec.get("name", "")),
+        str(rec.get("status", "")),
+        str(rec.get("action", "")),
+    ]
+    return any(q in item.lower() for item in haystacks if item)
