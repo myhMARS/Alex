@@ -28,7 +28,7 @@ class ChatControllerMixin:
       _history: ChatHistory
       _view_state: SessionViewState
       _projector: ChatProjector
-      _notifications: NotificationController
+      _notif: NotificationController
       _thinking_expanded: bool
       _skills_expanded: bool
     """
@@ -38,7 +38,7 @@ class ChatControllerMixin:
     def _dismiss_overlay(self) -> None:
         """Remove overlay blocks (help, skills list, session list) and toast."""
         self._dismiss_panels()
-        self._notifications.dismiss_toast()
+        self._notif.dismiss_toast()
 
     def _dismiss_panels(self) -> None:
         """Remove overlay blocks (help, skills list, session list)."""
@@ -102,7 +102,7 @@ class ChatControllerMixin:
 
     @work(exclusive=True)
     async def _run_force_reflection(self) -> None:
-        self._notifications.show_toast("正在反思…", duration=2)
+        self._notif.show_toast("正在反思…", duration=2)
         await self._agent.reflect()
         self._projector.refresh_status_bar()
         chat_view = self.query_one("#chat-view", VerticalScroll)
@@ -135,17 +135,17 @@ class ChatControllerMixin:
         if action in ("del", "delete") and target:
             name = self._agent.delete_skill(target)
             if name:
-                self._notifications.show_toast(f"已删除技能：{name}", duration=2)
+                self._notif.show_toast(f"已删除技能：{name}", duration=2)
             else:
-                self._notifications.show_toast(f"未找到技能：{target}", duration=2)
+                self._notif.show_toast(f"未找到技能：{target}", duration=2)
         elif action in ("dep", "deprecate") and target:
             name = self._agent.deprecate_skill(target)
             if name:
-                self._notifications.show_toast(f"已废弃技能：{name}", duration=2)
+                self._notif.show_toast(f"已废弃技能：{name}", duration=2)
             else:
-                self._notifications.show_toast(f"未找到技能：{target}", duration=2)
+                self._notif.show_toast(f"未找到技能：{target}", duration=2)
         else:
-            self._notifications.show_toast(f"未知命令: /skills {args}", duration=2)
+            self._notif.show_toast(f"未知命令: /skills {args}", duration=2)
 
     def _handle_cron_cmd(self, args: str) -> None:
         """Show completed cron execution history for the current session."""
@@ -194,7 +194,7 @@ class ChatControllerMixin:
             pass
 
         self._dismiss_panels()
-        self._notifications.show_toast("已取消恢复会话", duration=2)
+        self._notif.show_toast("已取消恢复会话", duration=2)
 
     @work(exclusive=True)
     async def _resume_session(self, session_id: str) -> None:
@@ -206,13 +206,13 @@ class ChatControllerMixin:
         """
         bundle = self._agent.load_session(session_id)
         if bundle is None:
-            self._notifications.show_toast(f"会话 {session_id} 加载失败", duration=2)
+            self._notif.show_toast(f"会话 {session_id} 加载失败", duration=2)
             return
         self._history = ChatHistory(session_id=session_id)
         self._history.restore_from_bundle(bundle)
         self._projector.cron_renderers.clear()
         self._view_state.reset()
-        self._notifications.dismiss_feedback()
+        self._notif.dismiss_feedback()
 
         input_widget = self.query_one("#input-box", Input)
         input_widget.disabled = True
@@ -245,7 +245,7 @@ class ChatControllerMixin:
             self._history.clear()
             self._projector.cron_renderers.clear()
             self._view_state.reset()
-            self._notifications.dismiss_feedback()
+            self._notif.dismiss_feedback()
             self._agent.set_session_context(self._history.session_id, self._history.cron_history)
             chat_view = self.query_one("#chat-view", VerticalScroll)
             chat_view.remove_children()

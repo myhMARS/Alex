@@ -58,8 +58,8 @@ class ChatProjector:
         return self._app._agent
 
     @property
-    def _notifications(self):
-        return self._app._notifications
+    def _notif(self):
+        return self._app._notif
 
     @property
     def _current_session_id(self) -> str:
@@ -112,18 +112,18 @@ class ChatProjector:
 
     async def on_cron_debug_event(self, event: CronDebugEvent) -> None:
         if event.message:
-            self._notifications.show_toast(event.message, duration=3)
+            self._notif.show_toast(event.message, duration=3)
 
     async def on_skill_reflect_event(self, event: SkillReflectEvent) -> None:
         if event.new or event.updated or event.deprecated:
             chat_view = self._app.query_one("#chat-view", VerticalScroll)
             chat_view.mount(SystemBubble(f"\U0001f3af {event.toast}"))
-        self._notifications.show_toast(
-            self._notifications.format_reflect_toast(event), duration=3
+        self._notif.show_toast(
+            self._notif.format_reflect_toast(event), duration=3
         )
 
     async def on_skill_reflect_error_event(self, event: SkillReflectErrorEvent) -> None:
-        self._notifications.show_toast(f"反思失败：{event.error}", duration=4)
+        self._notif.show_toast(f"反思失败：{event.error}", duration=4)
 
     # ── cron stream typed-event handlers ────────────────────────────────
 
@@ -252,9 +252,9 @@ class ChatProjector:
     def _handle_cron_job_event(self, event: CronJobEvent) -> None:
         self.persist_cron_record(event)
         if event.status == "FAILED":
-            self._notifications.show_toast(f"任务失败：{event.name}", duration=3)
+            self._notif.show_toast(f"任务失败：{event.name}", duration=3)
         elif event.status == "SUCCESS":
-            self._notifications.show_toast(f"任务完成：{event.name}", duration=2)
+            self._notif.show_toast(f"任务完成：{event.name}", duration=2)
 
     # ── status bar ──────────────────────────────────────────────────────
 

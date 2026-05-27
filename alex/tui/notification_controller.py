@@ -32,17 +32,17 @@ class NotificationController:
 
     def dismiss_toast(self) -> None:
         if self._toast_widget:
-            self._toast_widget.set_class(True, "toast-hidden")
+            self._toast_widget.set_class(True, "alex-toast-hidden")
         if self._toast_timer:
             self._toast_timer.stop()
             self._toast_timer = None
 
     def show_toast(self, message: str, duration: float = 2) -> None:
         if self._toast_widget is None:
-            self._toast_widget = Static("", classes="toast toast-hidden")
+            self._toast_widget = Static("", classes="alex-toast alex-toast-hidden")
             self._app.mount(self._toast_widget)
         self._toast_widget.update(message)
-        self._toast_widget.set_class(False, "toast-hidden")
+        self._toast_widget.set_class(False, "alex-toast-hidden")
         self._toast_timer = self._app.set_timer(duration, self.dismiss_toast)
 
     @staticmethod

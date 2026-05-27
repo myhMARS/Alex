@@ -105,7 +105,7 @@ class AlexApp(ChatControllerMixin, App):
         margin: 0;
         height: auto;
     }
-    .toast {
+    .alex-toast {
         dock: top;
         height: 1;
         background: $panel;
@@ -114,7 +114,7 @@ class AlexApp(ChatControllerMixin, App):
         text-align: right;
         text-style: bold;
     }
-    .toast-hidden {
+    .alex-toast-hidden {
         display: none;
     }
     AlexBubble {
@@ -203,7 +203,7 @@ class AlexApp(ChatControllerMixin, App):
 
         # Phase 3: view state, projector, notifications replace scattered attrs
         self._view_state = SessionViewState()
-        self._notifications = NotificationController(self, self._view_state)
+        self._notif = NotificationController(self, self._view_state)
         self._projector = ChatProjector(self)
 
     def compose(self) -> ComposeResult:
@@ -268,12 +268,12 @@ class AlexApp(ChatControllerMixin, App):
     # ── key-binding actions delegated to NotificationController ─────────
 
     def action_rate_good(self) -> None:
-        self._notifications.rate_response(
+        self._notif.rate_response(
             True, self._agent, self._view_state.pending_feedback_turn_id
         )
 
     def action_rate_bad(self) -> None:
-        self._notifications.rate_response(
+        self._notif.rate_response(
             False, self._agent, self._view_state.pending_feedback_turn_id
         )
 
@@ -290,7 +290,7 @@ class AlexApp(ChatControllerMixin, App):
 
         cmd = user_input.lower()
         vs = self._view_state
-        notif = self._notifications
+        notif = self._notif
 
         # ── modal gate: when a page panel is showing, only allow :q, /x, and resume selection ──
         if vs.page_mode is not None:
@@ -365,7 +365,7 @@ class AlexApp(ChatControllerMixin, App):
     async def _run_chat(self, user_input: str) -> None:
         """Run agent chat — streams response directly into the Alex bubble."""
         chat_view = self.query_one("#chat-view", VerticalScroll)
-        notif = self._notifications
+        notif = self._notif
         vs = self._view_state
 
         # Create and mount the bubble immediately for streaming
