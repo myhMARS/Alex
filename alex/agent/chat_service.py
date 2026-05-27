@@ -162,13 +162,16 @@ class ChatAppService:
         self._bus = bus
 
     def push_notification(self, event) -> None:
+        """Publish *event* to the bus — the single publishing path."""
         if self._bus is not None:
             self._bus.publish(event)
-        if isinstance(event, CronJobEvent) and event.subscribe:
-            try:
-                asyncio.create_task(self._cron_handler.handle(event, self._graph))
-            except RuntimeError:
-                pass
+
+    def dispatch_cron_reply(self, event: CronJobEvent) -> None:
+        """Kick off an async cron reply turn for a subscribed CronJobEvent."""
+        try:
+            asyncio.create_task(self._cron_handler.handle(event, self._graph))
+        except RuntimeError:
+            pass
 
     # ── tool execution (public for cron) ───────────────────────────────────
 

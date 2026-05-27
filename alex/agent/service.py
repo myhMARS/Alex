@@ -172,10 +172,19 @@ class Agent:
         self._chat.set_event_bus(bus)
 
     def push_notification(self, event) -> None:
-        if isinstance(event, CronJobEvent) and event.subscribe:
-            self._chat.push_notification(event)
-        elif self._bus is not None:
+        """Publish *event* to the bus and, for subscribed cron jobs,
+        trigger the cron reply handler.
+
+        This is the single entry point for all event publishing —
+        there is no separate code path hiding behind chat_service.
+        """
+        # 1. Always publish to the event bus for observers (TUI, store, etc.)
+        if self._bus is not None:
             self._bus.publish(event)
+
+        # 2. Subscribed cron jobs additionally kick off an LLM reply turn
+        if isinstance(event, CronJobEvent) and event.subscribe:
+            self._chat.dispatch_cron_reply(event)
 
     async def execute_tool_action(self, session_id: str, action: str, params: dict) -> str:
         return await self._chat.execute_tool_action(session_id, action, params)
