@@ -33,8 +33,11 @@
 
 | 组件 | 文件 | 职责 |
 |------|------|------|
-| `AlexApp` | `app.py` | Textual App 主类，管理状态、事件订阅、流式渲染 |
-| `ChatControllerMixin` | `controller.py` | 命令处理、总线事件订阅、会话管理、toast |
+| `AlexApp` | `app.py` | Textual App 主类，wiring center — 装配 projector/notifications/view_state |
+| `ChatControllerMixin` | `controller.py` | 命令分发、page 管理、session 生命周期、toggles（282 行） |
+| `ChatProjector` | `chat_projector.py` | bus→widget 事件投影、cron renderer 管理、status bar、cron history |
+| `NotificationController` | `notification_controller.py` | toast 通知、feedback prompt、rating 提交 |
+| `SessionViewState` | `view_state.py` | UI 可变状态 dataclass，`reset()` 统一入口 |
 | `StreamRenderer` | `stream_renderer.py` | 共享流式渲染状态管理（用户/cron turn 共用） |
 | `UserBubble` | `presenter.py` | 用户消息气泡（cyan 圆角边框） |
 | `AlexBubble` | `presenter.py` | AI 回复容器（green 圆角边框），内含 skills/tools/thinking/response |
@@ -107,6 +110,8 @@ AlexApp._run_chat()
        -> StreamRenderer.on_*()
        -> throttled UI update (~50ms)
   -> StreamRenderer.build_turn() -> bubble.finalize()
+  -> NotificationController.show_feedback_prompt() (if skills used)
+  -> ChatProjector.refresh_status_bar()
 ```
 
 ### Cron turn（event bus 路径）
@@ -115,9 +120,9 @@ AlexApp._run_chat()
 CronManager fire
   -> CronJobEvent
   -> CronTurnHandler.handle()
-  -> bus.publish(ToolStarted) -> TUI subscriber -> StreamRenderer.on_tool_started()
-  -> bus.publish(TokenEmitted) -> TUI subscriber -> StreamRenderer.on_token()
-  -> bus.publish(CronDone) -> TUI subscriber -> StreamRenderer.build_turn() -> finalize()
+  -> bus.publish(ToolStarted) -> ChatProjector.on_cron_tool_started() -> StreamRenderer
+  -> bus.publish(TokenEmitted) -> ChatProjector.on_cron_token() -> StreamRenderer
+  -> bus.publish(CronDone) -> ChatProjector.on_cron_done() -> StreamRenderer -> finalize()
 ```
 
 两者共用 `StreamRenderer` 管理 bubble 生命周期、token/thinking 收集、工具调用追踪和 turn 最终化。
@@ -142,9 +147,12 @@ CronManager fire
 ```
 alex/tui/
 ├── __init__.py
-├── app.py              # AlexApp — Textual TUI 主类
-├── controller.py       # ChatControllerMixin — 命令、总线订阅、会话管理
-├── presenter.py        # AlexBubble / UserBubble / ToolBubble / SystemBubble
-├── view_models.py      # ChatHistory / ChatTurn / _messages_to_turns
-└── stream_renderer.py  # StreamRenderer — 用户/cron turn 共用渲染状态
+├── app.py                      # AlexApp — Textual TUI 主类，wiring center
+├── controller.py               # ChatControllerMixin — 命令、会话、toggles
+├── chat_projector.py           # ChatProjector — bus→widget 投影，cron renderers
+├── notification_controller.py  # NotificationController — toast、feedback
+├── view_state.py               # SessionViewState — UI 可变状态 dataclass
+├── presenter.py                # AlexBubble / UserBubble / ToolBubble / SystemBubble
+├── view_models.py              # ChatHistory / ChatTurn / _messages_to_turns
+└── stream_renderer.py          # StreamRenderer — 用户/cron turn 共用渲染状态
 ```

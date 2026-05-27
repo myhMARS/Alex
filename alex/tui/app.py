@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 import time
 
-from langchain_core.messages import BaseMessage
-
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -16,22 +14,25 @@ from textual.widgets import Header, Input, Static
 from alex.agent.ports import AgentFacade
 from alex.bus import AsyncEventBus
 from alex.bus.events import (
+    CronBatch,
     CronDebugEvent,
+    CronDone,
+    CronError,
     CronJobEvent,
     SkillLoaded,
     SkillReflectErrorEvent,
     SkillReflectEvent,
     ThinkingUpdated,
     TokenEmitted,
-    ToolStarted,
     ToolFinished,
-    CronBatch,
-    CronDone,
-    CronError,
+    ToolStarted,
 )
 from alex.tui.view_models import ChatHistory, ChatTurn
+from alex.tui.view_state import SessionViewState
 from alex.tui.presenter import AlexBubble, UserBubble
 from alex.tui.stream_renderer import StreamRenderer
+from alex.tui.chat_projector import ChatProjector
+from alex.tui.notification_controller import NotificationController
 from alex.tui.controller import ChatControllerMixin
 
 
@@ -104,7 +105,7 @@ class AlexApp(ChatControllerMixin, App):
         margin: 0;
         height: auto;
     }
-    .toast {
+    .alex-toast {
         dock: top;
         height: 1;
         background: $panel;
@@ -113,7 +114,7 @@ class AlexApp(ChatControllerMixin, App):
         text-align: right;
         text-style: bold;
     }
-    .toast-hidden {
+    .alex-toast-hidden {
         display: none;
     }
     AlexBubble {
@@ -196,17 +197,14 @@ class AlexApp(ChatControllerMixin, App):
         super().__init__(**kwargs)
         self._agent = agent
         self._bus = event_bus
-        self._history = ChatHistory()  # New session by default
+        self._history = ChatHistory()
         self._thinking_expanded = False
         self._skills_expanded = False
-        self._showing_session_list = False
-        self._page_mode: str | None = None
-        self._last_response_rated = True  # start as rated (no pending feedback)
-        self._pending_feedback_turn_id: str = ""  # turn_id for skill feedback binding
-        self._feedback_widget: Static | None = None
-        self._toast_widget: Static | None = None
-        self._toast_timer: object = None
-        self._cron_renderers: dict[str, StreamRenderer] = {}
+
+        # Phase 3: view state, projector, notifications replace scattered attrs
+        self._view_state = SessionViewState()
+        self._notif = NotificationController(self, self._view_state)
+        self._projector = ChatProjector(self)
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -236,17 +234,18 @@ class AlexApp(ChatControllerMixin, App):
         bus = self._bus
         if bus is not None:
             await bus.start()
-            await bus.subscribe(CronJobEvent, self._on_cron_job_event)
-            await bus.subscribe(CronDebugEvent, self._on_cron_debug_event)
-            await bus.subscribe(SkillReflectEvent, self._on_skill_reflect_event)
-            await bus.subscribe(SkillReflectErrorEvent, self._on_skill_reflect_error_event)
-            await bus.subscribe(ToolStarted, self._on_cron_tool_started)
-            await bus.subscribe(ToolFinished, self._on_cron_tool_finished)
-            await bus.subscribe(ThinkingUpdated, self._on_cron_thinking)
-            await bus.subscribe(TokenEmitted, self._on_cron_token)
-            await bus.subscribe(CronBatch, self._on_cron_batch)
-            await bus.subscribe(CronDone, self._on_cron_done)
-            await bus.subscribe(CronError, self._on_cron_error)
+            p = self._projector
+            await bus.subscribe(CronJobEvent, p.on_cron_job_event)
+            await bus.subscribe(CronDebugEvent, p.on_cron_debug_event)
+            await bus.subscribe(SkillReflectEvent, p.on_skill_reflect_event)
+            await bus.subscribe(SkillReflectErrorEvent, p.on_skill_reflect_error_event)
+            await bus.subscribe(ToolStarted, p.on_cron_tool_started)
+            await bus.subscribe(ToolFinished, p.on_cron_tool_finished)
+            await bus.subscribe(ThinkingUpdated, p.on_cron_thinking)
+            await bus.subscribe(TokenEmitted, p.on_cron_token)
+            await bus.subscribe(CronBatch, p.on_cron_batch)
+            await bus.subscribe(CronDone, p.on_cron_done)
+            await bus.subscribe(CronError, p.on_cron_error)
             await self._agent.subscribe_store(bus)
             if self._agent.bus is None:
                 self._agent.bind_event_bus(bus)
@@ -266,6 +265,20 @@ class AlexApp(ChatControllerMixin, App):
             pass
         self.exit()
 
+    # ── key-binding actions delegated to NotificationController ─────────
+
+    def action_rate_good(self) -> None:
+        self._notif.rate_response(
+            True, self._agent, self._view_state.pending_feedback_turn_id
+        )
+
+    def action_rate_bad(self) -> None:
+        self._notif.rate_response(
+            False, self._agent, self._view_state.pending_feedback_turn_id
+        )
+
+    # ── input handling ──────────────────────────────────────────────────
+
     @on(Input.Submitted, "#input-box")
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle user input submission."""
@@ -276,19 +289,21 @@ class AlexApp(ChatControllerMixin, App):
             return
 
         cmd = user_input.lower()
+        vs = self._view_state
+        notif = self._notif
 
         # ── modal gate: when a page panel is showing, only allow :q, /x, and resume selection ──
-        if self._page_mode is not None:
+        if vs.page_mode is not None:
             if cmd == ":q":
                 self._dismiss_overlay()
                 return
             if cmd == "/x":
-                self._dismiss_toast()
+                notif.dismiss_toast()
                 return
-            if self._showing_session_list and user_input.isdigit():
+            if vs.showing_session_list and user_input.isdigit():
                 self._handle_session_selection(user_input)
                 return
-            self._show_toast("当前在面板页，输入 :q 返回对话", duration=2)
+            notif.show_toast("当前在面板页，输入 :q 返回对话", duration=2)
             return
 
         if cmd == ":q":
@@ -296,7 +311,7 @@ class AlexApp(ChatControllerMixin, App):
             return
 
         if cmd == "/x":
-            self._dismiss_toast()
+            notif.dismiss_toast()
             return
 
         if cmd in ("/quit", "quit", "exit"):
@@ -332,16 +347,16 @@ class AlexApp(ChatControllerMixin, App):
             return
 
         if user_input.startswith(("/", ":")):
-            self._show_toast(f"未知命令: {user_input}", duration=2)
+            notif.show_toast(f"未知命令: {user_input}", duration=2)
             return
 
         # If previous response wasn't rated, treat the new message as implicit skip
-        self._dismiss_feedback()
+        notif.dismiss_feedback()
 
         # Show user message immediately
         chat_view = self.query_one("#chat-view", VerticalScroll)
         chat_view.mount(UserBubble(user_input))
-        self._trim_chat_view(chat_view)
+        self._projector.trim_chat_view(chat_view)
 
         # Start async response
         self._run_chat(user_input)
@@ -350,6 +365,8 @@ class AlexApp(ChatControllerMixin, App):
     async def _run_chat(self, user_input: str) -> None:
         """Run agent chat — streams response directly into the Alex bubble."""
         chat_view = self.query_one("#chat-view", VerticalScroll)
+        notif = self._notif
+        vs = self._view_state
 
         # Create and mount the bubble immediately for streaming
         bubble = AlexBubble()
@@ -416,10 +433,10 @@ class AlexApp(ChatControllerMixin, App):
         self._history.add(turn, messages_delta=getattr(result, 'message_batch', None))
         bubble.finalize(turn)
         if result:
-            self._pending_feedback_turn_id = getattr(result, 'turn_id', '')
+            vs.pending_feedback_turn_id = getattr(result, 'turn_id', '')
 
         # Show feedback prompt only when skills were actually used
         if renderer.skills:
-            self._show_feedback_prompt()
+            notif.show_feedback_prompt()
 
-        self._refresh_status_bar()
+        self._projector.refresh_status_bar()

@@ -13,7 +13,7 @@
 
 ## 结论摘要
 
-Alex 已经从早期的”`Agent + TUI + 工具集合`”单体，演进成模块化单体 v2：
+Alex 已经从早期的”`Agent + TUI + 工具集合`”单体，演进成模块化单体 v2.1：
 
 - 目录结构已经按模块拆分
 - typed event 已统一，event bus 角色明确（event-only）
@@ -21,18 +21,20 @@ Alex 已经从早期的”`Agent + TUI + 工具集合`”单体，演进成模�
 - 多个高风险行为问题已经修复
 - Application Layer 已拆分为 5 个独立 service（Phase 2，2026-05-26）
 - Port/adapter 已全对齐：`SessionRepository`、`SkillServicePort`、`AgentFacade`
+- TUI 已拆分为 ChatProjector / SessionViewState / NotificationController（Phase 3，2026-05-27）
+- controller.py 从 608 行降至 282 行（-54%）
 
 当前剩余差距集中在：
 
 1. Agent facade 已薄化，但 wiring 仍手工完成；可引入 DI container
 2. event bus 语义已明确（event-only），但 Agent 内部仍是 direct-call + event 混合模型
-3. TUI controller 仍承担 session 切换、cron projection、feedback UI 状态等多类职责
-4. SessionService 仍直接 import `store.session.deserialize_message`
+3. SessionService 仍直接 import `store.session.deserialize_message`
+4. Tool runtime 缺少一等 `ToolExecutionContext` 对象
 
 因此，当前最准确的判断是：
 
-- 当前架构：模块化单体 v2（application layer 已拆分，port/adapter 全对齐）
-- 目标架构：模块化单体 v2.x（projection 与 UI 薄化，测试治理完善）
+- 当前架构：模块化单体 v2.1（TUI 已薄化，projection/view-state/notification 已分离）
+- 目标架构：模块化单体 v2.2（runtime 与状态模型收口，测试治理完善）
 
 ---
 
@@ -170,8 +172,11 @@ alex/
 ├── scheduler/
 │   └── manager.py              # CronManager — APScheduler wrapper
 ├── tui/
-│   ├── app.py                  # AlexApp — Textual App (ChatControllerMixin)
-│   ├── controller.py           # ChatControllerMixin — commands, bus handlers, UI state
+│   ├── app.py                  # AlexApp — Textual App, wiring center
+│   ├── controller.py           # ChatControllerMixin — commands, session, toggles
+│   ├── chat_projector.py       # ChatProjector — bus→widget projection, cron renderers
+│   ├── notification_controller.py # NotificationController — toast, feedback
+│   ├── view_state.py           # SessionViewState — UI-only mutable state dataclass
 │   ├── presenter.py            # Bubble components (AlexBubble, etc.)
 │   ├── view_models.py          # ChatHistory, ChatTurn
 │   └── stream_renderer.py      # StreamRenderer — shared user/cron rendering
@@ -182,15 +187,20 @@ alex/
 
 ```text
 TUI
-  -> AgentFacade (thin facade)
-      -> ChatAppService     (chat_stream, tool exec, graph, cron history)
-      -> SessionService     (session persistence boundary)
-      -> CronService        (cron schedule/cancel/lifecycle)
-      -> FeedbackAppService (feedback recording, per-session state, reflection)
-      -> SkillAdminAppService (skill CRUD, merge, load_skill)
-      -> EventBus
-          -> SessionPersistence (auto-save on TurnCompleted / CronJobEvent)
-          -> TUI subscribers / projectors
+  AlexApp (wiring center)
+    ├── ChatControllerMixin  (commands, session lifecycle, toggles)
+    ├── ChatProjector        (bus→widget projection, cron renderers, status bar)
+    ├── NotificationController (toast, feedback prompt, rating)
+    ├── SessionViewState     (UI-only mutable state, reset on session switch)
+    └── AgentFacade (thin facade)
+          -> ChatAppService     (chat_stream, tool exec, graph, cron history)
+          -> SessionService     (session persistence boundary)
+          -> CronService        (cron schedule/cancel/lifecycle)
+          -> FeedbackAppService (feedback recording, per-session state, reflection)
+          -> SkillAdminAppService (skill CRUD, merge, load_skill)
+          -> EventBus
+              -> SessionPersistence (auto-save on TurnCompleted / CronJobEvent)
+              -> ChatProjector (cron/skill event → widget updates)
 ```
 
 ### 当前架构已完成的里程碑
@@ -219,12 +229,20 @@ TUI
 14. `SkillAdminAppService` (`agent/skill_admin_service.py`) — 技能 CRUD/合并
 15. `Agent` (`agent/service.py`) — 降为薄 facade，只负责组合注入与代理调用
 
+**2026-05-27 (Phase 3 Projection 与 UI 薄化) 新增里程碑：**
+
+16. `ChatProjector` (`tui/chat_projector.py`) — bus→widget 投影，cron renderer 管理，status bar
+17. `SessionViewState` (`tui/view_state.py`) — UI 状态收口，`reset()` 统一入口
+18. `NotificationController` (`tui/notification_controller.py`) — toast / feedback 生命周期
+19. `controller.py` 从 608 行降至 282 行（-54%）
+20. `AlexApp` 成为 wiring center：装配 projector / notifications / view_state
+
 ### 当前架构仍存在的核心问题
 
 1. Agent facade 已薄化，但 wiring 仍手工完成（可引入 DI container）
 2. Bus 语义明确但 Agent 内部仍是 direct-call + event 混合模型
-3. TUI controller 仍承担 session 切换、cron projection、feedback UI 状态、toast 生命周期
-4. SessionService 仍直接 import `store.session.deserialize_message`
+3. SessionService 仍直接 import `store.session.deserialize_message`
+4. Tool runtime 缺少一等 `ToolExecutionContext` 对象
 
 ---
 
@@ -238,7 +256,7 @@ TUI
 | Session / Store | `SessionService` + `SessionRepository` port 已对齐，但仍直接 import deserialize_message | `SessionRepository + SessionSerializer` 完全解耦 | 中 |
 | Skill | ✅ `SkillServicePort` 已对齐 `SkillService`，`SkillManager` 为兼容层 | `SkillManager` 完全移除，只用 `SkillService` | 低 |
 | Event System | ✅ typed event + event-only bus 语义明确，但 Agent 内仍混合 direct-call | 统一 direct-call application service 模式 | 中 |
-| TUI / Projection | controller 同时处理命令、投影、会话切换、toast、feedback | controller 薄化，projector 和 view state 分离 | 中 |
+| TUI / Projection | ✅ controller 已薄化至 282 行，ChatProjector / SessionViewState / NotificationController 已分离 | - | 已解决 |
 | Tool Runtime | `ToolExecutor.execute(session_id, ...)` 已透传 session | `ToolExecutionContext` 为一等对象 | 中 |
 | Cron / Scheduler | 已稳定可用，但 handler、projection、cancel 语义仍分散 | `CronAppService + SchedulerAdapter + CronProjector` 明确收口 | 中 |
 | Feedback / Reflection | ✅ `FeedbackAppService` + `FeedbackSessionState` per-session 字典 | episodes 持久化为独立日志（可选） | 低 |
@@ -371,56 +389,38 @@ Phase C:
 1. 统一 `push_notification()` 语义，避免 “publish + create_task 旁路处理”
 2. CronTurnHandler 触发入口只能保留一条
 
-### 5. TUI / Projection Layer
+### 5. TUI / Projection Layer ✅ (2026-05-27 Phase 3 完成)
 
-#### 当前问题
+#### 当前状态
 
-`ChatControllerMixin` 仍然同时承担：
+Phase 3 已将 TUI controller 拆分为四个独立对象：
 
-- 命令解析
-- 总线订阅 handler
-- 会话切换
-- cron projector
-- feedback UI 状态
-- toast 生命周期
+1. `ChatProjector` (`tui/chat_projector.py`, 300 lines)
+   - Bus → widget 事件投影（11 个 cron/skill event handler）
+   - `_cron_renderers` dict 管理
+   - `refresh_status_bar()` / `trim_chat_view()` 静态工具
+   - `format_cron_page()` / `persist_cron_record()` cron history read model
 
-这在功能上可用，但会让 TUI 继续成为复杂状态中心。
+2. `SessionViewState` (`tui/view_state.py`, 28 lines)
+   - `page_mode`、`showing_session_list`、`session_options`
+   - `pending_feedback_turn_id`、`last_response_rated`
+   - `reset()` 方法在 session 切换时统一调用
 
-#### 目标设计
+3. `NotificationController` (`tui/notification_controller.py`, 98 lines)
+   - `show_toast()` / `dismiss_toast()` / `format_reflect_toast()`
+   - `show_feedback_prompt()` / `dismiss_feedback()` / `rate_response()`
+   - toast widget / feedback widget 生命周期
 
-把 TUI 分成四类对象：
+4. `ChatControllerMixin` (`tui/controller.py`, 282 lines, was ~600)
+   - 仅保留命令分发、page 管理、session 生命周期、toggles
+   - 所有投影/通知职责已委托给 ChatProjector / NotificationController
 
-1. `InputRouter`
-   只负责命令解析和输入闸门
-2. `ChatProjector`
-   只负责将事件投影成 `ChatHistory` / widget 更新
-3. `SessionViewState`
-   只负责 `_page_mode`、`_pending_feedback_turn_id`、`_cron_renderers` 等状态
-4. `NotificationController`
-   只负责 toast、feedback prompt、status bar
+#### 验收状态
 
-#### 重构路线
-
-Phase A:
-
-1. 将 bus handlers 从 `controller.py` 拆到 `chat_projector.py`
-2. 将 `_page_mode`、`_showing_session_list`、`_session_options` 收口到 view state
-
-Phase B:
-
-1. 将 `_show_toast()`、`_dismiss_feedback()`、`_show_feedback_prompt()` 拆到 notification controller
-2. 让 session 切换时只重置 `SessionViewState`
-
-Phase C:
-
-1. `AlexApp` 只负责装配 Textual widgets 和绑定 controller
-2. `ChatControllerMixin` 消失或降为薄协调器
-
-#### 验收标准
-
-1. TUI 中任何一个类的职责不再横跨命令、投影、状态、通知四类
-2. 会话切换时只有一个地方负责 reset UI state
-3. modal、resume、cron render 的测试可以只打 projector / state 层
+1. ✅ `controller.py` 从 ~600 行降至 282 行（-54%，目标 < 300）
+2. ✅ UI 状态变更路径统一（`SessionViewState.reset()`）
+3. ✅ session 切换时只有一个地方负责 reset UI state
+4. ✅ modal / resume 路径仅依赖 controller + view_state
 
 ### 6. Cron / Scheduler
 
@@ -626,7 +626,7 @@ Phase C:
 - `service.py` 只剩 facade 与 wiring ✅
 - 100/100 回归测试通过 ✅
 
-### Phase 3：Projection 与 UI 薄化 (计划: 2026-05-27)
+### Phase 3：Projection 与 UI 薄化 ✅ (2026-05-27 完成)
 
 目标：
 
@@ -634,16 +634,17 @@ Phase C:
 
 工作项：
 
-1. 从 `controller.py` 拆出 `chat_projector.py`（bus handler → widget 更新）
-2. 创建 `tui/view_state.py`，收口 `_page_mode`、`_showing_session_list`、`_pending_feedback_turn_id` 等状态
-3. 从 `controller.py` 拆出 `notification_controller.py`（toast、feedback prompt、status bar）
-4. 将 `_cron_renderers` 管理逻辑移入 projector
-5. Session 切换时只重置 `SessionViewState`
+1. ✅ 从 `controller.py` 拆出 `chat_projector.py`（bus handler → widget 更新）
+2. ✅ 创建 `tui/view_state.py`，收口 `_page_mode`、`_showing_session_list`、`_pending_feedback_turn_id` 等状态
+3. ✅ 从 `controller.py` 拆出 `notification_controller.py`（toast、feedback prompt、status bar）
+4. ✅ 将 `_cron_renderers` 管理逻辑移入 projector
+5. ✅ Session 切换时只重置 `SessionViewState`
 
 完成标志：
 
-- `controller.py` 明显缩短（从 ~600 行降至 ~300 行以下）
-- UI 状态变更路径统一
+- ✅ `controller.py` 从 608 行降至 282 行（-54%）
+- ✅ UI 状态变更路径统一（`SessionViewState.reset()`）
+- ✅ 92/92 回归测试通过
 
 ### Phase 4：Runtime 与状态模型收口 (计划: 2026-05-28)
 
@@ -653,14 +654,17 @@ Phase C:
 
 工作项：
 
-1. 引入 `ToolExecutionContext` 为一等运行时上下文
-2. 引入 `CronHistoryReadModel`
-3. 将 session reset 行为集中管理
-4. `SessionService` 不再直接 import `deserialize_message`
+1. 引入 `ToolExecutionContext` 为一等运行时上下文（`tools/ports.py` 中已定义 `ToolExecutionContext`，需集成到 `ToolExecutor`）
+2. 将 `CronHistoryReadModel` 从 `ChatHistory` 中独立出来（当前 `cron_history` 是 `ChatHistory` 的附属字段）
+3. `SessionService` 不再直接 import `deserialize_message` — 引入 `SessionSerializer` 中间层
+4. Agent wiring 从手工组合改为显式 factory 函数（非 DI container，保持简洁）
+5. `push_notification()` 语义收口，消除 "publish + create_task 旁路处理" 混合模式
 
 完成标志：
 
 - session 级状态可枚举、可重置、可测试
+- `ToolExecutionContext` 贯穿所有 tool execution 路径
+- `SessionService` 不直接依赖 `store.session` 内部实现
 
 ### Phase 5：Adapter 强化与测试治理 (计划: 2026-05-29)
 
@@ -687,7 +691,7 @@ Phase C:
 1. `AgentFacade` 只负责组合与代理，不再承担主业务逻辑
 2. `SessionRepository`、`SkillServicePort`、`ToolExecutionContext` 均为真实稳定边界
 3. event bus 的语义在文档、实现、测试三处完全一致
-4. TUI 中不再存在横跨命令解析、状态管理、事件投影、通知控制的超级 controller
+4. ✅ TUI 中不再存在横跨命令解析、状态管理、事件投影、通知控制的超级 controller
 5. 所有 session 级状态都有显式 owner
 6. 所有关键架构约束都有 contract test 或语义测试保护
 
@@ -695,9 +699,10 @@ Phase C:
 
 ## 一句话总结
 
-当前 Alex 已经是模块化单体 v2：Application Layer 拆分为 5 个独立 service，port/adapter 全对齐，Agent 降为薄 facade。
+当前 Alex 已经是模块化单体 v2.1：Application Layer 拆分为 5 个独立 service，TUI 拆分为 ChatProjector / SessionViewState / NotificationController / ChatControllerMixin，port/adapter 全对齐，Agent 降为薄 facade，controller.py 从 608 行降至 282 行。
 
-下一阶段（2026-05-27）的重点是 **Phase 3：Projection 与 UI 薄化**：
-1. 从 TUI controller 拆出 ChatProjector、SessionViewState、NotificationController
-2. controller.py 从 ~600 行降至 ~300 行以下
-3. UI 状态变更路径统一，session 切换时只有一个地方负责 reset
+下一阶段（2026-05-28）的重点是 **Phase 4：Runtime 与状态模型收口**：
+1. 引入 `ToolExecutionContext` 为一等运行时上下文
+2. `SessionService` 不再直接 import `deserialize_message`
+3. Agent wiring 从手工组合改为显式 factory 函数
+4. `push_notification()` 语义收口

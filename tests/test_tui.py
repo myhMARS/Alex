@@ -167,12 +167,12 @@ async def test_reflect_notification_shows_toast():
     app = AlexApp(agent, event_bus=bus)
 
     async with app.run_test() as pilot:
-        await bus.subscribe(SkillReflectEvent, pilot.app._on_skill_reflect_event)
+        await bus.subscribe(SkillReflectEvent, pilot.app._projector.on_skill_reflect_event)
         bus.publish(SkillReflectEvent(new=1, updated=0, deprecated=0, names=["foo"]))
         await pilot.pause()
-        toasts = list(pilot.app.query(".toast"))
+        toasts = list(pilot.app.query(".alex-toast"))
         assert len(toasts) >= 1
-        visible = [t for t in toasts if "toast-hidden" not in getattr(t, "classes", set())]
+        visible = [t for t in toasts if "alex-toast-hidden" not in getattr(t, "classes", set())]
         assert len(visible) >= 1
 
     await bus.shutdown()
