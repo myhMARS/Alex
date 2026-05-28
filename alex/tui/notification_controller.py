@@ -6,10 +6,14 @@ toast lifecycle, feedback widget state, or rating logic directly.
 
 from __future__ import annotations
 
+import asyncio
+
 from textual.app import App
 from textual.containers import VerticalScroll
 from textual.widgets import Static
 
+from alex.tools.permissions import ToolApprovalRequest
+from alex.tui.confirm_screen import PermissionConfirmScreen
 from alex.tui.view_state import SessionViewState
 
 
@@ -27,6 +31,7 @@ class NotificationController:
         self._toast_widget: Static | None = None
         self._toast_timer: object = None
         self._feedback_widget: Static | None = None
+        self._confirm_lock: asyncio.Lock = asyncio.Lock()
 
     # ── toast ───────────────────────────────────────────────────────────
 
@@ -96,3 +101,39 @@ class NotificationController:
         label = "✓ Rated as helpful" if good else "✗ Rated as unhelpful"
         self._feedback_widget = Static(label, classes="feedback-done")
         self._app.query_one("#chat-view", VerticalScroll).mount(self._feedback_widget)
+
+    # ── permission confirm ──────────────────────────────────────────────
+
+    async def confirm_permission(self, request: ToolApprovalRequest) -> tuple[bool, bool]:
+        """Show a modal asking the user to approve *request*.
+
+        Returns ``(granted, remember)``.  When the screen cannot be
+        pushed (e.g. the app is shutting down) the request is denied.
+
+        Concurrent permission requests are serialised via an internal
+        lock so a cron-driven tool call cannot race with a user-turn
+        modal — the second request waits for the first dialog to close.
+        """
+        async with self._confirm_lock:
+            future: asyncio.Future[tuple[bool, bool]] = asyncio.get_event_loop().create_future()
+
+            def _on_result(result: tuple[bool, bool] | None) -> None:
+                if future.done():
+                    return
+                if result is None:
+                    future.set_result((False, False))
+                else:
+                    future.set_result(result)
+
+            try:
+                self._app.push_screen(
+                    PermissionConfirmScreen(request),
+                    _on_result,
+                )
+            except Exception:
+                return (False, False)
+
+            try:
+                return await future
+            except asyncio.CancelledError:
+                return (False, False)

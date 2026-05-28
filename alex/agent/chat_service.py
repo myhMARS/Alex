@@ -25,6 +25,11 @@ from alex.bus.events import CronJobEvent, UserTurnRequested
 from alex.memory.base import MemoryBase
 from alex.skill.models import SkillManager
 from alex.tools.executor import ToolExecutor
+from alex.tools.permissions import (
+    PermissionPolicy,
+    gate_tool_with_policy,
+    gate_tools_with_policy,
+)
 from alex.tools.registry import ToolRegistry
 
 
@@ -54,6 +59,7 @@ class ChatAppService:
         max_iterations: int = 5,
         callbacks: list[BaseCallbackHandler] | None = None,
         event_bus: AsyncEventBus | None = None,
+        permissions: PermissionPolicy | None = None,
     ) -> None:
         self._llm = llm
         self._memory = memory
@@ -67,7 +73,8 @@ class ChatAppService:
         self._turn_lock = asyncio.Lock()
 
         self._tool_registry = ToolRegistry()
-        self._tool_executor = ToolExecutor(self._tool_registry)
+        self._permissions = permissions or PermissionPolicy.from_env()
+        self._tool_executor = ToolExecutor(self._tool_registry, permissions=self._permissions)
         self._prompt = PromptAssembler(system_prompt, skill_manager)
 
         self._orchestrator = TurnOrchestrator(
@@ -103,10 +110,12 @@ class ChatAppService:
         return self._tool_registry.list()
 
     def register_tool(self, tool: LCBaseTool) -> None:
+        gate_tool_with_policy(tool, self._permissions)
         self._tool_registry.register(tool)
         self._graph = self._build_graph()
 
     def register_tools_batch(self, tools: list[LCBaseTool]) -> None:
+        gate_tools_with_policy(tools, self._permissions)
         for t in tools:
             self._tool_registry.register(t)
         self._graph = self._build_graph()
@@ -143,6 +152,22 @@ class ChatAppService:
 
     def get_tool(self, name: str) -> LCBaseTool | None:
         return self._tool_registry.get(name)
+
+    @property
+    def permissions(self) -> PermissionPolicy:
+        return self._permissions
+
+    def set_permissions(self, policy: PermissionPolicy) -> None:
+        """Replace the permission policy and propagate it to the executor.
+
+        Already-registered tools have their gating wrappers updated in
+        place so the new policy applies to subsequent invocations
+        without rebuilding the graph.
+        """
+        self._permissions = policy
+        self._tool_executor.set_permissions(policy)
+        for tool in self._tool_registry.list():
+            gate_tool_with_policy(tool, policy)
 
     # ── session context ───────────────────────────────────────────────────
 

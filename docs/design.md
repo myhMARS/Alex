@@ -136,9 +136,11 @@ Alex 的最终目标，不只是做一个“能聊天、能调用工具”的终
 | 记忆管理层 | [memory.md](./memory.md) | 抽象记忆接口，支持缓冲记忆及未来 RAG 扩展 |
 | 流式输出 | [streaming.md](./streaming.md) | 基于 LangGraph astream_events 的流式事件分发 |
 | 自适应技能系统 | [skills.md](./skills.md) | SkillService + SkillStore 分层，技能提炼/检索/进化 |
+| 工具生态 | [tools.md](./tools.md) | Registry/Executor + 权限策略 + 用户插件 + MCP 客户端 |
 | 类型化事件系统 | [events.md](./events.md) | Event -> Command/DomainEvent/UIEvent 三层事件体系 |
 | 配置管理 | [config.md](./config.md) | 多 provider 配置加载，支持文件和环境变量 |
 | 模块化重构方案 | [refactor-modular-architecture.md](./refactor-modular-architecture.md) | 重构全貌、已完成的里程碑、验收标准 |
+| 未来演进路线图 | [roadmap-future-evolution.md](./roadmap-future-evolution.md) | 工具/技能/Cron/可观测性/多入口的下一步规划 |
 
 ---
 

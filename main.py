@@ -12,10 +12,22 @@ Keyboard shortcuts:
     Ctrl+C    Quit
 """
 
-from alex.agent import Agent
+from __future__ import annotations
+
+import logging
+
+from alex.agent import Agent, create_agent
 from alex.bus import AsyncEventBus
 from alex.prompts import get_system_prompt
 from alex.tools import (
+    FileReadTracker,
+    create_available_shell_tools,
+    create_edit_tool,
+    create_fs_read_tool,
+    create_fs_write_tool,
+    create_git_inspect_tool,
+    create_glob_tool,
+    create_grep_tool,
     create_time_tool,
     create_web_fetch_tool,
     create_web_search_tool,
@@ -23,23 +35,47 @@ from alex.tools import (
 )
 from alex.tools.cron import create_cron_tool
 
+logger = logging.getLogger(__name__)
 
-def create_agent(bus: AsyncEventBus | None = None) -> Agent:
-    """Create and configure an agent with all available tools."""
-    agent = Agent(
+
+def _build_agent(bus: AsyncEventBus | None = None) -> Agent:
+    """Compose an Agent with the built-in toolset and any user plugins."""
+    # One tracker shared across fs_read / fs_write / edit so the
+    # read-before-edit invariant is enforced consistently.
+    tracker = FileReadTracker()
+
+    base_tools = [
+        create_time_tool(),
+        create_web_search_tool(),
+        create_web_fetch_tool(),
+        create_fs_read_tool(tracker=tracker),
+        create_fs_write_tool(tracker=tracker),
+        create_edit_tool(tracker=tracker),
+        create_glob_tool(),
+        create_grep_tool(),
+        create_git_inspect_tool(),
+        *create_available_shell_tools(),
+    ]
+
+    agent, plugin_results = create_agent(
         system_prompt=get_system_prompt(tool_hints=get_tool_hints()),
         max_iterations=5,
-        tools=[create_time_tool(), create_web_search_tool(), create_web_fetch_tool()],
+        tools=base_tools,
         event_bus=bus,
     )
-    agent.register_tool(create_cron_tool(agent))  # Agent satisfies CronScheduler protocol
+    agent.register_tool(create_cron_tool(agent))
+
+    for result in plugin_results:
+        if result.error:
+            logger.warning("plugin %s failed to load: %s", result.path.name, result.error)
+
     return agent
 
 
 def main() -> None:
     """Entry point — launches the Textual TUI."""
     bus = AsyncEventBus()
-    agent = create_agent(bus)
+    agent = _build_agent(bus)
     from alex.tui import AlexApp
     app = AlexApp(agent, event_bus=bus)
     app.run()

@@ -7,6 +7,8 @@ from bs4 import BeautifulSoup
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+from alex.tools.permissions import PERMISSION_NETWORK
+
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
@@ -80,4 +82,5 @@ def create_web_fetch_tool() -> StructuredTool:
             "Use this when you need to read the contents of a specific web page."
         ),
         args_schema=WebFetchInput,
+        metadata={"required_permission": PERMISSION_NETWORK},
     )
