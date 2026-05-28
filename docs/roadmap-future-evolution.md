@@ -59,7 +59,7 @@
 
 ### 现状
 
-- 12+ 内置工具：`time` / `web_search` / `web_fetch` / `cron` / `fs_read` / `fs_write` / `edit` / `glob` / `grep` / `git_inspect` / `bash` / `pwsh` + 2 内置（`load_skill` / `cron_history`）
+- 12+ 内置工具：`time` / `web_search` / `web_fetch` / `cron` / `read` / `write` / `edit` / `glob` / `grep` / `git_inspect` / `bash` / `pwsh` + 2 内置（`load_skill` / `cron_history`）
 - MCP Client（`tools/mcp_client.py`）自动发现 `~/.alex/mcp.json` 中的 MCP Server
 - 用户插件（`tools/plugin_loader.py`）自动扫描 `~/.alex/plugins/*.py`
 - 权限策略 + 审计日志（`PermissionPolicy` + `AuditLogger`），副作用工具弹 modal 确认
@@ -72,7 +72,7 @@
 |---|------|--------|------|
 | 1.1 | ~~MCP Client 支持~~ ✅ | `ToolRegistry` + `mcp_client.py` | 已完成：stdio 协议适配，自动装载 `~/.alex/mcp.json` 中的 MCP Server |
 | 1.2 | ~~Tool Plugin Loader~~ ✅ | `plugin_loader.py` 扫描 `~/.alex/plugins/*.py` | 已完成：三种入口约定（`ALEX_TOOLS` / `tools()` / `register(agent)`） |
-| 1.3 | ~~本地能力工具~~ ✅ | `fs.py` / `shell.py` / `search.py` / `git.py` | 已完成：fs_read / fs_write / edit / grep / glob / git_inspect / bash / pwsh |
+| 1.3 | ~~本地能力工具~~ ✅ | `fs.py` / `shell.py` / `search.py` / `git.py` | 已完成：read / write / edit / grep / glob / git_inspect / bash / pwsh |
 | 1.4 | ~~工具权限/审批~~ ✅ | `PermissionPolicy` + `AuditLogger` + `confirm_screen.py` | 已完成：四级权限 + TUI confirm modal + 审计日志 |
 | 1.5 | ~~Tool 调用并行 fan-out~~ ✅ | LangGraph 默认 `asyncio.gather` | 已完成：同一 turn 内多个独立 tool call 自动并行 |
 

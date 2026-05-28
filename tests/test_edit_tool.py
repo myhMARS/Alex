@@ -10,8 +10,8 @@ from alex.tools.fs import (
     FileReadTracker,
     _build_edit_summariser,
     create_edit_tool,
-    create_fs_read_tool,
-    create_fs_write_tool,
+    create_read_tool,
+    create_write_tool,
 )
 from alex.tools.permissions import (
     PERMISSION_WRITE,
@@ -44,15 +44,15 @@ class TestReadBeforeEdit:
         result = await edit.coroutine(
             file_path=str(target), old_string="hi", new_string="hello",
         )
-        assert "must call fs_read" in result
+        assert "must call read" in result
         assert target.read_text(encoding="utf-8") == "print('hi')\n"
 
     @pytest.mark.asyncio
-    async def test_passes_after_fs_read(self, sandbox: Path):
+    async def test_passes_after_read(self, sandbox: Path):
         target = sandbox / "code.py"
         target.write_text("print('hi')\n", encoding="utf-8")
         tracker = FileReadTracker()
-        read = create_fs_read_tool(allowed_roots=[sandbox], tracker=tracker)
+        read = create_read_tool(allowed_roots=[sandbox], tracker=tracker)
         edit = create_edit_tool(allowed_roots=[sandbox], tracker=tracker)
 
         await read.coroutine(path=str(target))
@@ -63,11 +63,11 @@ class TestReadBeforeEdit:
         assert target.read_text(encoding="utf-8") == "print('hello')\n"
 
     @pytest.mark.asyncio
-    async def test_passes_after_fs_write(self, sandbox: Path):
-        """fs_write also fingerprints the file so the agent can edit it next."""
+    async def test_passes_after_write(self, sandbox: Path):
+        """write also fingerprints the file so the agent can edit it next."""
         target = sandbox / "code.py"
         tracker = FileReadTracker()
-        write = create_fs_write_tool(allowed_roots=[sandbox], tracker=tracker)
+        write = create_write_tool(allowed_roots=[sandbox], tracker=tracker)
         edit = create_edit_tool(allowed_roots=[sandbox], tracker=tracker)
 
         await write.coroutine(path=str(target), content="print('hi')\n")
@@ -82,7 +82,7 @@ class TestReadBeforeEdit:
         target = sandbox / "code.py"
         target.write_text("print('hi')\n", encoding="utf-8")
         tracker = FileReadTracker()
-        read = create_fs_read_tool(allowed_roots=[sandbox], tracker=tracker)
+        read = create_read_tool(allowed_roots=[sandbox], tracker=tracker)
         edit = create_edit_tool(allowed_roots=[sandbox], tracker=tracker)
 
         await read.coroutine(path=str(target))
@@ -103,7 +103,7 @@ class TestEditSemantics:
         target = sandbox / "f.py"
         target.write_text("alpha beta gamma\n", encoding="utf-8")
         tracker = FileReadTracker()
-        await create_fs_read_tool(allowed_roots=[sandbox], tracker=tracker).coroutine(path=str(target))
+        await create_read_tool(allowed_roots=[sandbox], tracker=tracker).coroutine(path=str(target))
         edit = create_edit_tool(allowed_roots=[sandbox], tracker=tracker)
         result = await edit.coroutine(
             file_path=str(target), old_string="beta", new_string="BETA",
@@ -116,7 +116,7 @@ class TestEditSemantics:
         target = sandbox / "f.py"
         target.write_text("foo foo foo\n", encoding="utf-8")
         tracker = FileReadTracker()
-        await create_fs_read_tool(allowed_roots=[sandbox], tracker=tracker).coroutine(path=str(target))
+        await create_read_tool(allowed_roots=[sandbox], tracker=tracker).coroutine(path=str(target))
         edit = create_edit_tool(allowed_roots=[sandbox], tracker=tracker)
 
         result = await edit.coroutine(
@@ -131,7 +131,7 @@ class TestEditSemantics:
         target = sandbox / "f.py"
         target.write_text("foo foo foo\n", encoding="utf-8")
         tracker = FileReadTracker()
-        await create_fs_read_tool(allowed_roots=[sandbox], tracker=tracker).coroutine(path=str(target))
+        await create_read_tool(allowed_roots=[sandbox], tracker=tracker).coroutine(path=str(target))
         edit = create_edit_tool(allowed_roots=[sandbox], tracker=tracker)
 
         result = await edit.coroutine(
@@ -145,7 +145,7 @@ class TestEditSemantics:
         target = sandbox / "f.py"
         target.write_text("hello\n", encoding="utf-8")
         tracker = FileReadTracker()
-        await create_fs_read_tool(allowed_roots=[sandbox], tracker=tracker).coroutine(path=str(target))
+        await create_read_tool(allowed_roots=[sandbox], tracker=tracker).coroutine(path=str(target))
         edit = create_edit_tool(allowed_roots=[sandbox], tracker=tracker)
         result = await edit.coroutine(
             file_path=str(target), old_string="missing", new_string="x",
@@ -157,7 +157,7 @@ class TestEditSemantics:
         target = sandbox / "f.py"
         target.write_text("x\n", encoding="utf-8")
         tracker = FileReadTracker()
-        await create_fs_read_tool(allowed_roots=[sandbox], tracker=tracker).coroutine(path=str(target))
+        await create_read_tool(allowed_roots=[sandbox], tracker=tracker).coroutine(path=str(target))
         edit = create_edit_tool(allowed_roots=[sandbox], tracker=tracker)
         result = await edit.coroutine(
             file_path=str(target), old_string="x", new_string="x",
@@ -169,7 +169,7 @@ class TestEditSemantics:
         target = sandbox / "f.py"
         target.write_text("x\n", encoding="utf-8")
         tracker = FileReadTracker()
-        await create_fs_read_tool(allowed_roots=[sandbox], tracker=tracker).coroutine(path=str(target))
+        await create_read_tool(allowed_roots=[sandbox], tracker=tracker).coroutine(path=str(target))
         edit = create_edit_tool(allowed_roots=[sandbox], tracker=tracker)
         result = await edit.coroutine(
             file_path=str(target), old_string="", new_string="y",
@@ -247,7 +247,7 @@ class TestEditEndToEndGate:
         target = sandbox / "f.py"
         target.write_text("hello\n", encoding="utf-8")
         tracker = FileReadTracker()
-        await create_fs_read_tool(allowed_roots=[sandbox], tracker=tracker).coroutine(path=str(target))
+        await create_read_tool(allowed_roots=[sandbox], tracker=tracker).coroutine(path=str(target))
 
         tool = create_edit_tool(allowed_roots=[sandbox], tracker=tracker)
 
@@ -268,7 +268,7 @@ class TestEditEndToEndGate:
         target = sandbox / "f.py"
         target.write_text("hello\n", encoding="utf-8")
         tracker = FileReadTracker()
-        await create_fs_read_tool(allowed_roots=[sandbox], tracker=tracker).coroutine(path=str(target))
+        await create_read_tool(allowed_roots=[sandbox], tracker=tracker).coroutine(path=str(target))
 
         tool = create_edit_tool(allowed_roots=[sandbox], tracker=tracker)
         captured: list[ToolApprovalRequest] = []

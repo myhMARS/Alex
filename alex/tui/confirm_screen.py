@@ -5,7 +5,7 @@ to satisfy ``PermissionPolicy.confirm_hook`` requests.
 
 The modal renders a :class:`alex.tools.permissions.ToolApprovalRequest`
 with a one-line summary and as many :class:`PreviewBlock` panels as the
-caller produced (typically a unified diff for ``fs_write`` / ``edit`` or
+caller produced (typically a unified diff for ``write`` / ``edit`` or
 a command preview for ``bash`` / ``pwsh``).  It returns one of three
 outcomes:
 

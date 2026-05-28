@@ -173,7 +173,7 @@ alex/
 │   ├── permissions.py          # PermissionPolicy + AuditLogger + approval summariser
 │   ├── plugin_loader.py        # user plugin discovery + loading
 │   ├── mcp_client.py           # MCP stdio client + tool adapter
-│   ├── fs.py                   # fs_read / fs_write / edit + FileReadTracker
+│   ├── fs.py                   # read / write / edit + FileReadTracker
 │   ├── search.py               # grep / glob
 │   ├── shell.py                # bash / pwsh
 │   ├── git.py                  # git_inspect

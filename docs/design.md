@@ -5,7 +5,7 @@
 Alex 是一个支持工具调用、流式输出的对话式 AI Agent 智能体。核心能力：
 
 - **工具调用**：动态注册/注销工具，统一权限策略与审计日志
-- **本地能力**：`fs_read` / `fs_write` / `edit` / `grep` / `glob` / `git_inspect` / `bash` / `pwsh` 让 Alex 真的能在终端"动手"
+- **本地能力**：`read` / `write` / `edit` / `grep` / `glob` / `git_inspect` / `bash` / `pwsh` 让 Alex 真的能在终端"动手"
 - **副作用确认**：写文件 / 跑 shell 弹 modal 并展示 diff / argv，用户确认后才执行；每次决策追加到审计日志
 - **MCP & 用户插件**：自动发现 `~/.alex/mcp.json` 中的 MCP server 与 `~/.alex/plugins/*.py` 中的自定义工具
 - **流式输出**：token 级别流式响应，支持 thinking 内容实时展示
@@ -200,7 +200,7 @@ alex/
 │   ├── permissions.py          # PermissionPolicy + AuditLogger + summariser
 │   ├── plugin_loader.py        # 用户插件
 │   ├── mcp_client.py           # MCP stdio 客户端
-│   ├── fs.py                   # fs_read / fs_write / edit + FileReadTracker
+│   ├── fs.py                   # read / write / edit + FileReadTracker
 │   ├── search.py               # grep / glob
 │   ├── shell.py                # bash / pwsh
 │   ├── git.py                  # git_inspect

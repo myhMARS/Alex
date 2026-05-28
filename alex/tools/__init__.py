@@ -4,12 +4,12 @@ from alex.tools.cron import TOOL_HINT as CRON_HINT, create_cron_tool
 from alex.tools.executor import ToolExecutor
 from alex.tools.fs import (
     TOOL_HINT_EDIT,
-    TOOL_HINT_FS_READ,
-    TOOL_HINT_FS_WRITE,
+    TOOL_HINT_READ,
+    TOOL_HINT_WRITE,
     FileReadTracker,
     create_edit_tool,
-    create_fs_read_tool,
-    create_fs_write_tool,
+    create_read_tool,
+    create_write_tool,
 )
 from alex.tools.git import TOOL_HINT as GIT_HINT, create_git_inspect_tool
 from alex.tools.permissions import (
@@ -73,8 +73,8 @@ TOOL_HINTS = [
     WEB_SEARCH_HINT,
     WEB_FETCH_HINT,
     CRON_HINT,
-    TOOL_HINT_FS_READ,
-    TOOL_HINT_FS_WRITE,
+    TOOL_HINT_READ,
+    TOOL_HINT_WRITE,
     TOOL_HINT_EDIT,
     TOOL_HINT_GLOB,
     TOOL_HINT_GREP,
@@ -95,8 +95,8 @@ __all__ = [
     "create_bash_tool",
     "create_cron_tool",
     "create_edit_tool",
-    "create_fs_read_tool",
-    "create_fs_write_tool",
+    "create_read_tool",
+    "create_write_tool",
     "create_git_inspect_tool",
     "create_glob_tool",
     "create_grep_tool",

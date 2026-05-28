@@ -6,8 +6,8 @@ consults the active :class:`PermissionPolicy` before invoking a tool.
 
 Permission levels (ordered by escalation):
 
-    - ``read``     — pure information retrieval (e.g. ``fs_read``)
-    - ``write``    — modifies user state on disk (e.g. ``fs_write``)
+    - ``read``     — pure information retrieval (e.g. ``read``)
+    - ``write``    — modifies user state on disk (e.g. ``write``)
     - ``shell``    — invokes external processes (e.g. ``shell_run``)
     - ``network``  — reaches outbound network (e.g. ``web_fetch``)
     - ``danger``   — anything explicitly dangerous (force pushes, deletes)
@@ -104,7 +104,7 @@ class ToolApprovalRequest:
     preview: list[PreviewBlock] = field(default_factory=list)
 
 
-# Summarisers are async because some (notably ``fs_write``) need to read
+# Summarisers are async because some (notably ``write``) need to read
 # the existing file before they can produce a diff.  They may return a
 # ``str`` (summary only), a ``(summary, preview_list)`` tuple, or a
 # fully-formed :class:`ToolApprovalRequest`.

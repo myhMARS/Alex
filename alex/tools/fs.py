@@ -2,12 +2,12 @@
 
 Three tools live here:
 
-- ``fs_read``   — bounded text read with binary detection
-- ``fs_write``  — atomic full-file write
+- ``read``     — bounded text read with binary detection
+- ``write``    — atomic full-file write
 - ``edit``      — precise string replacement (read-before-edit enforced)
 
 All three share a :class:`FileReadTracker` so the agent must observe a
-file (via ``fs_read``) or have just written it (via ``fs_write``)
+file (via ``read``) or have just written it (via ``write``)
 before ``edit`` will accept a change to that path.  The tracker also
 detects external modifications: if the file's ``mtime``/``size``
 changed since the last read, the agent must re-read before editing.
@@ -37,12 +37,12 @@ from alex.tools.permissions import (
 )
 
 
-TOOL_HINT_FS_READ = (
-    "Use `fs_read` to inspect a small text file under the working tree. "
+TOOL_HINT_READ = (
+    "Use `read` to inspect a small text file under the working tree. "
     "Returns up to `max_bytes` of content; binary files are refused."
 )
-TOOL_HINT_FS_WRITE = (
-    "Use `fs_write` to create a new file or rewrite an existing one in full. "
+TOOL_HINT_WRITE = (
+    "Use `write` to create a new file or rewrite an existing one in full. "
     "For small in-place edits prefer `edit` — it shows a tighter diff and "
     "preserves untouched content. The user must approve a diff before any "
     "actual write happens."
@@ -51,8 +51,8 @@ TOOL_HINT_EDIT = (
     "Use `edit` to make a precise string replacement in an existing file. "
     "Required: file_path, old_string, new_string. Optional: replace_all "
     "(default false). The old_string must occur exactly once unless "
-    "replace_all=true; you must call `fs_read` (or have just written the "
-    "file via `fs_write`) before `edit` will be accepted."
+    "replace_all=true; you must call `read` (or have just written the "
+    "file via `write`) before `edit` will be accepted."
 )
 
 
@@ -84,8 +84,8 @@ class FileReadTracker:
     Used by ``edit`` to enforce the *read-before-edit* invariant.  A
     file counts as "observed" when:
 
-    - ``fs_read`` returned its content successfully, or
-    - ``fs_write`` just wrote a new revision (the agent therefore
+    - ``read`` returned its content successfully, or
+    - ``write`` just wrote a new revision (the agent therefore
       knows the resulting state).
 
     The tracker stores a fingerprint (``mtime_ns``, ``size``, ``sha256``)
@@ -114,27 +114,27 @@ class FileReadTracker:
         """Return ``(ok, reason)``: has the agent observed *path* recently?
 
         ``reason`` is empty on success and otherwise carries an
-        actionable message ("call fs_read first" / "file changed").
+        actionable message ("call read first" / "file changed").
         """
         key = path.resolve(strict=False)
         record = self._records.get(key)
         if record is None:
-            return False, "you must call fs_read on this file before editing"
+            return False, "you must call read on this file before editing"
         try:
             stat = path.stat()
         except FileNotFoundError:
-            return False, "file no longer exists; call fs_read again"
+            return False, "file no longer exists; call read again"
         except OSError as e:
             return False, f"cannot stat file: {type(e).__name__}: {e}"
         if stat.st_mtime_ns != record.mtime_ns or stat.st_size != record.size:
-            return False, "file changed on disk since last read; call fs_read again"
+            return False, "file changed on disk since last read; call read again"
         return True, ""
 
 
 # ── path / encoding helpers ───────────────────────────────────────────
 
 
-class FsReadInput(BaseModel):
+class ReadInput(BaseModel):
     path: str = Field(description="Path to the file relative to the current working directory")
     max_bytes: int = Field(
         default=DEFAULT_MAX_READ_BYTES,
@@ -145,7 +145,7 @@ class FsReadInput(BaseModel):
     encoding: str = Field(default="utf-8", description="Text encoding to decode with")
 
 
-class FsWriteInput(BaseModel):
+class WriteInput(BaseModel):
     path: str = Field(description="Path to the file relative to the current working directory")
     content: str = Field(description="Full text content to write")
     encoding: str = Field(default="utf-8", description="Text encoding for the payload")
@@ -258,11 +258,11 @@ def _read_existing_text(path: Path, encoding: str) -> tuple[str, str]:
         return "", f"(could not read existing file: {type(e).__name__}: {e})"
 
 
-# ── fs_read ───────────────────────────────────────────────────────────
+# ── read ─────────────────────────────────────────────────────────────
 
 
-def _make_fs_read(allowed_roots: list[Path], tracker: FileReadTracker | None):
-    async def _fs_read(path: str, max_bytes: int = DEFAULT_MAX_READ_BYTES, encoding: str = "utf-8") -> str:
+def _make_read(allowed_roots: list[Path], tracker: FileReadTracker | None):
+    async def _read(path: str, max_bytes: int = DEFAULT_MAX_READ_BYTES, encoding: str = "utf-8") -> str:
         try:
             target = _resolve_safe_path(path, allowed_roots)
         except ValueError as e:
@@ -291,18 +291,18 @@ def _make_fs_read(allowed_roots: list[Path], tracker: FileReadTracker | None):
         except OSError as e:
             return f"Error reading {path}: {type(e).__name__}: {e}"
 
-    return _fs_read
+    return _read
 
 
-# ── fs_write ──────────────────────────────────────────────────────────
+# ── write ────────────────────────────────────────────────────────────
 
 
-def _make_fs_write(
+def _make_write(
     allowed_roots: list[Path],
     max_write_bytes: int,
     tracker: FileReadTracker | None,
 ):
-    async def _fs_write(
+    async def _write(
         path: str,
         content: str,
         encoding: str = "utf-8",
@@ -331,7 +331,7 @@ def _make_fs_write(
             tracker.record(target, payload)
         return f"Wrote {len(payload)} bytes to {target}"
 
-    return _fs_write
+    return _write
 
 
 # ── edit ──────────────────────────────────────────────────────────────
@@ -355,7 +355,7 @@ def _make_edit(
             return f"Error: {e}"
 
         if not target.exists():
-            return f"Error: '{file_path}' does not exist; use fs_write to create new files"
+            return f"Error: '{file_path}' does not exist; use write to create new files"
         if not target.is_file():
             return f"Error: '{file_path}' is not a regular file"
 
@@ -415,7 +415,7 @@ def _make_edit(
 # ── approval summarisers ──────────────────────────────────────────────
 
 
-def _build_fs_write_summariser(allowed_roots: list[Path]):
+def _build_write_summariser(allowed_roots: list[Path]):
     async def _summarise(args: dict) -> tuple[str, list[PreviewBlock]]:
         raw_path = str(args.get("path") or "")
         encoding = str(args.get("encoding") or "utf-8")
@@ -424,7 +424,7 @@ def _build_fs_write_summariser(allowed_roots: list[Path]):
         try:
             target = _resolve_safe_path(raw_path, allowed_roots)
         except ValueError as e:
-            return (f"fs_write blocked: {e}", [])
+            return (f"write blocked: {e}", [])
 
         existing_text, note = _read_existing_text(target, encoding)
         new_bytes = len(new_content.encode(encoding, errors="replace"))
@@ -484,7 +484,7 @@ def _build_edit_summariser(allowed_roots: list[Path]):
 
         if not target.exists():
             return (
-                f"edit blocked: '{raw_path}' does not exist (use fs_write to create)",
+                f"edit blocked: '{raw_path}' does not exist (use write to create)",
                 [],
             )
         if old_string == new_string:
@@ -546,26 +546,26 @@ def _clip(text: str, limit: int) -> str:
 # ── factories ─────────────────────────────────────────────────────────
 
 
-def create_fs_read_tool(
+def create_read_tool(
     *,
     allowed_roots: list[Path] | None = None,
     tracker: FileReadTracker | None = None,
 ) -> StructuredTool:
     roots = allowed_roots or [Path.cwd()]
     return StructuredTool.from_function(
-        coroutine=_make_fs_read(roots, tracker),
-        name="fs_read",
+        coroutine=_make_read(roots, tracker),
+        name="read",
         description=(
             "Read a text file inside the working tree. Returns the raw "
             "content (truncated to max_bytes). Refuses binary files and "
             "paths outside the working directory."
         ),
-        args_schema=FsReadInput,
+        args_schema=ReadInput,
         metadata={"required_permission": PERMISSION_READ},
     )
 
 
-def create_fs_write_tool(
+def create_write_tool(
     *,
     allowed_roots: list[Path] | None = None,
     max_write_bytes: int = DEFAULT_MAX_WRITE_BYTES,
@@ -573,8 +573,8 @@ def create_fs_write_tool(
 ) -> StructuredTool:
     roots = allowed_roots or [Path.cwd()]
     tool = StructuredTool.from_function(
-        coroutine=_make_fs_write(roots, max_write_bytes, tracker),
-        name="fs_write",
+        coroutine=_make_write(roots, max_write_bytes, tracker),
+        name="write",
         description=(
             "Create a new file or rewrite an existing one in full. Writes "
             "are atomic (temp file + replace). Refuses paths outside the "
@@ -582,10 +582,10 @@ def create_fs_write_tool(
             "before the write actually happens. For small in-place "
             "changes prefer the `edit` tool."
         ),
-        args_schema=FsWriteInput,
+        args_schema=WriteInput,
         metadata={"required_permission": PERMISSION_WRITE},
     )
-    attach_approval_summariser(tool, _build_fs_write_summariser(roots))
+    attach_approval_summariser(tool, _build_write_summariser(roots))
     return tool
 
 
@@ -608,9 +608,9 @@ def create_edit_tool(
         description=(
             "Replace an exact string in an existing file. The old_string "
             "must occur once unless replace_all=true. Requires the file "
-            "to have been read (via fs_read) or just written (via "
-            "fs_write); if it was modified externally since then, the "
-            "agent must call fs_read again first. The user sees a diff "
+            "to have been read (via read) or just written (via "
+            "write); if it was modified externally since then, the "
+            "agent must call read again first. The user sees a diff "
             "and must confirm before the change is applied."
         ),
         args_schema=EditInput,

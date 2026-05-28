@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 
 from alex.tools.fs import (
-    _build_fs_write_summariser,
-    create_fs_write_tool,
+    _build_write_summariser,
+    create_write_tool,
 )
 from alex.tools.permissions import (
     PERMISSION_WRITE,
@@ -34,8 +34,8 @@ def sandbox(tmp_path: Path) -> Path:
 
 
 class TestSummariserAttachment:
-    def test_fs_write_has_summariser(self, sandbox: Path):
-        tool = create_fs_write_tool(allowed_roots=[sandbox])
+    def test_write_has_summariser(self, sandbox: Path):
+        tool = create_write_tool(allowed_roots=[sandbox])
         assert get_approval_summariser(tool) is not None
 
     def test_shell_tools_have_summarisers(self, sandbox: Path):
@@ -49,7 +49,7 @@ class TestBuildApprovalRequest:
     @pytest.mark.asyncio
     async def test_falls_back_to_default_digest(self, sandbox: Path):
         # An attached tool with no summariser should produce a key=value summary.
-        tool = create_fs_write_tool(allowed_roots=[sandbox])
+        tool = create_write_tool(allowed_roots=[sandbox])
         # Strip the summariser to test the fallback path explicitly.
         from alex.tools.permissions import _SUMMARISER_ATTR
         object.__setattr__(tool, _SUMMARISER_ATTR, None)
@@ -62,7 +62,7 @@ class TestBuildApprovalRequest:
         async def _bad(_args):
             raise RuntimeError("boom")
 
-        tool = create_fs_write_tool(allowed_roots=[sandbox])
+        tool = create_write_tool(allowed_roots=[sandbox])
         attach_approval_summariser(tool, _bad)
         request = await build_approval_request(tool, PERMISSION_WRITE, {"path": "x", "content": "y"})
         assert "summariser failed" in request.summary
@@ -72,7 +72,7 @@ class TestBuildApprovalRequest:
         async def _summary(_args):
             return "just a string"
 
-        tool = create_fs_write_tool(allowed_roots=[sandbox])
+        tool = create_write_tool(allowed_roots=[sandbox])
         attach_approval_summariser(tool, _summary)
         request = await build_approval_request(tool, PERMISSION_WRITE, {"path": "x", "content": "y"})
         assert request.summary == "just a string"
@@ -82,7 +82,7 @@ class TestBuildApprovalRequest:
 class TestFsWriteSummariser:
     @pytest.mark.asyncio
     async def test_creates_file_summary_when_missing(self, sandbox: Path):
-        summariser = _build_fs_write_summariser([sandbox])
+        summariser = _build_write_summariser([sandbox])
         target = sandbox / "new.txt"
         summary, preview = await summariser({"path": str(target), "content": "hello"})
         assert "Create" in summary
@@ -92,7 +92,7 @@ class TestFsWriteSummariser:
     async def test_diff_summary_for_existing_file(self, sandbox: Path):
         target = sandbox / "out.txt"
         target.write_bytes(b"line1\nline2\n")
-        summariser = _build_fs_write_summariser([sandbox])
+        summariser = _build_write_summariser([sandbox])
         summary, preview = await summariser({
             "path": str(target),
             "content": "line1\nLINE2\nline3\n",
@@ -110,7 +110,7 @@ class TestFsWriteSummariser:
     async def test_no_op_write_reports_no_changes(self, sandbox: Path):
         target = sandbox / "same.txt"
         target.write_bytes(b"same\n")
-        summariser = _build_fs_write_summariser([sandbox])
+        summariser = _build_write_summariser([sandbox])
         summary, preview = await summariser({"path": str(target), "content": "same\n"})
         assert "No-op" in summary
         assert preview[0].body == "(no changes)"
@@ -120,14 +120,14 @@ class TestFsWriteSummariser:
         """CRLF on disk vs LF in payload should not register as a change."""
         target = sandbox / "crlf.txt"
         target.write_bytes(b"hello\r\nworld\r\n")
-        summariser = _build_fs_write_summariser([sandbox])
+        summariser = _build_write_summariser([sandbox])
         summary, _ = await summariser({"path": str(target), "content": "hello\nworld\n"})
         assert "No-op" in summary
 
     @pytest.mark.asyncio
     async def test_path_outside_root_reports_block(self, tmp_path_factory):
         outside = tmp_path_factory.mktemp("elsewhere") / "x.txt"
-        summariser = _build_fs_write_summariser([tmp_path_factory.mktemp("sandbox")])
+        summariser = _build_write_summariser([tmp_path_factory.mktemp("sandbox")])
         summary, _ = await summariser({"path": str(outside), "content": "no"})
         assert "blocked" in summary
 
@@ -135,7 +135,7 @@ class TestFsWriteSummariser:
     async def test_binary_existing_file_suppresses_diff(self, sandbox: Path):
         target = sandbox / "blob.bin"
         target.write_bytes(b"\x00\x01\x02" * 1024)
-        summariser = _build_fs_write_summariser([sandbox])
+        summariser = _build_write_summariser([sandbox])
         summary, preview = await summariser({
             "path": str(target), "content": "hello world",
         })
@@ -175,7 +175,7 @@ class TestEndToEndGating:
     async def test_gate_passes_request_to_hook(self, sandbox: Path):
         target = sandbox / "out.txt"
         target.write_text("old\n", encoding="utf-8")
-        tool = create_fs_write_tool(allowed_roots=[sandbox])
+        tool = create_write_tool(allowed_roots=[sandbox])
 
         captured: list[ToolApprovalRequest] = []
 
@@ -190,7 +190,7 @@ class TestEndToEndGating:
         assert result.startswith("Wrote")
         assert len(captured) == 1
         request = captured[0]
-        assert request.tool_name == "fs_write"
+        assert request.tool_name == "write"
         assert request.permission == PERMISSION_WRITE
         assert "Edit" in request.summary
         assert any(b.kind == "diff" for b in request.preview)
@@ -201,7 +201,7 @@ class TestEndToEndGating:
     async def test_denial_prevents_actual_write(self, sandbox: Path):
         target = sandbox / "out.txt"
         target.write_text("untouched\n", encoding="utf-8")
-        tool = create_fs_write_tool(allowed_roots=[sandbox])
+        tool = create_write_tool(allowed_roots=[sandbox])
 
         async def _hook(_req):
             return False

@@ -23,8 +23,8 @@ from alex.tools import (
     FileReadTracker,
     create_available_shell_tools,
     create_edit_tool,
-    create_fs_read_tool,
-    create_fs_write_tool,
+    create_read_tool,
+    create_write_tool,
     create_git_inspect_tool,
     create_glob_tool,
     create_grep_tool,
@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 def _build_agent(bus: AsyncEventBus | None = None) -> Agent:
     """Compose an Agent with the built-in toolset and any user plugins."""
-    # One tracker shared across fs_read / fs_write / edit so the
+    # One tracker shared across read / write / edit so the
     # read-before-edit invariant is enforced consistently.
     tracker = FileReadTracker()
 
@@ -48,8 +48,8 @@ def _build_agent(bus: AsyncEventBus | None = None) -> Agent:
         create_time_tool(),
         create_web_search_tool(),
         create_web_fetch_tool(),
-        create_fs_read_tool(tracker=tracker),
-        create_fs_write_tool(tracker=tracker),
+        create_read_tool(tracker=tracker),
+        create_write_tool(tracker=tracker),
         create_edit_tool(tracker=tracker),
         create_glob_tool(),
         create_grep_tool(),

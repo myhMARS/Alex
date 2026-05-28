@@ -52,9 +52,9 @@
 
 | 标识符 | 语义 | 默认放开 |
 |--------|------|---------|
-| `read` | 纯信息读取（fs_read / git_inspect / grep / glob） | ✅ |
+| `read` | 纯信息读取（read / git_inspect / grep / glob） | ✅ |
 | `network` | 出网（web_search / web_fetch / mcp） | ✅ |
-| `write` | 改用户磁盘状态（fs_write / edit） | ❌ |
+| `write` | 改用户磁盘状态（write / edit） | ❌ |
 | `shell` | 调用外部进程（bash / pwsh） | ❌ |
 | `danger` | 显式高风险操作 | ❌ |
 
@@ -64,8 +64,8 @@
 
 ```python
 StructuredTool.from_function(
-    coroutine=_fs_write,
-    name="fs_write",
+    coroutine=_write,
+    name="write",
     args_schema=FsWriteInput,
     metadata={"required_permission": PERMISSION_WRITE},
 )
@@ -116,7 +116,7 @@ async def _summarise(args: dict) -> tuple[str, list[PreviewBlock]]:
 | `S` | Allow always — 本会话内不再询问（写入 `policy.allowed`） |
 | `N` / `Esc` | Deny — 工具立即返回 `Error: ... blocked` |
 
-`fs_write` / `edit` 摘要会自动 read 旧文件 → `difflib.unified_diff` → 在 modal 里高亮显示，CRLF/LF 差异自动归一化避免噪音。
+`write` / `edit` 摘要会自动 read 旧文件 → `difflib.unified_diff` → 在 modal 里高亮显示，CRLF/LF 差异自动归一化避免噪音。
 `bash` / `pwsh` 摘要展示完整命令字符串、cwd、超时秒数。
 
 ### 审计日志 (`AuditLogger`)
@@ -127,7 +127,7 @@ async def _summarise(args: dict) -> tuple[str, list[PreviewBlock]]:
 {
   "ts": 1706512345.123,
   "iso": "2024-01-29T05:52:25.123+00:00",
-  "tool": "fs_write",
+  "tool": "write",
   "permission": "write",
   "decision": "allow_once",
   "args_digest": "Edit /path/x (+3 / -1, 102 bytes total)",
@@ -151,21 +151,21 @@ async def _summarise(args: dict) -> tuple[str, list[PreviewBlock]]:
 | `cron` | — | 调度后台任务 |
 | `load_skill` | — | 内置：按名加载技能详情 |
 | `cron_history` | — | 内置：查询当前会话 cron 执行历史 |
-| `fs_read` | `read` | 限定 allowed roots，二进制拒绝，自动截断；同时刷新 `FileReadTracker` |
-| `fs_write` | `write` | tempfile + os.replace 原子写，限大小，限 root；写完同步 tracker |
-| `edit` | `write` | 精确字符串替换，必须先 `fs_read`/`fs_write` 过；外部修改会被检测并拒绝；唯一性检查（除非 `replace_all`） |
+| `read` | `read` | 限定 allowed roots，二进制拒绝，自动截断；同时刷新 `FileReadTracker` |
+| `write` | `write` | tempfile + os.replace 原子写，限大小，限 root；写完同步 tracker |
+| `edit` | `write` | 精确字符串替换，必须先 `read`/`write` 过；外部修改会被检测并拒绝；唯一性检查（除非 `replace_all`） |
 | `glob` | `read` | 按文件名 glob 找文件，按 mtime 倒序返回，最多 200 条 |
 | `grep` | `read` | 正则内容搜索，优先调用系统 `rg`，否则纯 Python fallback；支持 `content`/`files_with_matches`/`count` 三种 output_mode |
 | `git_inspect` | `read` | 仅 status/diff/log 三个只读 action |
 | `bash` | `shell` | 命令字符串走 `bash -lc`，支持管道 / 重定向 / `&&`；启动前对解析后的 token 做硬性 deny list（rm/dd/sudo/...） |
 | `pwsh` | `shell` | 命令字符串走 `pwsh -NoProfile -NonInteractive -Command`，缺失时回退 `powershell.exe`；deny list 含 Remove-Item / Format-Volume / Stop-Computer / iex 等
 
-### `fs_read` / `fs_write` / `edit` 协作
+### `read` / `write` / `edit` 协作
 
 三者共享同一个 `FileReadTracker`，记录每个文件的 `mtime_ns + size + sha256` 指纹：
 
-- `fs_read` 成功 → 写入指纹
-- `fs_write` 成功 → 写入指纹（agent 知道写完后的状态）
+- `read` 成功 → 写入指纹
+- `write` 成功 → 写入指纹（agent 知道写完后的状态）
 - `edit` 调用前查指纹：未读过 → 拒绝；指纹与磁盘当前状态不符 → 拒绝（要求重新读）
 
 这避免两类典型错误：
@@ -363,7 +363,7 @@ alex/tools/
 ├── web_search.py
 ├── web_fetch.py
 ├── cron.py
-├── fs.py                  # fs_read / fs_write / edit / FileReadTracker
+├── fs.py                  # read / write / edit / FileReadTracker
 ├── shell.py               # bash / pwsh
 ├── search.py              # grep / glob
 └── git.py                 # git_inspect
@@ -379,8 +379,8 @@ alex/tools/
 | `tests/test_tools_registry.py` | Registry / Executor 基础 |
 | `tests/test_permissions.py` | Policy 默认值、env 覆盖、confirm hook（once/always）、tool gating、executor 不双重 prompt |
 | `tests/test_audit_log.py` | AuditLogger 追加、写失败容错、auto_allow/auto_deny/allow_once/allow_always 决策记录、digest |
-| `tests/test_approval_summariser.py` | summariser 附加 / 失败降级 / fs_write diff（创建 / 编辑 / no-op / CRLF / 二进制 / 越界） / bash + pwsh 摘要 / 端到端 gate→hook→write |
-| `tests/test_fs_tools.py` | fs_read / fs_write 边界、原子性、二进制拒绝 |
+| `tests/test_approval_summariser.py` | summariser 附加 / 失败降级 / write diff（创建 / 编辑 / no-op / CRLF / 二进制 / 越界） / bash + pwsh 摘要 / 端到端 gate→hook→write |
+| `tests/test_fs_tools.py` | read / write 边界、原子性、二进制拒绝 |
 | `tests/test_edit_tool.py` | read-before-edit、外部修改检测、唯一性、replace_all、空字符串拒绝、端到端确认/拒绝 |
 | `tests/test_search_tools.py` | grep（files/content/count/context/type/glob 过滤/越界/无效正则/head_limit）、glob（mtime 倒序/越界/默认 path/空 pattern） |
 | `tests/test_shell_tool.py` | bash + pwsh 元数据、deny list（鉴别 token / 别名 / 大小写）、cwd 越界、超时、空命令、host 检测；解释器缺失时整组测试自动 skip |

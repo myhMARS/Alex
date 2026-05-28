@@ -27,7 +27,7 @@ class TestAuditLogger:
         logger = AuditLogger(audit_path)
         await logger.record(AuditEvent(
             ts=1700000000.0,
-            tool_name="fs_write",
+            tool_name="write",
             permission="write",
             decision="allow_once",
             args_digest="path=/tmp/x",
@@ -44,7 +44,7 @@ class TestAuditLogger:
 
         records = logger.read_all()
         assert len(records) == 2
-        assert records[0]["tool"] == "fs_write"
+        assert records[0]["tool"] == "write"
         assert records[0]["decision"] == "allow_once"
         assert "iso" in records[0]
         assert records[1]["decision"] == "deny"
@@ -76,18 +76,18 @@ class TestPolicyAuditing:
         logger = AuditLogger(audit_path)
         policy = PermissionPolicy(audit_logger=logger)
         # default: read is auto-allowed
-        await policy.check("fs_read", "read")
+        await policy.check("read", "read")
         records = logger.read_all()
         assert len(records) == 1
         assert records[0]["decision"] == "auto_allow"
-        assert records[0]["tool"] == "fs_read"
+        assert records[0]["tool"] == "read"
 
     @pytest.mark.asyncio
     async def test_auto_deny_records_decision(self, audit_path: Path):
         logger = AuditLogger(audit_path)
         policy = PermissionPolicy(audit_logger=logger)
         # default: write is not allowed and there's no hook
-        granted, _ = await policy.check("fs_write", "write")
+        granted, _ = await policy.check("write", "write")
         assert not granted
         records = logger.read_all()
         assert len(records) == 1
@@ -101,13 +101,13 @@ class TestPolicyAuditing:
             return (True, False)
 
         policy_once = PermissionPolicy(confirm_hook=_once, audit_logger=logger)
-        await policy_once.check("fs_write", "write")
+        await policy_once.check("write", "write")
 
         async def _always(_req):
             return (True, True)
 
         policy_always = PermissionPolicy(confirm_hook=_always, audit_logger=logger)
-        await policy_always.check("fs_write", "write")
+        await policy_always.check("write", "write")
 
         decisions = [r["decision"] for r in logger.read_all()]
         assert decisions == ["allow_once", "allow_always"]
@@ -117,7 +117,7 @@ class TestPolicyAuditing:
         logger = AuditLogger(audit_path)
         policy = PermissionPolicy(audit_logger=logger)
         request = ToolApprovalRequest(
-            tool_name="fs_write",
+            tool_name="write",
             permission=PERMISSION_WRITE,
             args={"path": "/tmp/x", "content": "hello"},
             summary="Edit /tmp/x (+1 / -0, 5 bytes total)",

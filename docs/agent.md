@@ -64,7 +64,7 @@ Agent 自动注册两个内置工具（无需主程序显式装配）：
 - `load_skill` — 按名加载技能完整执行流程，命中后 `SkillLoaded` 事件推到 TUI
 - `cron_history` — 查询当前 session 的 cron 执行历史
 
-`main.py` / `create_agent()` 还会再注册一组本地能力工具：`fs_read` / `fs_write` / `edit` / `grep` / `glob` / `git_inspect` / `bash` / `pwsh` / `time` / `web_search` / `web_fetch` / `cron`。详见 [tools.md](./tools.md)。
+`main.py` / `create_agent()` 还会再注册一组本地能力工具：`read` / `write` / `edit` / `grep` / `glob` / `git_inspect` / `bash` / `pwsh` / `time` / `web_search` / `web_fetch` / `cron`。详见 [tools.md](./tools.md)。
 
 ## Cron 后台任务
 
@@ -121,7 +121,7 @@ User Input
   │       │     ├─► permission gate 拦截 → 必要时弹 modal
   │       │     ├─► AuditLogger 异步追加决策
   │       │     ├─► 通过 → 实际执行；否则返回 "Error: ... blocked"
-  │       │     └─► load_skill / fs_read / edit / bash / ... 等
+  │       │     └─► load_skill / read / edit / bash / ... 等
   │       │     └─► yield ToolStarted / ToolFinished / SkillLoaded
   │       └─► 循环至最终回复
   │

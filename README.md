@@ -119,7 +119,7 @@ When the agent calls a tool that needs an unusual permission (e.g. writing a fil
 | <kbd>S</kbd> | Allow for the rest of this session |
 | <kbd>N</kbd> / <kbd>Esc</kbd> | Deny — the tool returns a `blocked` error and the model can adapt |
 
-For `fs_write` and `edit`, the modal includes a unified diff against the current file so you can review every line that's about to change. For `bash` / `pwsh`, you see the full command, working directory, and timeout.
+For `write` and `edit`, the modal includes a unified diff against the current file so you can review every line that's about to change. For `bash` / `pwsh`, you see the full command, working directory, and timeout.
 
 Every decision is appended to `~/.alex/audit/permissions.jsonl`.
 
@@ -131,9 +131,9 @@ Every decision is appended to `~/.alex/audit/permissions.jsonl`.
 | `web_search` | `network` | DuckDuckGo search |
 | `web_fetch` | `network` | Clean text extraction from a URL |
 | `cron` | — | Schedule background jobs (interval or crontab) |
-| `fs_read` | `read` | Read a text file with binary detection and size cap |
-| `fs_write` | `write` | Atomic full-file write — diff shown before approval |
-| `edit` | `write` | Precise string replacement; requires prior `fs_read` and detects external edits |
+| `read` | `read` | Read a text file with binary detection and size cap |
+| `write` | `write` | Atomic full-file write — diff shown before approval |
+| `edit` | `write` | Precise string replacement; requires prior `read` and detects external edits |
 | `glob` | `read` | Find files by name pattern, sorted by `mtime` |
 | `grep` | `read` | Regex content search (uses `rg` when available, pure-Python fallback) |
 | `git_inspect` | `read` | Read-only `git status` / `diff` / `log` |
@@ -287,7 +287,7 @@ alex/
 │   ├── permissions.py          # PermissionPolicy + AuditLogger + summarisers
 │   ├── plugin_loader.py        # ~/.alex/plugins/*.py discovery
 │   ├── mcp_client.py           # MCP stdio client
-│   ├── fs.py                   # fs_read / fs_write / edit + FileReadTracker
+│   ├── fs.py                   # read / write / edit + FileReadTracker
 │   ├── search.py               # grep / glob
 │   ├── shell.py                # bash / pwsh
 │   ├── git.py                  # git_inspect
