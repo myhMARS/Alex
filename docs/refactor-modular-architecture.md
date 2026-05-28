@@ -31,13 +31,13 @@ Alex 已经从早期的”`Agent + TUI + 工具集合`”单体，演进成模�
 当前剩余差距集中在：
 
 1. DI container 仍未替代手工 wiring（factory.py / service.py 各自维护 `_create_default_skill_service`）
-2. Cron / Scheduler 仍然缺少统一抽象中心（CronAppService + SchedulerAdapter + CronExecutionCoordinator）
+2. Cron 虽然稳定可用，但 lifecycle 分散在 CronManager / CronTurnHandler / Agent._cron 三处，应回归为工具层 + 基础设施 adapter
 3. Read Models 仍主要靠 `ChatHistory` 与即时渲染状态，未显式分层
 
 因此，当前最准确的判断是：
 
 - 当前架构：模块化单体 v2.4（SkillManager 已移除，contract tests 已补齐，SkillStore 原子写）
-- 目标架构：模块化单体 v2.5（DI container 化，Cron/Scheduler 统一抽象，read model 显式化）
+- 目标架构：模块化单体 v2.5（DI container 化，cron 回归工具层 + 基础设施 adapter，read model 显式化）
 
 ---
 
@@ -271,7 +271,7 @@ TUI
 ### 当前架构仍存在的核心问题
 
 1. DI container 仍未替代手工 wiring，`_create_default_skill_service` 在 `factory.py` 和 `service.py` 中重复定义
-2. Cron / Scheduler 缺少统一抽象中心 — `CronAppService + SchedulerAdapter + CronExecutionCoordinator` 尚未建立
+2. Cron lifecycle 分散在 `CronManager` / `CronTurnHandler` / `Agent._cron` — cron 是工具，不应有独立的 application service 层
 3. Read Models 仍然主要依附于 `ChatHistory`，`SessionListReadModel`、`FeedbackReadModel` 尚未独立
 
 ---
@@ -288,7 +288,7 @@ TUI
 | Event System | ✅ typed event + event-only bus 语义明确，但 Agent 内仍混合 direct-call | 统一 direct-call application service 模式 | 中 |
 | TUI / Projection | ✅ controller 已薄化至 282 行，ChatProjector / SessionViewState / NotificationController 已分离 | - | 已解决 |
 | Tool Runtime | ✅ `ToolExecutionContext` 为一等对象，executor 和所有 caller 已对齐 | - | 已解决 |
-| Cron / Scheduler | 已稳定可用，但 handler、projection、cancel 语义仍分散 | `CronAppService + SchedulerAdapter + CronProjector` 明确收口 | 中 |
+| Cron / Scheduler | 已稳定可用，但 `CronTurnHandler` + `Agent._cron` + `CronManager` 生命周期分散 | cron 回归工具层：`CronManager` 作为纯 adapter，调度/取消由 tools/cron.py 驱动，回复逻辑收敛到 `CronTurnHandler` | 低 |
 | Feedback / Reflection | ✅ `FeedbackAppService` + `FeedbackSessionState` per-session 字典 | episodes 持久化为独立日志（可选） | 低 |
 | Read Models | 主要靠 `ChatHistory` 与即时渲染状态 | 明确 projector + read model 边界 | 中 |
 | Tests / Governance | 100 回归测试通过，缺 contract tests 和语义测试 | module contract / state model / concurrency tests 完整 | 中 |
@@ -456,49 +456,59 @@ Phase 3 已将 TUI controller 拆分为四个独立对象：
 
 #### 当前问题
 
-当前 cron 功能已经稳定，但架构上仍分散在：
+cron 功能已经稳定（schedule/cancel/list 工具 + APScheduler + subscribe 回复链路），但 lifecycle 分散在三处：
 
-- `CronService`
-- `CronManager`
-- `CronTurnHandler`
-- TUI cron projector
-- store 对 `CronJobEvent` 的持久化订阅
+- `CronManager`（scheduler/manager.py）— APScheduler 封装 + job 生命周期
+- `CronTurnHandler`（agent/cron_handler.py）— cron 触发的 LLM reply turn
+- `Agent._cron`（agent/service.py）— `CronService` 薄包装
 
-这意味着“一个 cron 完整生命周期”没有单一抽象中心。
+cron 本质是工具 — LLM 调用 schedule/cancel/list，APScheduler 定时触发，结果异步回来。它跟 `bash` 的区别只是结果的时序，不承载独立业务逻辑。
+
+当前问题是：cron 被放到了 application service 层（`CronService`），但实际上它只需要工具接口 + 基础设施 adapter。
 
 #### 目标设计
 
-建立三个明确对象：
+```
+tools/cron.py               # cron 工具的 LangChain 接口（schedule/cancel/list）
+    │
+    ▼
+agent/cron_handler.py       # cron 触发时跑 LLM reply（纯工具回调）
+    │
+    ▼
+scheduler/manager.py        # CronManager — 对 APScheduler 的纯适配（基础设施）
+    │
+    ▼
+bus/events.py               # CronJobEvent — 异步结果通过 EventBus 发布
+    │
+    ├── store/session_adapter.py  # 持久化（事件驱动，不参与执行决策）
+    └── tui/chat_projector.py    # TUI 渲染（事件驱动，不参与业务决策）
+```
 
-1. `CronAppService`
-   对 application layer 暴露 schedule / cancel / query / subscribe
-2. `SchedulerAdapter`
-   对 APScheduler 做纯适配
-3. `CronExecutionCoordinator`
-   负责 `CronJobEvent -> subscribed reply -> turn persistence` 的执行链
+核心原则：**cron 不做 application service**。APScheduler 跟 EventBus、LLMFactory 同级 — 都是基础设施。
 
 #### 重构路线
 
 Phase A:
 
-1. 将 `CronService` 从“薄包装”升级为真正的 `CronAppService`
-2. `Agent` 不再直持有 `_cron`
+1. 移除 `CronService`（agent/cron_service.py）— 它只是 `CronManager` 的薄包装，没有业务逻辑
+2. `CronManager` 暴露 schedule / cancel / list_jobs 为 public API，由 `tools/cron.py` 直接调用
+3. `Agent.__init__` 不再持有 `_cron`，改为持有 `_cron_manager`（纯 adapter）
 
 Phase B:
 
-1. 将 `_schedule_aps()`、cancel semantics、running task tracking 视为 adapter 内部实现
-2. `CronManager` 只对外暴露 scheduler contract
+1. `CronTurnHandler` 不重命名、不加新抽象 — 它就是 cron 的 tool callback，不需要变成 `CronExecutionCoordinator`
+2. 清理 `CronService` → `CronManager` 的间接调用路径
 
 Phase C:
 
-1. 将 `CronTurnHandler` 重命名或抽象为 `CronExecutionCoordinator`
-2. 明确它的输入是 `CronExecutionRequest`，而不是直接绑在 `CronJobEvent` 上
+1. `tools/cron.py` 中 schedule/cancel/list 的 LangChain tool 包装保持现状
+2. 确认 cron 工具跟其他工具（bash/web_search）的注册路径一致
 
 #### 验收标准
 
-1. cron 生命周期从 schedule 到 subscribed reply 有唯一主抽象
-2. TUI 只消费投影事件，不参与业务决策
-3. store 只消费持久化事件，不参与执行决策
+1. `CronService` 消失，`CronManager` 作为基础设施 adapter 直连 tools 层
+2. cron 工具注册路径与其他工具一致（`ToolRegistry.register`）
+3. TUI 只消费 CronJobEvent 投影，store 只消费持久化事件
 
 ### 7. Tool Runtime (Phase 1 partial, Phase 4 完成剩余)
 
@@ -731,26 +741,27 @@ Phase C:
 - ✅ 279/279 测试通过（+34 新增测试）
 - ✅ 技术债从”边界不硬”转为”业务优化空间”
 
-### Phase 6：Cron/Scheduler 统一抽象与 Read Model 显式化 (计划: 2026-05-30)
+### Phase 6：Cron 回归工具层 + Read Model 显式化 (计划: 2026-05-30)
 
 目标：
 
-- 建立 Cron 完整生命周期的单一抽象中心
+- Cron 从 application service 退回到工具层 + 基础设施 adapter
 - Read Model 显式分层，不再依附于 ChatHistory
 
 工作项：
 
-1. 从 `CronService` + `CronManager` 升级为 `CronAppService + SchedulerAdapter + CronExecutionCoordinator`
-2. 抽取 `SessionListReadModel`、`FeedbackReadModel` 独立 dataclass
-3. `ChatHistory` 只保留 timeline 职责，cron history / session list 字段移除
-4. 增加 `CronExecutionCoordinator` contract tests
-5. DI container 调查 — 评估 `punq` / `dependency-injector` 是否适合替代手工 wiring
+1. 移除 `CronService`（agent/cron_service.py）薄包装层，`CronManager` 作为基础设施 adapter 直连 tools 层
+2. `Agent.__init__` 用 `_cron_manager` 替代 `_cron = CronService(...)`
+3. 抽取 `SessionListReadModel`、`FeedbackReadModel` 独立 dataclass
+4. `ChatHistory` 只保留 timeline 职责，cron history / session list 字段移除
+5. 清理 cron 工具注册路径，确保与 bash/web_search 等工具一致
+6. DI container 调查 — 评估 `punq` / `dependency-injector` 是否适合替代手工 wiring
 
 完成标志：
 
-- cron 生命周期从 schedule 到 subscribed reply 有唯一主抽象
+- `CronService` 类消失，`CronManager` 直接作为基础设施 adapter
+- cron 工具的注册路径与 `bash` / `web_search` 一致
 - ChatHistory 不再承载 cron_history 和 session list
-- CronAppService + SchedulerAdapter + CronExecutionCoordinator 正式命名与落位
 
 ---
 
@@ -771,8 +782,8 @@ Phase C:
 
 当前 Alex 已经是模块化单体 v2.4：Application Layer 拆分为 5 个独立 service，TUI 拆分为 4 个薄对象，ToolExecutionContext 为一等运行时上下文，SessionSerializer 消除 store 边界泄露，CronHistoryReadModel 独立，push_notification 单一发布路径，Agent wiring 工厂化，SkillManager 已完全移除并统一为 SkillService，SkillStore 原子写 + 6 层 corrupt data 防御，3 组新测试文件（port contracts / state models / event bus semantics）新增 34 个测试，总计 279 测试全部通过。
 
-下一阶段（2026-05-30）的重点是 **Phase 6：Cron/Scheduler 统一抽象与 Read Model 显式化**：
-1. CronAppService + SchedulerAdapter + CronExecutionCoordinator 三层抽象
+下一阶段（2026-05-30）的重点是 **Phase 6：Cron 回归工具层 + Read Model 显式化**：
+1. 移除 `CronService` 薄包装，cron 退回到 `tools/cron.py` + `CronManager`（基础设施 adapter）
 2. SessionListReadModel、FeedbackReadModel 独立
 3. ChatHistory 只保留 timeline 职责
 4. DI container 评估（punq / dependency-injector）
