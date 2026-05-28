@@ -13,7 +13,7 @@
 
 ## 结论摘要
 
-Alex 已经从早期的”`Agent + TUI + 工具集合`”单体，演进成模块化单体 v2.2：
+Alex 已经从早期的”`Agent + TUI + 工具集合`”单体，演进成模块化单体 v2.3：
 
 - 目录结构已经按模块拆分
 - typed event 已统一，event bus 角色明确（event-only）
@@ -36,8 +36,8 @@ Alex 已经从早期的”`Agent + TUI + 工具集合`”单体，演进成模�
 
 因此，当前最准确的判断是：
 
-- 当前架构：模块化单体 v2.2（runtime model 收口，push_notification 语义清理，factory 化）
-- 目标架构：模块化单体 v2.3（SkillManager 移除，contract tests 补齐）
+- 当前架构：模块化单体 v2.3（runtime model 收口，push_notification 语义清理，factory 化）
+- 目标架构：模块化单体 v2.4（SkillManager 移除，contract tests 补齐）
 
 ---
 
@@ -170,10 +170,17 @@ alex/
 │   ├── cron.py                 # cron tool interface
 │   ├── executor.py             # ToolExecutor
 │   ├── registry.py             # ToolRegistry
+│   ├── permissions.py          # PermissionPolicy + AuditLogger + approval summariser
+│   ├── plugin_loader.py        # user plugin discovery + loading
+│   ├── mcp_client.py           # MCP stdio client + tool adapter
+│   ├── fs.py                   # fs_read / fs_write / edit + FileReadTracker
+│   ├── search.py               # grep / glob
+│   ├── shell.py                # bash / pwsh
+│   ├── git.py                  # git_inspect
 │   ├── time.py                 # Time tool
 │   ├── web_fetch.py            # Web fetch tool
 │   ├── web_search.py           # Web search tool
-│   └── ports.py                # ToolRegistry/ToolExecutor Protocols
+│   └── ports.py                # ToolExecutionContext / CronScheduler Protocols
 ├── scheduler/
 │   └── manager.py              # CronManager — APScheduler wrapper
 ├── tui/
@@ -185,6 +192,8 @@ alex/
 │   ├── presenter.py            # Bubble components (AlexBubble, etc.)
 │   ├── view_models.py          # ChatHistory, ChatTurn
 │   ├── cron_history.py         # CronHistoryReadModel — standalone read model
+│   ├── confirm_screen.py       # PermissionConfirmScreen — permission confirmation modal
+│   ├── markdown.py             # render_response — Rich Markdown rendering
 │   └── stream_renderer.py      # StreamRenderer — shared user/cron rendering
 └── prompts/
 ```
@@ -709,7 +718,7 @@ Phase C:
 
 ## 一句话总结
 
-当前 Alex 已经是模块化单体 v2.2：Application Layer 拆分为 5 个独立 service，TUI 拆分为 4 个薄对象，ToolExecutionContext 为一等运行时上下文，SessionSerializer 消除 store 边界泄露，CronHistoryReadModel 独立，push_notification 单一发布路径，Agent wiring 工厂化。
+当前 Alex 已经是模块化单体 v2.3：Application Layer 拆分为 5 个独立 service，TUI 拆分为 4 个薄对象，ToolExecutionContext 为一等运行时上下文，SessionSerializer 消除 store 边界泄露，CronHistoryReadModel 独立，push_notification 单一发布路径，Agent wiring 工厂化。
 
 下一阶段（2026-05-29）的重点是 **Phase 5：Adapter 强化与测试治理**：
 1. 从主路径完全移除 `SkillManager` 兼容层

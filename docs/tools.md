@@ -52,10 +52,10 @@
 
 | 标识符 | 语义 | 默认放开 |
 |--------|------|---------|
-| `read` | 纯信息读取（fs_read / git_inspect） | ✅ |
+| `read` | 纯信息读取（fs_read / git_inspect / grep / glob） | ✅ |
 | `network` | 出网（web_search / web_fetch / mcp） | ✅ |
-| `write` | 改用户磁盘状态（fs_write） | ❌ |
-| `shell` | 调用外部进程（shell_run） | ❌ |
+| `write` | 改用户磁盘状态（fs_write / edit） | ❌ |
+| `shell` | 调用外部进程（bash / pwsh） | ❌ |
 | `danger` | 显式高风险操作 | ❌ |
 
 ### 工具声明权限
@@ -116,8 +116,8 @@ async def _summarise(args: dict) -> tuple[str, list[PreviewBlock]]:
 | `S` | Allow always — 本会话内不再询问（写入 `policy.allowed`） |
 | `N` / `Esc` | Deny — 工具立即返回 `Error: ... blocked` |
 
-`fs_write` 摘要会自动 read 旧文件 → `difflib.unified_diff` → 在 modal 里高亮显示，CRLF/LF 差异自动归一化避免噪音。
-`shell_run` 摘要展示完整 argv / cwd / 超时秒数。
+`fs_write` / `edit` 摘要会自动 read 旧文件 → `difflib.unified_diff` → 在 modal 里高亮显示，CRLF/LF 差异自动归一化避免噪音。
+`bash` / `pwsh` 摘要展示完整命令字符串、cwd、超时秒数。
 
 ### 审计日志 (`AuditLogger`)
 
@@ -379,7 +379,7 @@ alex/tools/
 | `tests/test_tools_registry.py` | Registry / Executor 基础 |
 | `tests/test_permissions.py` | Policy 默认值、env 覆盖、confirm hook（once/always）、tool gating、executor 不双重 prompt |
 | `tests/test_audit_log.py` | AuditLogger 追加、写失败容错、auto_allow/auto_deny/allow_once/allow_always 决策记录、digest |
-| `tests/test_approval_summariser.py` | summariser 附加 / 失败降级 / fs_write diff（创建 / 编辑 / no-op / CRLF / 二进制 / 越界） / shell_run 摘要 / 端到端 gate→hook→write |
+| `tests/test_approval_summariser.py` | summariser 附加 / 失败降级 / fs_write diff（创建 / 编辑 / no-op / CRLF / 二进制 / 越界） / bash + pwsh 摘要 / 端到端 gate→hook→write |
 | `tests/test_fs_tools.py` | fs_read / fs_write 边界、原子性、二进制拒绝 |
 | `tests/test_edit_tool.py` | read-before-edit、外部修改检测、唯一性、replace_all、空字符串拒绝、端到端确认/拒绝 |
 | `tests/test_search_tools.py` | grep（files/content/count/context/type/glob 过滤/越界/无效正则/head_limit）、glob（mtime 倒序/越界/默认 path/空 pattern） |
@@ -387,5 +387,11 @@ alex/tools/
 | `tests/test_git_tool.py` | status/diff/log + 越界拒绝（依赖本机 git，缺失则 skip） |
 | `tests/test_plugin_loader.py` | 三种入口、坏插件隔离、空入口报错 |
 | `tests/test_mcp_client.py` | 配置解析、schema 转换、SDK 缺失、disabled、tool 调用 |
+| `tests/test_confirm_screen.py` | 权限确认 modal 底部按键提示渲染（防止 Rich markup 吞 `[Y]` `[N]` 等字符） |
+| `tests/test_markdown_rendering.py` | `render_response` 行为、`bubble.finalize` 切到 Markdown、流式期间保持纯文本、`insert_tool` 提交 prefix 也走 Markdown |
+| `tests/test_time_tool.py` | time 工具时区别名 + ISO 8601 输出 |
+| `tests/test_cron.py` | cron 调度 / subscribe / 执行历史 |
+| `tests/test_crontab.py` | crontab 表达式解析与校验 |
+| `tests/test_tui.py` | TUI 渲染 / session 生命周期 / 工具气泡顺序 / 消息序列保真 |
 
-总计：245 / 245 通过。
+总计：258 / 258 通过。

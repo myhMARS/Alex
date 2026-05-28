@@ -17,6 +17,9 @@
 | `ALEX_MAX_TOKENS` | 最大 token 数 | `8192` |
 | `ALEX_TEMPERATURE` | 温度参数 | `0.0` |
 | `ALEX_CRON_DEBUG` | Cron 调试日志开关（`1`/`true` 开启） | *(关闭)* |
+| `ALEX_TUI_MARKDOWN` | TUI Markdown 渲染开关（`0` 关闭） | *(开启)* |
+| `ALEX_TOOL_PERMISSIONS` | 允许的工具权限（逗号分隔，如 `read,write,shell`） | `read,network` |
+| `ALEX_TOOL_DENY` | 显式拒绝的工具权限（逗号分隔） | *(空)* |
 
 ## LLMConfig 数据类
 

@@ -127,6 +127,28 @@ CronManager fire
 
 两者共用 `StreamRenderer` 管理 bubble 生命周期、token/thinking 收集、工具调用追踪和 turn 最终化。
 
+## Markdown 渲染
+
+`alex/tui/markdown.py` 提供 `render_response(text)` —— 输入纯文本、输出 Rich `Markdown` 渲染对象（或在禁用时直接回传字符串）。
+
+| 路径 | 是否经过 Markdown |
+|------|------------------|
+| 用户 turn 流式 token（`StreamRenderer.on_token` → `bubble.set_response`） | 否（保持纯文本） |
+| 流式过程中 thinking 提示 | 否（短，不必要） |
+| `bubble.insert_tool` 把已生成文本提交为 prefix | **是** |
+| `bubble.finalize` 重建 bubble 时的最终回复 | **是** |
+| Cron turn 重建后的回复 | **是**（同样走 `finalize`） |
+| ToolBubble 输出 / SystemBubble | 否（结构化、不应解析为 Markdown） |
+| 用户 / 思考 / 技能块 | 否 |
+
+只在 finalize 时切到 Markdown 是个权衡：
+- 流式途中每个 token 都重新解析 Markdown 会让标题/列表反复重排，体验糟糕
+- 终态需要正确渲染代码块、列表、加粗、内联代码，这是 LLM 输出最常见的格式
+
+代码主题用 `ansi_dark`，让代码块继承终端调色板，不会出现刺眼的浅色背景。
+
+通过环境变量 `ALEX_TUI_MARKDOWN=0` 或 `set_markdown_enabled(False)` 可整体关闭，回到纯文本渲染。
+
 ## 会话持久化
 
 - 保存路径：`~/.alex/sessions/{session_id}.json`
@@ -154,5 +176,8 @@ alex/tui/
 ├── view_state.py               # SessionViewState — UI 可变状态 dataclass
 ├── presenter.py                # AlexBubble / UserBubble / ToolBubble / SystemBubble
 ├── view_models.py              # ChatHistory / ChatTurn / _messages_to_turns
+├── cron_history.py             # CronHistoryReadModel — 独立的 cron 历史读模型
+├── confirm_screen.py           # PermissionConfirmScreen — 权限确认 modal
+├── markdown.py                 # render_response — Rich Markdown 渲染层
 └── stream_renderer.py          # StreamRenderer — 用户/cron turn 共用渲染状态
 ```

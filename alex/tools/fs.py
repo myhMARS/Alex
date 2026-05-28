@@ -181,11 +181,27 @@ def _resolve_safe_path(raw: str, allowed_roots: list[Path]) -> Path:
 
 
 def _looks_binary(probe: bytes) -> bool:
+    """Heuristic: null bytes are a strong binary signal; otherwise try
+    to decode as UTF-8.  A successful decode means the content is text    (handles CJK, emoji, and other multi-byte sequences).  If the probe
+    ends mid-sequence we retry without the tail bytes.  Only when UTF-8
+    decode genuinely fails do we fall back to the printable-ASCII ratio."""
     if b"\x00" in probe:
         return True
     if not probe:
         return False
-    text_chars = bytes(range(0x20, 0x7f)) + b"\n\r\t\b\f"
+    try:
+        probe.decode("utf-8")
+        return False
+    except UnicodeDecodeError as e:
+        # A decode error at the very end of the probe is likely a
+        # truncated multi-byte character — retry without the tail.
+        if e.end >= len(probe) - 3:
+            try:
+                probe[:e.start].decode("utf-8")
+                return False
+            except UnicodeDecodeError:
+                pass
+    text_chars = bytes(range(0x20, 0x7F)) + b"\n\r\t\b\f"
     nontext = sum(1 for b in probe if b not in text_chars)
     return nontext / len(probe) > 0.3
 

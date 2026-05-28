@@ -99,14 +99,19 @@ class PermissionConfirmScreen(ModalScreen[tuple[bool, bool]]):
         req = self._request
         title = f"⚠  {req.tool_name} requests permission '{req.permission}'"
         summary = req.summary or "(no preview available)"
-        with Vertical():
-            yield Static(title, classes="title")
-            yield Static(summary, classes="summary")
-            with VerticalScroll(classes="preview-scroll"):
-                for block in req.preview:
-                    yield self._render_block(block)
-            yield Static("─" * 96, classes="keys-divider")
-            yield Static(_build_keys_footer(), classes="keys")
+
+        preview_children: list[Static] = [
+            self._render_block(block) for block in req.preview
+        ]
+        preview_scroll = VerticalScroll(*preview_children, classes="preview-scroll")
+        container = Vertical(
+            Static(title, classes="title"),
+            Static(summary, classes="summary"),
+            preview_scroll,
+            Static("─" * 96, classes="keys-divider"),
+            Static(_build_keys_footer(), classes="keys"),
+        )
+        yield container
 
     @staticmethod
     def _render_block(block: PreviewBlock) -> Static:
