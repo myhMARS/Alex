@@ -6,6 +6,8 @@ from ddgs import DDGS
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+from alex.tools.permissions import PERMISSION_NETWORK
+
 
 TOOL_HINT = "Use `web_search` to search the web for current information, facts, or answers beyond your knowledge cutoff."
 
@@ -59,4 +61,5 @@ def create_web_search_tool() -> StructuredTool:
             "that require up-to-date knowledge."
         ),
         args_schema=WebSearchInput,
+        metadata={"required_permission": PERMISSION_NETWORK},
     )

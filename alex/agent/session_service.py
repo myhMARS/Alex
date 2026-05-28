@@ -33,7 +33,7 @@ class SessionService:
         self, messages: list, memory: MemoryBase, session_id: str,
     ) -> None:
         """Clear memory and replay a serialized message sequence."""
-        from alex.store.session import deserialize_message
+        from alex.store.session_serializer import deserialize_message
 
         await memory.clear(session_id=session_id)
         for item in messages:

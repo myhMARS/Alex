@@ -183,7 +183,8 @@ class CronTurnHandler:
                                 intermediate_msgs.append(out)
                             self._push_notification(ToolFinished(
                                 session_id=sid, turn_id=cron_turn_id,
-                                tool_id=rid, output=out,
+                                tool_id=rid,
+                                output=out.content if isinstance(out, ToolMessage) else out,
                                 is_cron=True, stream_id=stream_id,
                             ))
 

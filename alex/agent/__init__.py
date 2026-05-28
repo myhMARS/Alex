@@ -1,6 +1,7 @@
 """Agent module — application services, turn orchestration, and LLM coordination."""
 
 from alex.agent.service import Agent
+from alex.agent.factory import create_agent
 from alex.agent.ports import (
     AgentFacade,
     LLMGateway,
@@ -31,4 +32,5 @@ __all__ = [
     "SkillAdminAppService",
     "TurnOrchestrator",
     "TurnResult",
+    "create_agent",
 ]

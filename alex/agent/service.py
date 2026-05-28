@@ -30,6 +30,7 @@ from alex.llm.factory import LLMFactory
 from alex.memory.base import MemoryBase
 from alex.memory.buffer import BufferMemory
 from alex.skill.models import SkillManager
+from alex.tools.permissions import PermissionPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ class Agent:
         skill_manager: SkillManager | None = None,
         llm: BaseChatModel | None = None,
         event_bus: AsyncEventBus | None = None,
+        permissions: PermissionPolicy | None = None,
     ) -> None:
         self._llm = llm or LLMFactory.create(get_llm_config())
         self._system_prompt = system_prompt or "You are a helpful AI assistant."
@@ -86,6 +88,7 @@ class Agent:
             max_iterations=max_iterations,
             callbacks=self._callbacks,
             event_bus=event_bus,
+            permissions=permissions,
         )
         self._chat.register_builtin_tools(
             load_skill_fn=self._create_load_skill_fn(),
@@ -118,6 +121,13 @@ class Agent:
 
     def register_tool(self, tool: LCBaseTool) -> None:
         self._chat.register_tool(tool)
+
+    @property
+    def permissions(self) -> PermissionPolicy:
+        return self._chat.permissions
+
+    def set_permissions(self, policy: PermissionPolicy) -> None:
+        self._chat.set_permissions(policy)
 
     def bind_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._cron.bind_event_loop(loop)
@@ -172,10 +182,19 @@ class Agent:
         self._chat.set_event_bus(bus)
 
     def push_notification(self, event) -> None:
-        if isinstance(event, CronJobEvent) and event.subscribe:
-            self._chat.push_notification(event)
-        elif self._bus is not None:
+        """Publish *event* to the bus and, for subscribed cron jobs,
+        trigger the cron reply handler.
+
+        This is the single entry point for all event publishing —
+        there is no separate code path hiding behind chat_service.
+        """
+        # 1. Always publish to the event bus for observers (TUI, store, etc.)
+        if self._bus is not None:
             self._bus.publish(event)
+
+        # 2. Subscribed cron jobs additionally kick off an LLM reply turn
+        if isinstance(event, CronJobEvent) and event.subscribe:
+            self._chat.dispatch_cron_reply(event)
 
     async def execute_tool_action(self, session_id: str, action: str, params: dict) -> str:
         return await self._chat.execute_tool_action(session_id, action, params)

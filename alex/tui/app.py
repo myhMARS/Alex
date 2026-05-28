@@ -27,6 +27,11 @@ from alex.bus.events import (
     ToolFinished,
     ToolStarted,
 )
+from alex.tools.mcp_client import (
+    MCPClientPool,
+    MCPUnavailableError,
+    load_mcp_tools_from_config,
+)
 from alex.tui.view_models import ChatHistory, ChatTurn
 from alex.tui.view_state import SessionViewState
 from alex.tui.presenter import AlexBubble, UserBubble
@@ -205,6 +210,7 @@ class AlexApp(ChatControllerMixin, App):
         self._view_state = SessionViewState()
         self._notif = NotificationController(self, self._view_state)
         self._projector = ChatProjector(self)
+        self._mcp_pool: MCPClientPool | None = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -227,7 +233,25 @@ class AlexApp(ChatControllerMixin, App):
         except Exception:
             pass
         self._agent.set_session_context(self._history.session_id, self._history.cron_history)
+        self._install_permission_hook()
         self._start_services_with_bus()
+
+    def _install_permission_hook(self) -> None:
+        """Inject the TUI confirm prompt into the agent's permission policy.
+
+        Tolerant of stub agents (used in tests) that don't expose a
+        ``permissions`` property.
+        """
+        existing = getattr(self._agent, "permissions", None)
+        if existing is None:
+            return
+        existing.confirm_hook = self._notif.confirm_permission
+        # Re-apply so any already-registered tools and the executor see
+        # the updated hook (set_permissions also rewraps gated tools).
+        try:
+            self._agent.set_permissions(existing)
+        except AttributeError:
+            pass
 
     @work(exclusive=True)
     async def _start_services_with_bus(self) -> None:
@@ -254,6 +278,33 @@ class AlexApp(ChatControllerMixin, App):
         except Exception:
             pass
 
+        await self._connect_mcp()
+
+    async def _connect_mcp(self) -> None:
+        """Load and register MCP tools from ``~/.alex/mcp.json``.
+
+        Failures are surfaced as toasts so a missing optional dependency
+        or a misconfigured server doesn't block startup.
+        """
+        try:
+            pool, tools = await load_mcp_tools_from_config()
+        except MCPUnavailableError as e:
+            self._notif.show_toast(f"MCP 不可用：{e}", duration=4)
+            return
+        except Exception as e:
+            self._notif.show_toast(f"MCP 加载失败：{type(e).__name__}: {e}", duration=4)
+            return
+
+        self._mcp_pool = pool
+        if not tools:
+            return
+        for tool in tools:
+            try:
+                self._agent.register_tool(tool)
+            except Exception:
+                continue
+        self._notif.show_toast(f"已加载 {len(tools)} 个 MCP 工具", duration=2)
+
     def action_quit(self) -> None:
         self._do_shutdown()
 
@@ -263,6 +314,12 @@ class AlexApp(ChatControllerMixin, App):
             await self._agent.shutdown()
         except Exception:
             pass
+        if self._mcp_pool is not None:
+            try:
+                await self._mcp_pool.aclose()
+            except Exception:
+                pass
+            self._mcp_pool = None
         self.exit()
 
     # ── key-binding actions delegated to NotificationController ─────────

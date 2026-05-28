@@ -7,6 +7,8 @@ from datetime import datetime
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
+from alex.tui.cron_history import CronHistoryReadModel
+
 
 @dataclass
 class ChatTurn:
@@ -129,12 +131,14 @@ class ChatHistory:
     sequence for Agent.restore_history().  Persistence is handled by the
     store module via TurnCompleted bus events — ChatHistory never calls
     save directly.
+
+    Cron execution history is delegated to a standalone CronHistoryReadModel.
     """
 
     def __init__(self, session_id: str | None = None) -> None:
         self._turns: list[ChatTurn] = []
         self._messages: list[BaseMessage] = []
-        self._cron_history: list[dict] = []
+        self._cron = CronHistoryReadModel()
 
         if session_id:
             self._session_id = session_id
@@ -156,7 +160,7 @@ class ChatHistory:
 
     @property
     def cron_history(self) -> list[dict]:
-        return self._cron_history
+        return self._cron.records
 
     def add(self, turn: ChatTurn, messages_delta: list[BaseMessage] | None = None) -> None:
         """Record a turn with its exact message delta from the Agent."""
@@ -165,18 +169,15 @@ class ChatHistory:
             self._messages.extend(messages_delta)
 
     def add_cron_record(self, record: dict) -> None:
-        execution_id = str(record.get("execution_id", ""))
-        if execution_id and any(str(item.get("execution_id", "")) == execution_id for item in self._cron_history):
-            return
-        self._cron_history.append(record)
+        self._cron.add(record)
 
     def clear(self) -> None:
         self._turns.clear()
         self._messages.clear()
-        self._cron_history.clear()
+        self._cron.clear()
 
     def restore_from_bundle(self, bundle: dict) -> None:
         """Restore ChatHistory state from a loaded session bundle."""
         self._turns, self._messages = _messages_to_turns(bundle.get("messages", []))
-        self._cron_history = list(bundle.get("cron_history", []) or [])
+        self._cron.restore(bundle.get("cron_history", []) or [])
         self._session_id = bundle.get("session_id", self._session_id)

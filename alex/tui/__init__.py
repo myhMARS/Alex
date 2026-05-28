@@ -15,6 +15,7 @@ from alex.tui.presenter import (
     render_turn,
 )
 from alex.tui.chat_projector import ChatProjector
+from alex.tui.cron_history import CronHistoryReadModel
 from alex.tui.notification_controller import NotificationController
 from alex.tui.app import AlexApp
 
@@ -24,6 +25,7 @@ __all__ = [
     "ChatHistory",
     "ChatProjector",
     "ChatTurn",
+    "CronHistoryReadModel",
     "NotificationController",
     "SessionViewState",
     "SystemBubble",

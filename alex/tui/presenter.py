@@ -6,6 +6,7 @@ from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import Static
 
+from alex.tui.markdown import render_response
 from alex.tui.view_models import ChatTurn
 
 
@@ -77,7 +78,7 @@ def _mount_tool(container: Vertical, tc: dict) -> ToolBubble:
     """Mount a prefix widget (if any) and a ToolBubble into *container*."""
     prefix = tc.get("prefix", "")
     if prefix:
-        container.mount(Static(prefix, classes="response-prefix"))
+        container.mount(Static(render_response(prefix), classes="response-prefix"))
     name = tc.get("name", "")
     args = tc.get("args", {})
     tb = ToolBubble(name, args)
@@ -148,7 +149,7 @@ class AlexBubble(Vertical):
 
         # Response
         if turn.response:
-            widgets.append(Static(turn.response, classes="response-text"))
+            widgets.append(Static(render_response(turn.response), classes="response-text"))
 
         return widgets
 
@@ -162,7 +163,7 @@ class AlexBubble(Vertical):
         """Insert a ToolBubble and keep assistant text below active tool output."""
         if self._current_response is not None:
             if self._turn.response:
-                self.mount(Static(self._turn.response, classes="response-prefix"))
+                self.mount(Static(render_response(self._turn.response), classes="response-prefix"))
             self._current_response.remove()
             self._current_response = None
         tb = ToolBubble(name, args)

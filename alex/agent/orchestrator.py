@@ -148,7 +148,8 @@ class TurnOrchestrator:
                             intermediate_msgs.append(output)
                         yield ToolFinished(
                             session_id=sid, turn_id=turn_id,
-                            tool_id=run_id, output=output,
+                            tool_id=run_id,
+                            output=output.content if isinstance(output, ToolMessage) else output,
                         )
 
                 # Build exact message batch and write atomically.

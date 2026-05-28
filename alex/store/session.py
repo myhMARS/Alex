@@ -197,7 +197,7 @@ def list_sessions() -> list[SessionMeta]:
     sessions: list[SessionMeta] = []
     if not SESSIONS_DIR.exists():
         return sessions
-    for f in sorted(SESSIONS_DIR.glob("*.json"), reverse=True):
+    for f in SESSIONS_DIR.glob("*.json"):
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
             msgs = data.get("messages", [])
@@ -209,6 +209,7 @@ def list_sessions() -> list[SessionMeta]:
             ))
         except (json.JSONDecodeError, TypeError):
             continue
+    sessions.sort(key=lambda s: s.created_at, reverse=True)
     return sessions
 
 
