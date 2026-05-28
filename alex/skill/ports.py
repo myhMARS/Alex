@@ -13,7 +13,7 @@ class SkillServicePort(Protocol):
     """Skill lifecycle — retrieval, reflection, CRUD, merging, and feedback.
 
     The Agent depends only on this interface, never on SkillStore internals.
-    Matches the actual SkillService / SkillManager public API.
+    Matches the actual SkillService public API.
     """
 
     # ── retrieval ────────────────────────────────────────────────────────

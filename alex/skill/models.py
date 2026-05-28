@@ -1,16 +1,11 @@
-"""Skill data model and SkillManager."""
+"""Skill data model."""
 
 from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
 from alex.prompts import get_skill_prompt
-from alex.skill.service import SkillService
-
-if TYPE_CHECKING:
-    from alex.skill.repository import SkillStore
 
 
 @dataclass
@@ -57,31 +52,3 @@ class Skill:
             pattern=self.pattern,
             instruction=self.instruction,
         )
-
-
-class SkillManager(SkillService):
-    """Backward-compatible subclass of SkillService with lazy default construction.
-
-    Prefer SkillService directly when all dependencies are available.
-    """
-
-    def __init__(
-        self,
-        store: SkillStore | None = None,
-        reflector=None,
-        retriever=None,
-        evolution=None,
-    ) -> None:
-        if store is None:
-            from alex.skill.repository import SkillStore
-            store = SkillStore()
-        if reflector is None:
-            from alex.skill.reflector import Reflector
-            reflector = Reflector()
-        if retriever is None:
-            from alex.skill.matcher import SkillRetriever
-            retriever = SkillRetriever(store)
-        if evolution is None:
-            from alex.skill.evolution import EvolutionEngine
-            evolution = EvolutionEngine()
-        super().__init__(store=store, reflector=reflector, retriever=retriever, evolution=evolution)

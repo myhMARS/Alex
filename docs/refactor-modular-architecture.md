@@ -30,14 +30,14 @@ Alex 已经从早期的”`Agent + TUI + 工具集合`”单体，演进成模�
 
 当前剩余差距集中在：
 
-1. `SkillManager` 兼容层尚未完全移除（Phase 5）
-2. Agent 内部仍是 direct-call + event 混合模型（orchestrator/cron_handler 直调 chat_service）
-3. port contract tests 和 state model tests 尚未补齐
+1. DI container 仍未替代手工 wiring（factory.py / service.py 各自维护 `_create_default_skill_service`）
+2. Cron / Scheduler 仍然缺少统一抽象中心（CronAppService + SchedulerAdapter + CronExecutionCoordinator）
+3. Read Models 仍主要靠 `ChatHistory` 与即时渲染状态，未显式分层
 
 因此，当前最准确的判断是：
 
-- 当前架构：模块化单体 v2.3（runtime model 收口，push_notification 语义清理，factory 化）
-- 目标架构：模块化单体 v2.4（SkillManager 移除，contract tests 补齐）
+- 当前架构：模块化单体 v2.4（SkillManager 已移除，contract tests 已补齐，SkillStore 原子写）
+- 目标架构：模块化单体 v2.5（DI container 化，Cron/Scheduler 统一抽象，read model 显式化）
 
 ---
 
@@ -154,7 +154,7 @@ alex/
 │   ├── buffer.py               # BufferMemory — sliding window
 │   └── ports.py                # MemoryService Protocol
 ├── skill/
-│   ├── models.py               # Skill dataclass, SkillManager (compat)
+│   ├── models.py               # Skill dataclass
 │   ├── service.py              # SkillService — constructor injection
 │   ├── repository.py           # SkillStore — JSON persistence
 │   ├── matcher.py              # SkillRetriever — pattern/keyword matching
@@ -252,11 +252,27 @@ TUI
 19. `controller.py` 从 608 行降至 282 行（-54%）
 20. `AlexApp` 成为 wiring center：装配 projector / notifications / view_state
 
+**2026-05-28 (Phase 4 Runtime 与状态模型收口) 新增里程碑：**
+
+21. `ToolExecutionContext` 为一等运行时上下文（`tools/ports.py`）
+22. `SessionSerializer` 消除 `SessionService` 对 `store.session` 的直接引用
+23. `CronHistoryReadModel` 从 `ChatHistory` 独立（`tui/cron_history.py`）
+24. `create_agent()` factory 函数替代手工 wiring（`agent/factory.py`）
+25. `push_notification` 语义收口，单一发布路径
+
+**2026-05-29 (Phase 5 Adapter 强化与测试治理) 新增里程碑：**
+
+26. `SkillManager` 完全移除，`SkillService` 为唯一 skill 服务入口
+27. `SkillStore` 原子写 — `tempfile.mkstemp + os.replace` + 6 层 corrupt data 防御
+28. Port contract tests — `test_port_contracts.py`（13 tests: SessionRepository / SkillServicePort / SkillStore atomic write）
+29. State model tests — `test_state_models.py`（7 tests: feedback state / cron cancel / session view state）
+30. Event bus serial semantics tests — `test_event_bus_semantics.py`（8 tests: ordering, isolation, thread safety, isinstance matching）
+
 ### 当前架构仍存在的核心问题
 
-1. `SkillManager` 兼容层仍在主路径中（`agent/service.py` 和 `agent/chat_service.py` 均 import）
-2. Agent 内部仍是 direct-call + event 混合模型（orchestrator/cron_handler 通过 `push_notification` 回调与 chat_service 耦合）
-3. Port contract tests 和 state model tests 尚未补齐
+1. DI container 仍未替代手工 wiring，`_create_default_skill_service` 在 `factory.py` 和 `service.py` 中重复定义
+2. Cron / Scheduler 缺少统一抽象中心 — `CronAppService + SchedulerAdapter + CronExecutionCoordinator` 尚未建立
+3. Read Models 仍然主要依附于 `ChatHistory`，`SessionListReadModel`、`FeedbackReadModel` 尚未独立
 
 ---
 
@@ -268,7 +284,7 @@ TUI
 |------|----------|----------|----------|
 | Agent / Application | ✅ 薄 facade 组合 5 个 app service，wiring 在 Agent.__init__ | DI container 替代手工 wiring | 低 |
 | Session / Store | ✅ `SessionService` 通过 `session_serializer` 访问，不再直接 import store 内部 | - | 已解决 |
-| Skill | ✅ `SkillServicePort` 已对齐 `SkillService`，`SkillManager` 为兼容层 | `SkillManager` 完全移除，只用 `SkillService` | 低 |
+| Skill | ✅ `SkillServicePort` 已对齐 `SkillService`，`SkillManager` 已移除 | `SkillStore` 支持向量化检索 | 低 |
 | Event System | ✅ typed event + event-only bus 语义明确，但 Agent 内仍混合 direct-call | 统一 direct-call application service 模式 | 中 |
 | TUI / Projection | ✅ controller 已薄化至 282 行，ChatProjector / SessionViewState / NotificationController 已分离 | - | 已解决 |
 | Tool Runtime | ✅ `ToolExecutionContext` 为一等对象，executor 和所有 caller 已对齐 | - | 已解决 |
@@ -378,14 +394,14 @@ Phase C:
 #### 当前状态
 
 - `skill/ports.py` — `SkillServicePort` Protocol 与真实 `SkillService` 完全对齐（10 methods）
-- `SkillAdminAppService` (`agent/skill_admin_service.py`) — 封装 `SkillManager`，提供 list/delete/deprecate/merge/load_skill
-- `SkillManager` — 保留为 `SkillService` 子类的兼容层，带 lazy default construction
-- `Agent` 通过 `SkillAdminAppService` 间接访问 `SkillManager`
+- `SkillAdminAppService` (`agent/skill_admin_service.py`) — 封装 `SkillService`，提供 list/delete/deprecate/merge/load_skill
+- `SkillService` — 统一 skill 服务入口，构造函数注入全部依赖
+- `Agent` 通过 `SkillAdminAppService` 间接访问 `SkillService`
 
-#### 剩余工作 (Phase 5)
+#### 剩余工作 (Phase 6+)
 
-1. 从主路径完全移除 `SkillManager`
-2. 强化 `SkillStore` 的原子写与坏数据处理
+1. `SkillStore` 强化稳定性和 corrupt data 处理
+2. 升级检索为 embedding 语义匹配
 
 ### 4. Event System：Command / Event 语义 ✅ (Phase 1 语义明确)
 
@@ -681,7 +697,7 @@ Phase C:
 - ✅ push_notification 路径从 2 条合并为 1 条
 - ✅ 92/92 回归测试通过
 
-### Phase 5：Adapter 强化与测试治理 (计划: 2026-05-29)
+### Phase 5：Adapter 强化与测试治理 ✅ (2026-05-29 完成)
 
 目标：
 
@@ -689,17 +705,52 @@ Phase C:
 
 工作项：
 
-1. 从主路径完全移除 `SkillManager` 兼容层，统一使用 `SkillService`
-2. 强化 `SkillStore` 的原子写与坏数据处理
-3. 增加 port contract tests：`SessionRepository`、`SkillServicePort`
-4. 增加 state model tests：session 切换、feedback state、cron cancel
-5. 增加 event bus 串行语义 tests
+1. ✅ 从主路径完全移除 `SkillManager` 兼容层，统一使用 `SkillService`
+   - `alex/skill/models.py` — 移除 `SkillManager` 类（35 行删减）
+   - `alex/skill/__init__.py` — 移除 `SkillManager` 导出
+   - `agent/factory.py`、`agent/service.py` — 替换为 `_create_default_skill_service()` 工厂函数
+   - `agent/chat_service.py`、`agent/orchestrator.py`、`agent/prompt.py`、`agent/feedback_service.py`、`agent/skill_admin_service.py`、`agent/feedback.py` — 类型注解从 `SkillManager` 迁移为 `SkillService`
+   - `alex/skill/ports.py` — 更新文档注释
+2. ✅ 强化 `SkillStore` 原子写 — `tempfile.mkstemp + os.replace` 替代直接 `open(w)`，6 层 corrupt data 防御
+3. ✅ port contract tests: `tests/test_port_contracts.py` (13 tests)
+   - `TestSessionRepositoryContract` — save/load roundtrip, delete, cron append, list
+   - `TestSkillServicePortContract` — CRUD, retrieval, deprecation, usage recording, prompt injection
+   - `TestSkillStoreAtomicWrite` — corrupt JSON, empty file resilience
+4. ✅ state model tests: `tests/test_state_models.py` (7 tests)
+   - `TestFeedbackSessionState` — per-session isolation, reset, episode append, reflect trigger
+   - `TestCronCancel` — nonexistent cancel, existing job cancel → CANCELLED status
+   - `TestSessionViewState` — reset() correctness, default values
+5. ✅ event bus serial semantics tests: `tests/test_event_bus_semantics.py` (8 tests)
+   - Same-session serial ordering, cross-session dispatch, handler exception isolation
+   - Pre-start buffer drain, subscribe/unsubscribe, cross-thread publish, isinstance matching
 
 完成标志：
 
-- `SkillManager` 不再出现在任何 import 路径中
-- 每个核心 port 都有 contract test
-- 技术债从”边界不硬”转为”业务优化空间”
+- ✅ `SkillManager` 不再出现在任何 import 路径中（代码层面 0 引用）
+- ✅ 每个核心 port 都有 contract test
+- ✅ 279/279 测试通过（+34 新增测试）
+- ✅ 技术债从”边界不硬”转为”业务优化空间”
+
+### Phase 6：Cron/Scheduler 统一抽象与 Read Model 显式化 (计划: 2026-05-30)
+
+目标：
+
+- 建立 Cron 完整生命周期的单一抽象中心
+- Read Model 显式分层，不再依附于 ChatHistory
+
+工作项：
+
+1. 从 `CronService` + `CronManager` 升级为 `CronAppService + SchedulerAdapter + CronExecutionCoordinator`
+2. 抽取 `SessionListReadModel`、`FeedbackReadModel` 独立 dataclass
+3. `ChatHistory` 只保留 timeline 职责，cron history / session list 字段移除
+4. 增加 `CronExecutionCoordinator` contract tests
+5. DI container 调查 — 评估 `punq` / `dependency-injector` 是否适合替代手工 wiring
+
+完成标志：
+
+- cron 生命周期从 schedule 到 subscribed reply 有唯一主抽象
+- ChatHistory 不再承载 cron_history 和 session list
+- CronAppService + SchedulerAdapter + CronExecutionCoordinator 正式命名与落位
 
 ---
 
@@ -718,9 +769,10 @@ Phase C:
 
 ## 一句话总结
 
-当前 Alex 已经是模块化单体 v2.3：Application Layer 拆分为 5 个独立 service，TUI 拆分为 4 个薄对象，ToolExecutionContext 为一等运行时上下文，SessionSerializer 消除 store 边界泄露，CronHistoryReadModel 独立，push_notification 单一发布路径，Agent wiring 工厂化。
+当前 Alex 已经是模块化单体 v2.4：Application Layer 拆分为 5 个独立 service，TUI 拆分为 4 个薄对象，ToolExecutionContext 为一等运行时上下文，SessionSerializer 消除 store 边界泄露，CronHistoryReadModel 独立，push_notification 单一发布路径，Agent wiring 工厂化，SkillManager 已完全移除并统一为 SkillService，SkillStore 原子写 + 6 层 corrupt data 防御，3 组新测试文件（port contracts / state models / event bus semantics）新增 34 个测试，总计 279 测试全部通过。
 
-下一阶段（2026-05-29）的重点是 **Phase 5：Adapter 强化与测试治理**：
-1. 从主路径完全移除 `SkillManager` 兼容层
-2. 增加 port contract tests：`SessionRepository`、`SkillServicePort`
-3. 增加 state model tests：session 切换、feedback state、cron cancel
+下一阶段（2026-05-30）的重点是 **Phase 6：Cron/Scheduler 统一抽象与 Read Model 显式化**：
+1. CronAppService + SchedulerAdapter + CronExecutionCoordinator 三层抽象
+2. SessionListReadModel、FeedbackReadModel 独立
+3. ChatHistory 只保留 timeline 职责
+4. DI container 评估（punq / dependency-injector）

@@ -1,16 +1,25 @@
-"""JSON-file-based skill persistence."""
+"""JSON-file-based skill persistence with atomic writes."""
 
 from __future__ import annotations
 
 import json
+import logging
+import os
+import tempfile
 from pathlib import Path
 
 from alex.prompts import SKILLS_DIR, save_skill_template, remove_skill_template
 from alex.skill.models import Skill
 
+logger = logging.getLogger(__name__)
+
 
 class SkillStore:
-    """Persist skills to a JSON file."""
+    """Persist skills to a JSON file with atomic writes.
+
+    On load, corrupt or unparseable data is discarded and a warning is
+    logged rather than crashing the process.
+    """
 
     def __init__(self, path: str | None = None) -> None:
         self._path = Path(path or (SKILLS_DIR / "skills.json"))
@@ -18,24 +27,52 @@ class SkillStore:
         self._load()
 
     def _load(self) -> None:
-        if self._path.exists():
+        if not self._path.exists():
+            return
+        try:
+            with open(self._path) as f:
+                raw = f.read()
+        except OSError:
+            logger.warning("SkillStore: cannot read %s, starting empty", self._path)
+            return
+
+        if not raw.strip():
+            return
+
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning("SkillStore: corrupt JSON in %s, starting empty", self._path)
+            return
+
+        if not isinstance(data, list):
+            logger.warning("SkillStore: unexpected top-level type %s in %s, starting empty",
+                           type(data).__name__, self._path)
+            return
+
+        for item in data:
+            if not isinstance(item, dict):
+                logger.warning("SkillStore: skipping non-dict entry in %s", self._path)
+                continue
             try:
-                with open(self._path) as f:
-                    data = json.load(f)
-                for item in data:
-                    s = Skill(**item)
-                    self._skills[s.id] = s
+                s = Skill(**item)
+                self._skills[s.id] = s
             except Exception:
-                pass
+                logger.warning("SkillStore: skipping corrupt skill entry in %s", self._path, exc_info=True)
 
     def _save(self) -> None:
-        with open(self._path, "w") as f:
-            json.dump(
-                [s.__dict__ for s in self._skills.values()],
-                f,
-                ensure_ascii=False,
-                indent=2,
-            )
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(
+            [s.__dict__ for s in self._skills.values()],
+            ensure_ascii=False,
+            indent=2,
+        )
+        fd, tmp = tempfile.mkstemp(dir=self._path.parent, suffix=".tmp")
+        try:
+            os.write(fd, payload.encode("utf-8"))
+        finally:
+            os.close(fd)
+        os.replace(tmp, self._path)
 
     def add(self, skill: Skill) -> None:
         self._skills[skill.id] = skill

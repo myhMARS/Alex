@@ -23,7 +23,7 @@ from alex.bus.events import (
     TurnStarted,
 )
 from alex.memory.base import MemoryBase
-from alex.skill.models import SkillManager
+from alex.skill import SkillService
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ class TurnOrchestrator:
         self,
         llm: BaseChatModel,
         memory: MemoryBase,
-        skill_manager: SkillManager,
+        skill_manager: SkillService,
         push_notification,
         turn_lock: asyncio.Lock,
         max_iterations: int = 5,

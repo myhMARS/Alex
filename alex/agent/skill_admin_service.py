@@ -8,13 +8,13 @@ from __future__ import annotations
 
 from langchain_core.language_models import BaseChatModel
 
-from alex.skill.models import SkillManager
+from alex.skill import SkillService
 
 
 class SkillAdminAppService:
     """Application service for skill CRUD and management."""
 
-    def __init__(self, skill_manager: SkillManager, llm: BaseChatModel) -> None:
+    def __init__(self, skill_manager: SkillService, llm: BaseChatModel) -> None:
         self._skills = skill_manager
         self._llm = llm
 

@@ -13,7 +13,7 @@ from langchain_core.language_models import BaseChatModel
 
 from alex.bus.events import SkillReflectErrorEvent, SkillReflectEvent
 from alex.memory.base import MemoryBase
-from alex.skill.models import SkillManager
+from alex.skill import SkillService
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ class FeedbackAppService:
     def __init__(
         self,
         memory: MemoryBase,
-        skill_manager: SkillManager,
+        skill_manager: SkillService,
         llm: BaseChatModel,
         push_notification: callable,
         session_id: str = "",

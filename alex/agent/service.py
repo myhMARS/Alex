@@ -29,10 +29,23 @@ from alex.config import get_llm_config
 from alex.llm.factory import LLMFactory
 from alex.memory.base import MemoryBase
 from alex.memory.buffer import BufferMemory
-from alex.skill.models import SkillManager
+from alex.skill import SkillService
+from alex.skill.repository import SkillStore
+from alex.skill.reflector import Reflector
+from alex.skill.matcher import SkillRetriever
+from alex.skill.evolution import EvolutionEngine
 from alex.tools.permissions import PermissionPolicy
 
 logger = logging.getLogger(__name__)
+
+
+def _create_default_skill_service() -> SkillService:
+    """Create a SkillService with default lazy-constructed dependencies."""
+    store = SkillStore()
+    reflector = Reflector()
+    retriever = SkillRetriever(store)
+    evolution = EvolutionEngine()
+    return SkillService(store=store, reflector=reflector, retriever=retriever, evolution=evolution)
 
 
 class Agent:
@@ -49,7 +62,7 @@ class Agent:
         tools: list[LCBaseTool] | None = None,
         callbacks: list[BaseCallbackHandler] | None = None,
         memory: MemoryBase | None = None,
-        skill_manager: SkillManager | None = None,
+        skill_manager: SkillService | None = None,
         llm: BaseChatModel | None = None,
         event_bus: AsyncEventBus | None = None,
         permissions: PermissionPolicy | None = None,
@@ -59,7 +72,7 @@ class Agent:
         self._max_iterations = max_iterations
         self._callbacks = callbacks or []
         self._memory = memory or BufferMemory()
-        self._skills = skill_manager or SkillManager()
+        self._skills = skill_manager or _create_default_skill_service()
         self._session_id: str = ""
         self._bus = event_bus
         self._turn_skill_ids: dict[str, list[str]] = {}

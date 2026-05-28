@@ -23,7 +23,7 @@ from alex.agent.prompt import PromptAssembler
 from alex.bus import AsyncEventBus
 from alex.bus.events import CronJobEvent, UserTurnRequested
 from alex.memory.base import MemoryBase
-from alex.skill.models import SkillManager
+from alex.skill import SkillService
 from alex.tools.executor import ToolExecutor
 from alex.tools.permissions import (
     PermissionPolicy,
@@ -54,7 +54,7 @@ class ChatAppService:
         self,
         llm: BaseChatModel,
         memory: MemoryBase,
-        skill_manager: SkillManager,
+        skill_manager: SkillService,
         system_prompt: str,
         max_iterations: int = 5,
         callbacks: list[BaseCallbackHandler] | None = None,

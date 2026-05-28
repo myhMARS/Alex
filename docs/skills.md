@@ -25,12 +25,11 @@ Agent 具备成长性：从历史对话中识别模式、提炼策略性技能�
 ## 架构分层
 
 ```
-SkillManager（向后兼容薄子类，懒加载默认构造）
-    └── SkillService（构造函数注入全部依赖）
-            ├── SkillStore      # JSON 文件持久化 + Jinja2 模板管理
-            ├── SkillRetriever  # 标签 + 关键词 + 置信度加权检索
-            ├── Reflector       # LLM JSON-mode 反思引擎
-            └── EvolutionEngine # 生命周期进化状态机
+SkillService（构造函数注入全部依赖）
+    ├── SkillStore      # JSON 文件持久化 + Jinja2 模板管理
+    ├── SkillRetriever  # 标签 + 关键词 + 置信度加权检索
+    ├── Reflector       # LLM JSON-mode 反思引擎
+    └── EvolutionEngine # 生命周期进化状态机
 ```
 
 ## 组件职责
@@ -38,7 +37,6 @@ SkillManager（向后兼容薄子类，懒加载默认构造）
 | 组件 | 文件 | 职责 |
 |------|------|------|
 | **SkillService** | `service.py` | 业务逻辑编排：检索、反思、合并、CRUD |
-| **SkillManager** | `models.py` | 向后兼容薄子类，构造函数可选参数 → 懒加载默认值 |
 | **Skill** | `models.py` | 纯数据类，不含业务逻辑 |
 | **SkillStore** | `repository.py` | JSON 文件持久化 + `~/.alex/skills/prompts/` 模板管理 |
 | **SkillRetriever** | `matcher.py` | 标签匹配 + 关键词 + 置信度加权，返回 top-K |
@@ -185,7 +183,7 @@ SkillService.record_usage(skill_id, success=True/False)
 ```
 alex/skill/
 ├── __init__.py
-├── models.py           # Skill 数据类 & SkillManager（向后兼容）
+├── models.py           # Skill 数据类
 ├── service.py          # SkillService — 构造函数注入全部依赖
 ├── repository.py       # SkillStore — JSON 持久化 + 模板管理
 ├── matcher.py          # SkillRetriever — 标签 + 关键词检索

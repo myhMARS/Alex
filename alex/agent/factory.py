@@ -20,11 +20,24 @@ from alex.config import get_llm_config
 from alex.llm.factory import LLMFactory
 from alex.memory.base import MemoryBase
 from alex.memory.buffer import BufferMemory
-from alex.skill.models import SkillManager
+from alex.skill import SkillService
+from alex.skill.repository import SkillStore
+from alex.skill.reflector import Reflector
+from alex.skill.matcher import SkillRetriever
+from alex.skill.evolution import EvolutionEngine
 from alex.tools.permissions import AuditLogger, PermissionPolicy
 from alex.tools.plugin_loader import PluginLoadResult, install_plugins
 
 logger = logging.getLogger(__name__)
+
+
+def _create_default_skill_service() -> SkillService:
+    """Create a SkillService with default lazy-constructed dependencies."""
+    store = SkillStore()
+    reflector = Reflector()
+    retriever = SkillRetriever(store)
+    evolution = EvolutionEngine()
+    return SkillService(store=store, reflector=reflector, retriever=retriever, evolution=evolution)
 
 
 def create_agent(
@@ -34,7 +47,7 @@ def create_agent(
     tools: list[LCBaseTool] | None = None,
     callbacks: list[BaseCallbackHandler] | None = None,
     memory: MemoryBase | None = None,
-    skill_manager: SkillManager | None = None,
+    skill_manager: SkillService | None = None,
     llm: BaseChatModel | None = None,
     event_bus: AsyncEventBus | None = None,
     llm_factory: Callable[[], BaseChatModel] | None = None,
@@ -63,7 +76,7 @@ def create_agent(
     """
     _llm = llm or (llm_factory() if llm_factory else LLMFactory.create(get_llm_config()))
     _memory = memory or BufferMemory()
-    _skills = skill_manager or SkillManager()
+    _skills = skill_manager or _create_default_skill_service()
     _system_prompt = system_prompt or "You are a helpful AI assistant."
 
     if audit_logger is None and audit_path is not False:

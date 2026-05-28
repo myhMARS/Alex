@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from alex.skill.models import SkillManager
+from alex.skill import SkillService
 
 
 class PromptAssembler:
     """Builds the augmented system prompt with matched skill instructions."""
 
-    def __init__(self, system_prompt: str, skill_manager: SkillManager) -> None:
+    def __init__(self, system_prompt: str, skill_manager: SkillService) -> None:
         self._system_prompt = system_prompt
         self._skills = skill_manager
         self._current_augmented_prompt = system_prompt
