@@ -6,57 +6,41 @@ from langchain_core.tools import StructuredTool
 from alex.tools.ports import CronScheduler
 
 
-TOOL_HINT = "Use `cron` to schedule background jobs (web_search/web_fetch/time/notify) using either interval_seconds or a crontab expression (5 fields, or 6 fields with seconds); enable subscribe=true to let the agent reply to each run result."
+TOOL_HINT = (
+    "Use `cron` to schedule a prompt-driven background task with a standard 5-field "
+    "cron expression in local time. Prefer recurring=true for periodic jobs; use "
+    "durable=true to keep the job across app restarts. The `prompt` must contain "
+    "only the actual task content, not any reminder wrapper, elapsed-time wording, "
+    "status announcement, or decorative/display text."
+)
 
 
 class CronInput(BaseModel):
-    name: str = Field(default="job", description="Job name shown in the status bar")
-    interval_seconds: int | None = Field(default=None, ge=1, description="Run every N seconds (alternative to cron)")
-    cron: str = Field(default="", description="Crontab (5 fields like '*/5 * * * *', or 6 fields with seconds like '*/10 * * * * *')")
-    repeat: int = Field(default=1, ge=0, description="How many times to run. 0 means run forever.")
-    subscribe: bool = Field(default=False, description="If true, post each run result back into the agent chat session")
-    run_now: bool = Field(default=False, description="If true, run once immediately, then continue by interval/cron")
-    action: str = Field(description="Action: web_search | web_fetch | time | notify | cancel")
-    params: dict = Field(default_factory=dict, description="Action params or cancel target: {'id': '...'}")
+    cron: str = Field(description="Standard 5-field crontab in local time, e.g. '*/5 * * * *'")
+    prompt: str = Field(description="Task prompt to execute every time the cron trigger fires. Must contain only the actual task content; do not include reminder wrappers, elapsed-time wording, status text, or decorative/display text")
+    recurring: bool = Field(default=True, description="If true, keep running on every matching schedule; if false, run once then delete")
+    durable: bool = Field(default=False, description="If true, persist this job to ~/.alex/cron so it survives restarts")
 
 
 def create_cron_tool(scheduler: CronScheduler) -> StructuredTool:
     async def _cron(
-        name: str = "job",
-        interval_seconds: int | None = None,
         cron: str = "",
-        repeat: int = 1,
-        subscribe: bool = False,
-        run_now: bool = False,
-        action: str = "",
-        params: dict | None = None,
+        prompt: str = "",
+        recurring: bool = True,
+        durable: bool = False,
     ) -> str:
-        action = (action or "").strip()
-        params = params or {}
-
-        if action == "cancel":
-            target = str(params.get("id", "")).strip()
-            if not target:
-                return "Error: cancel requires params.id"
-            ok = await scheduler.cancel_cron_job(target)
-            return "Cancelled" if ok else f"Not found: {target}"
-
         cron_str = str(cron or "").strip()
-        iv = int(interval_seconds) if interval_seconds is not None else None
-        if iv is not None and cron_str:
-            return "Error: provide either interval_seconds or cron, not both"
-        if iv is None and not cron_str:
-            return "Error: provide interval_seconds or cron"
+        prompt_text = str(prompt or "").strip()
+        if not cron_str:
+            return "Error: cron is required"
+        if not prompt_text:
+            return "Error: prompt is required"
 
         job_id = await scheduler.schedule_cron_job(
-            name=name,
             cron=cron_str,
-            interval_seconds=iv,
-            repeat=int(repeat),
-            subscribe=bool(subscribe),
-            run_now=bool(run_now),
-            action=action,
-            params=params,
+            prompt=prompt_text,
+            recurring=bool(recurring),
+            durable=bool(durable),
         )
         return f"Scheduled: {job_id}"
 
@@ -64,9 +48,11 @@ def create_cron_tool(scheduler: CronScheduler) -> StructuredTool:
         coroutine=_cron,
         name="cron",
         description=(
-            "Schedule a background recurring job. "
-            "The job runs independently and posts status updates to the agent. "
-            "Use action='cancel' with params={'id': ...} to cancel a job."
+            "Schedule a prompt-driven background cron job. "
+            "Uses a standard 5-field cron expression in local time and can be "
+            "made durable across restarts. The prompt must be the real task "
+            "content only, without reminder wrappers, elapsed-time phrasing, "
+            "status text, or decorative/display text."
         ),
         args_schema=CronInput,
     )

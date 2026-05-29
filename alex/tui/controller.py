@@ -31,6 +31,7 @@ class ChatControllerMixin:
       _notif: NotificationController
       _thinking_expanded: bool
       _skills_expanded: bool
+      _tool_output_expanded: bool
     """
 
     # ── page / overlay management ───────────────────────────────────────
@@ -69,7 +70,9 @@ class ChatControllerMixin:
         help_text = """  \U0001f4d6 Commands:
     /help             Show this help
     /skills           List all skills
-    /cron [query]     Query completed cron executions in this session
+    /cron [query]     Show current cron jobs
+    /mcp              Show MCP connection status
+    /output           Toggle full tool output
     /skills del <id>  Delete a skill by name or id prefix
     /skills dep <id>  Deprecate a skill by name or id prefix
     /merge-skills     LLM-based skill deduplication
@@ -83,7 +86,8 @@ class ChatControllerMixin:
   ⌨️  Shortcuts:
     Ctrl+G / Ctrl+B   Rate last response (Good / Bad)
     Ctrl+T            Toggle thinking blocks
-    Ctrl+K            Toggle skill blocks"""
+    Ctrl+K            Toggle skill blocks
+    Ctrl+O            Toggle full tool output"""
         self._show_page("帮助", help_text, mode="help")
 
     # ── toggles ─────────────────────────────────────────────────────────
@@ -97,6 +101,13 @@ class ChatControllerMixin:
         self._skills_expanded = not self._skills_expanded
         for bubble in self.query(AlexBubble):
             bubble.set_skills_expanded(self._skills_expanded)
+
+    def action_toggle_tool_output(self) -> None:
+        self._tool_output_expanded = not self._tool_output_expanded
+        for bubble in self.query(AlexBubble):
+            bubble.set_tool_output_expanded(self._tool_output_expanded)
+        state = "已展开完整工具输出" if self._tool_output_expanded else "已收起工具输出"
+        self._notif.show_toast(state, duration=2)
 
     # ── commands ────────────────────────────────────────────────────────
 
@@ -148,10 +159,57 @@ class ChatControllerMixin:
             self._notif.show_toast(f"未知命令: /skills {args}", duration=2)
 
     def _handle_cron_cmd(self, args: str) -> None:
-        """Show completed cron execution history for the current session."""
-        records = self._agent.list_session_cron_history(query=args, limit=50)
-        content = ChatProjector.format_cron_page(records, query=args)
-        self._show_page("Cron 历史", content, mode="cron")
+        """Show current cron jobs."""
+        jobs = self._agent.list_cron_jobs()
+        q = (args or "").strip().lower()
+        if q:
+            jobs = [
+                job for job in jobs
+                if q in str(job.get("id", "")).lower()
+                or q in str(job.get("name", "")).lower()
+                or q in str(job.get("status", "")).lower()
+                or q in str(job.get("cron", "")).lower()
+                or q in str(job.get("prompt", "")).lower()
+            ]
+        content = ChatProjector.format_cron_jobs_page(jobs[:50], query=args)
+        self._show_page("Cron 任务", content, mode="cron")
+
+    def _handle_mcp_cmd(self) -> None:
+        """Show current MCP runtime status."""
+        lines = ["  🔌 MCP 状态", ""]
+        status = str(getattr(self, "_mcp_status_message", "") or "未开始加载")
+        lines.append(f"  总览: {status}")
+
+        pool = getattr(self, "_mcp_pool", None)
+        connections = list(getattr(pool, "connections", []) or [])
+        if not connections:
+            lines.extend([
+                "",
+                "  [暂无可用 MCP 连接信息]",
+            ])
+            self._show_page("MCP 状态", "\n".join(lines), mode="mcp")
+            return
+
+        lines.append("")
+        for conn in connections:
+            cfg = conn.config
+            if conn.error == "disabled":
+                state = "DISABLED"
+            elif conn.error:
+                state = "ERROR"
+            else:
+                state = "CONNECTED"
+
+            target = cfg.command if cfg.transport == "stdio" else cfg.url
+            lines.append(
+                f"  - {cfg.name} [{cfg.transport}] {state}  tools:{len(conn.tools)}"
+            )
+            if target:
+                lines.append(f"    target: {target}")
+            if conn.error and conn.error != "disabled":
+                lines.append(f"    error: {conn.error}")
+
+        self._show_page("MCP 状态", "\n".join(lines), mode="mcp")
 
     # ── session management ──────────────────────────────────────────────
 
@@ -225,7 +283,8 @@ class ChatControllerMixin:
             for turn in self._history.turns:
                 render_turn(chat_view, turn,
                             thinking_expanded=self._thinking_expanded,
-                            skills_expanded=self._skills_expanded)
+                            skills_expanded=self._skills_expanded,
+                            tool_output_expanded=self._tool_output_expanded)
             chat_view.scroll_end()
             self._dismiss_panels()
         finally:

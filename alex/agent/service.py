@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator
+from datetime import datetime
 
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
@@ -105,7 +106,7 @@ class Agent:
         )
         self._chat.register_builtin_tools(
             load_skill_fn=self._create_load_skill_fn(),
-            cron_history_fn=self._create_cron_history_fn(),
+            cron_jobs_fn=self._create_cron_jobs_fn(),
         )
         if tools:
             self._chat.register_tools_batch(tools)
@@ -120,11 +121,58 @@ class Agent:
             return await skill_admin.load_skill(skill_name)
         return _load_skill
 
-    def _create_cron_history_fn(self):
-        format_fn = self._chat.format_cron_history
-        async def _cron_history(query: str = "", limit: int = 10) -> str:
-            return format_fn(query=query, limit=limit)
-        return _cron_history
+    def _filter_cron_jobs(self, query: str = "", limit: int = 10) -> list[dict]:
+        jobs = list(self.list_cron_jobs())
+        q = (query or "").strip().lower()
+        if q:
+            jobs = [
+                job for job in jobs
+                if q in str(job.get("id", "")).lower()
+                or q in str(job.get("name", "")).lower()
+                or q in str(job.get("status", "")).lower()
+                or q in str(job.get("cron", "")).lower()
+                or q in str(job.get("prompt", "")).lower()
+            ]
+        return jobs[: max(1, min(int(limit), 50))]
+
+    @staticmethod
+    def _fmt_ts(ts: float | None) -> str:
+        if not ts:
+            return "-"
+        return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+
+    def format_cron_jobs(self, query: str = "", limit: int = 10) -> str:
+        jobs = self._filter_cron_jobs(query=query, limit=limit)
+        if not jobs:
+            return "No cron jobs found."
+        blocks: list[str] = []
+        for job in jobs:
+            prompt = str(job.get("prompt") or "")
+            if len(prompt) > 160:
+                prompt = prompt[:160] + "..."
+            last_outcome = str(job.get("last_result") or job.get("last_error") or "")
+            if len(last_outcome) > 160:
+                last_outcome = last_outcome[:160] + "..."
+            blocks.append(
+                "\n".join([
+                    f"- [{job.get('id', '')}] {job.get('name', '')}",
+                    f"  status: {job.get('status', '')}",
+                    f"  cron: {job.get('cron', '')}",
+                    f"  recurring: {job.get('recurring', True)}",
+                    f"  durable: {job.get('durable', False)}",
+                    f"  next_run: {self._fmt_ts(job.get('next_run_at'))}",
+                    f"  last_started: {self._fmt_ts(job.get('last_started_at'))}",
+                    f"  last_finished: {self._fmt_ts(job.get('last_finished_at'))}",
+                    f"  prompt: {prompt}",
+                    f"  last_outcome: {last_outcome}",
+                ])
+            )
+        return "\n\n".join(blocks)
+
+    def _create_cron_jobs_fn(self):
+        async def _cron_jobs(query: str = "", limit: int = 10) -> str:
+            return self.format_cron_jobs(query=query, limit=limit)
+        return _cron_jobs
 
     # ── public API ───────────────────────────────────────────────────────
 
@@ -170,7 +218,10 @@ class Agent:
         return self._chat.format_cron_history(query=query, limit=limit)
 
     async def start_services(self) -> None:
-        await self._cron.start_services()
+        await self._cron.start_services(
+            runner=self.execute_cron_prompt,
+            session_id=self.session_id,
+        )
 
     def unregister_tool(self, name: str) -> None:
         self._chat.unregister_tool(name)
@@ -212,29 +263,37 @@ class Agent:
     async def execute_tool_action(self, session_id: str, action: str, params: dict) -> str:
         return await self._chat.execute_tool_action(session_id, action, params)
 
+    async def execute_cron_prompt(
+        self,
+        session_id: str,
+        job_id: str,
+        name: str,
+        prompt: str,
+        stream_id: str,
+    ) -> str:
+        return await self._chat.execute_cron_prompt(
+            session_id=session_id,
+            job_id=job_id,
+            name=name,
+            prompt=prompt,
+            stream_id=stream_id,
+        )
+
     async def schedule_cron_job(
         self,
         *,
-        name: str,
-        cron: str = "",
-        interval_seconds: int | None = None,
-        repeat: int = 1,
-        subscribe: bool = False,
-        run_now: bool = False,
-        action: str = "",
-        params: dict | None = None,
+        cron: str,
+        prompt: str,
+        recurring: bool = True,
+        durable: bool = False,
     ) -> str:
         return await self._cron.schedule(
             session_id=self.session_id,
-            name=name,
             cron=cron,
-            interval_seconds=interval_seconds,
-            repeat=repeat,
-            subscribe=subscribe,
-            run_now=run_now,
-            action=action,
-            params=params or {},
-            runner=self.execute_tool_action,
+            prompt=prompt,
+            recurring=recurring,
+            durable=durable,
+            runner=self.execute_cron_prompt,
         )
 
     def list_cron_jobs(self) -> list[dict]:

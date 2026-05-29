@@ -37,9 +37,9 @@ class LoadSkillInput(BaseModel):
     skill_name: str = Field(description="Name of the skill to load from the directory")
 
 
-class CronHistoryInput(BaseModel):
-    query: str = Field(default="", description="Optional job id, execution id, status, or partial task name")
-    limit: int = Field(default=10, ge=1, le=50, description="Maximum number of history entries to return")
+class CronJobsInput(BaseModel):
+    query: str = Field(default="", description="Optional job id, status, cron expression, or partial prompt/name")
+    limit: int = Field(default=10, ge=1, le=50, description="Maximum number of cron jobs to return")
 
 
 class ChatAppService:
@@ -123,9 +123,9 @@ class ChatAppService:
     def register_builtin_tools(
         self,
         load_skill_fn: callable,
-        cron_history_fn: callable,
+        cron_jobs_fn: callable,
     ) -> None:
-        """Register the built-in load_skill and cron_history tools."""
+        """Register the built-in load_skill and cron_jobs tools."""
         self._tool_registry.register(StructuredTool.from_function(
             coroutine=load_skill_fn,
             name="load_skill",
@@ -137,13 +137,13 @@ class ChatAppService:
             args_schema=LoadSkillInput,
         ))
         self._tool_registry.register(StructuredTool.from_function(
-            coroutine=cron_history_fn,
-            name="cron_history",
+            coroutine=cron_jobs_fn,
+            name="cron_jobs",
             description=(
-                "Query completed cron executions from the current chat session. "
-                "Returns status, start/end time, params, and result/error."
+                "List current cron jobs, including durable jobs restored from disk. "
+                "Returns job id, schedule, status, prompt, and next run time."
             ),
-            args_schema=CronHistoryInput,
+            args_schema=CronJobsInput,
         ))
 
     def unregister_tool(self, name: str) -> None:
@@ -198,6 +198,17 @@ class ChatAppService:
         except RuntimeError:
             pass
 
+    async def _ensure_session_loaded(self, session_id: str) -> None:
+        if not session_id:
+            return
+        if await self._memory.get_context(session_id=session_id):
+            return
+        from alex.store.session import load_session
+
+        saved = load_session(session_id)
+        if saved:
+            await self._memory.replace(session_id, saved)
+
     # ── tool execution (public for cron) ───────────────────────────────────
 
     async def execute_tool_action(self, session_id: str, action: str, params: dict) -> str:
@@ -214,6 +225,25 @@ class ChatAppService:
         if result.startswith("Error:"):
             raise ValueError(result)
         return result
+
+    async def execute_cron_prompt(
+        self,
+        *,
+        session_id: str,
+        job_id: str,
+        name: str,
+        prompt: str,
+        stream_id: str,
+    ) -> str:
+        await self._ensure_session_loaded(session_id)
+        return await self._cron_handler.run_prompt(
+            session_id=session_id,
+            job_id=job_id,
+            name=name,
+            prompt=prompt,
+            stream_id=stream_id,
+            graph=self._graph,
+        )
 
     # ── chat stream ───────────────────────────────────────────────────────
 
@@ -261,14 +291,16 @@ class ChatAppService:
             started_s = datetime.fromtimestamp(started_at).isoformat(sep=" ", timespec="seconds") if started_at else "-"
             finished_s = datetime.fromtimestamp(finished_at).isoformat(sep=" ", timespec="seconds") if finished_at else "-"
             result = rec.get("result") or rec.get("error") or ""
+            prompt = rec.get("prompt") or rec.get("params", {}).get("prompt", "")
             blocks.append(
                 "\n".join([
                     f"[{rec.get('execution_id', '')}] {rec.get('name', '')} ({rec.get('status', '')})",
                     f"job_id: {rec.get('job_id', '')}",
-                    f"action: {rec.get('action', '')}",
+                    f"durable: {rec.get('durable', False)}",
+                    f"recurring: {rec.get('recurring', True)}",
                     f"started_at: {started_s}",
                     f"finished_at: {finished_s}",
-                    f"params: {json.dumps(rec.get('params', {}), ensure_ascii=False)}",
+                    f"prompt: {prompt}",
                     f"result: {result}",
                 ])
             )
@@ -286,5 +318,6 @@ def _cron_record_matches(rec: dict, q: str) -> bool:
         str(rec.get("name", "")),
         str(rec.get("status", "")),
         str(rec.get("action", "")),
+        str(rec.get("prompt", "")),
     ]
     return any(q in item.lower() for item in haystacks if item)

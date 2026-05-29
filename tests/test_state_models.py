@@ -140,13 +140,10 @@ class TestCronCancel:
             id="manual-job",
             session_id="s1",
             name="test-job",
-            cron="",
-            interval_seconds=60,
-            repeat=1,
-            subscribe=False,
-            run_now=False,
-            action="notify",
-            params={"message": "hi"},
+            cron="*/5 * * * *",
+            prompt="say hi",
+            recurring=True,
+            durable=False,
         )
         svc._manager._jobs["manual-job"] = job
         assert svc._manager.get_job("manual-job") is not None

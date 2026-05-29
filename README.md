@@ -24,10 +24,10 @@ Alex is an agent that lives in your terminal — reads files, writes patches, ru
 
 - **Reaches into your project** — read files, search by content (`grep`) or name (`glob`), write atomic patches, run `bash` or `pwsh`
 - **Web-connected** — DuckDuckGo search and clean page extraction
-- **Cron scheduler** — Schedule background jobs (interval or crontab) and stream results back into chat
+- **Cron scheduler** — Schedule prompt-driven background jobs with 5-field cron and optional durable persistence; durable jobs are restored after restart, rebound to the current session, and still run only while Alex is open and idle
 - **Permission-gated** — Side-effect tools require explicit approval; you see a unified diff for every write before it lands
 - **Auditable** — Every approval / denial appended to `~/.alex/audit/permissions.jsonl`
-- **MCP-ready** — Auto-discovers Model Context Protocol servers from `~/.alex/mcp.json`
+- **MCP-ready** — Auto-discovers Model Context Protocol servers from `~/.alex/mcp.json`, including stdio and HTTP transports
 - **Plugin-friendly** — Drop a `*.py` file in `~/.alex/plugins/` to add your own tools
 - **Sees its reasoning** — DeepSeek thinking mode reveals *how* the agent reached an answer
 - **Gets better with use** — Distills reusable skills from conversations; thumbs up/down steer evolution
@@ -40,7 +40,6 @@ Alex is an agent that lives in your terminal — reads files, writes patches, ru
 - **Python 3.12+**
 - [`uv`](https://docs.astral.sh/uv/) (recommended) or `pip`
 - Optional: `rg` (ripgrep) for fast `grep`; `bash` and/or `pwsh` for shell tools; `git` for `git_inspect`
-- Optional: `mcp` Python SDK if you want to use MCP servers
 
 ### Setup
 
@@ -51,8 +50,6 @@ cd alex
 # Recommended: uv handles the venv and lockfile for you
 uv sync
 
-# Optional: install MCP client support
-uv pip install -e ".[mcp]"
 ```
 
 ### Configure
@@ -102,7 +99,7 @@ uv run python main.py
 | `/skills dep <id>` | Deprecate a skill |
 | `/merge-skills` | LLM-powered skill deduplication |
 | `/reflect` | Force a reflection cycle |
-| `/cron [query]` | Show this session's cron execution history |
+| `/cron [query]` | Show current cron jobs |
 | `/resume` | Restore a saved session |
 | `/clear` | Clear current session |
 | `/quit` | Exit |
@@ -130,7 +127,7 @@ Every decision is appended to `~/.alex/audit/permissions.jsonl`.
 | `time` | — | Current date/time, timezone-aware |
 | `web_search` | `network` | DuckDuckGo search |
 | `web_fetch` | `network` | Clean text extraction from a URL |
-| `cron` | — | Schedule background jobs (interval or crontab) |
+| `cron` | — | Schedule prompt-driven background jobs with 5-field cron; `prompt` must be only the real task content, without reminder wrappers, elapsed-time wording, or decorative text |
 | `read` | `read` | Read a text file with binary detection and size cap |
 | `write` | `write` | Atomic full-file write — diff shown before approval |
 | `edit` | `write` | Precise string replacement; requires prior `read` and detects external edits |
@@ -140,9 +137,17 @@ Every decision is appended to `~/.alex/audit/permissions.jsonl`.
 | `bash` | `shell` | Run a `bash -lc` command with hard deny list (`rm`, `dd`, `sudo`, …) |
 | `pwsh` | `shell` | Run a PowerShell command with hard deny list (`Remove-Item`, `Format-Volume`, `iex`, …) |
 | `load_skill` | — | Built-in: load full execution methodology for a skill |
-| `cron_history` | — | Built-in: query this session's cron executions |
+| `cron_jobs` | — | Built-in: query current cron jobs, including durable jobs |
 | MCP tools | `network` | Anything exposed by an MCP server in `~/.alex/mcp.json` |
 | User plugins | — | Anything dropped into `~/.alex/plugins/*.py` |
+
+### Cron Notes
+
+- `durable=false` keeps a job only for the current app lifetime
+- `durable=true` persists the job definition to `~/.alex/cron/`, restores it on restart, and rebinds it to the current session
+- Restored jobs do not run while Alex is closed; they resume only when the TUI is open and idle
+- The right-hand `后台任务` panel shows active cron jobs and refreshes the `next:` countdown every second
+- The `prompt` should describe only the task to perform, not reminder phrasing like elapsed-time/status text or UI-style wrapper text
 
 ### Cron Tool Quick Example
 
@@ -161,20 +166,38 @@ Drop a config into `~/.alex/mcp.json`:
 ```json
 {
   "mcpServers": {
-    "filesystem": {
-      "command": "uvx",
-      "args": ["mcp-server-filesystem", "/Users/me/Notes"]
+    "local-server": {
+      "command": "your-mcp-command",
+      "args": ["--your-arg", "value"]
     },
-    "github": {
-      "command": "uvx",
-      "args": ["mcp-server-github"],
-      "env": {"GITHUB_TOKEN": "ghp_xxx"}
+    "http-server": {
+      "url": "http://localhost:8000/mcp",
+      "headers": {
+        "Authorization": "Bearer token-value",
+        "X-Custom-Header": "custom-value"
+      }
+    },
+    "sse-server": {
+      "transport": "sse",
+      "url": "http://localhost:8123/sse",
+      "headers": {"Authorization": "Bearer token-value"},
+      "timeout": 15,
+      "sse_read_timeout": 60
     }
   }
 }
 ```
 
-Tools surface as `mcp__<server>__<tool>` and inherit the `network` permission. Servers connect lazily on TUI start; failures appear as toasts and don't block the rest of the agent.
+Config rules:
+
+- `command` means stdio transport
+- `url` means HTTP transport and defaults to `streamable-http`
+- `transport` currently accepts `stdio`, `streamable-http`, or `sse`
+- `headers` are forwarded to HTTP MCP servers
+- `timeout` and `sse_read_timeout` are optional HTTP transport settings
+- `disabled: true` keeps the entry in config but skips connecting
+
+Tools surface as `mcp__<server>__<tool>` and inherit the `network` permission. Servers connect on TUI start; failures appear as toasts and do not block the rest of the agent.
 
 ### User Plugins
 
@@ -286,7 +309,7 @@ alex/
 │   ├── registry.py / executor.py / ports.py
 │   ├── permissions.py          # PermissionPolicy + AuditLogger + summarisers
 │   ├── plugin_loader.py        # ~/.alex/plugins/*.py discovery
-│   ├── mcp_client.py           # MCP stdio client
+│   ├── mcp_client.py           # MCP multi-transport client
 │   ├── fs.py                   # read / write / edit + FileReadTracker
 │   ├── search.py               # grep / glob
 │   ├── shell.py                # bash / pwsh

@@ -1,50 +1,89 @@
 """MCP (Model Context Protocol) client adapter.
 
-Bridges remote MCP servers — launched as stdio subprocesses — into
-LangChain ``StructuredTool`` instances so the rest of the agent can
-treat them as ordinary tools.
+Bridges MCP servers — launched as stdio subprocesses or reached over
+HTTP transports — into LangChain ``StructuredTool`` instances so the
+rest of the agent can treat them as ordinary tools.
 
-The ``mcp`` SDK is an optional dependency.  When it is missing this
-module degrades gracefully: ``load_mcp_tools_from_config`` returns an
-empty list and ``MCPUnavailableError`` describes how to install it.
+The ``mcp`` SDK is part of Alex's main dependencies.  If it is missing
+from the active environment, ``MCPUnavailableError`` explains that the
+installation is incomplete.
 
 Configuration file (``~/.alex/mcp.json``)::
 
     {
       "mcpServers": {
-        "filesystem": {
-          "command": "uvx",
-          "args": ["mcp-server-filesystem", "/Users/me/Notes"],
+        "local-server": {
+          "command": "your-mcp-command",
+          "args": ["--your-arg", "value"],
           "env": {}
+        },
+        "http-server": {
+          "url": "http://localhost:8000/mcp",
+          "headers": {"Authorization": "Bearer token-value"},
+          "transport": "streamable-http"
         }
       }
     }
 
-Each entry spawns a long-lived subprocess; tools are listed once at
-connect time and cached for the life of the session.  Cleanup on
-shutdown is the host's responsibility (call ``MCPClientPool.aclose()``
-during agent teardown).
+Tools are listed once at connect time and cached for the life of the
+session. Cleanup on shutdown is the host's responsibility (call
+``MCPClientPool.aclose()`` during agent teardown).
 """
 
 from __future__ import annotations
 
 import json
 import logging
+from contextlib import asynccontextmanager
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
+import inspect
 from pathlib import Path
 from typing import Any
 
+import httpx
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel
 
+from alex.config import is_mcp_debug_enabled
 from alex.tools.permissions import PERMISSION_NETWORK
 
 logger = logging.getLogger(__name__)
 
 
+def _debug_enabled() -> bool:
+    return is_mcp_debug_enabled()
+
+
+def _redact_header_value(name: str, value: str) -> str:
+    lower = name.strip().lower()
+    if lower in {
+        "authorization",
+        "proxy-authorization",
+        "cookie",
+        "set-cookie",
+        "x-api-key",
+        "api-key",
+        "x-auth-token",
+    }:
+        text = str(value or "")
+        if lower == "authorization" and " " in text:
+            scheme = text.split(" ", 1)[0]
+            return f"{scheme} ***"
+        return "***"
+    return str(value)
+
+
+def _sanitize_headers(headers: Any) -> dict[str, str]:
+    try:
+        items = headers.items()
+    except Exception:
+        return {}
+    return {str(k): _redact_header_value(str(k), str(v)) for k, v in items}
+
+
 class MCPUnavailableError(RuntimeError):
-    """Raised when the optional ``mcp`` SDK is not installed."""
+    """Raised when the required ``mcp`` SDK is not installed."""
 
 
 def _import_mcp():
@@ -52,12 +91,20 @@ def _import_mcp():
         import mcp  # noqa: F401
         from mcp import ClientSession, StdioServerParameters  # type: ignore
         from mcp.client.stdio import stdio_client  # type: ignore
+        try:
+            from mcp.client.streamable_http import streamable_http_client  # type: ignore
+        except ImportError:
+            from mcp.client.streamable_http import streamablehttp_client as streamable_http_client  # type: ignore
+        try:
+            from mcp.client.sse import sse_client  # type: ignore
+        except ImportError:
+            sse_client = None
     except ImportError as e:
         raise MCPUnavailableError(
             "MCP support requires the 'mcp' package. "
-            "Install it via: pip install mcp"
+            "Current environment is missing a required dependency; run `uv sync`."
         ) from e
-    return ClientSession, StdioServerParameters, stdio_client
+    return ClientSession, StdioServerParameters, stdio_client, streamable_http_client, sse_client
 
 
 # ── config loading ────────────────────────────────────────────────────
@@ -68,10 +115,34 @@ DEFAULT_CONFIG_PATH = Path.home() / ".alex" / "mcp.json"
 @dataclass
 class MCPServerConfig:
     name: str
-    command: str
+    transport: str = "stdio"
+    command: str = ""
     args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
+    url: str = ""
+    headers: dict[str, str] = field(default_factory=dict)
+    timeout: float | None = None
+    sse_read_timeout: float | None = None
     enabled: bool = True
+
+
+def _normalize_transport(raw: Any, *, has_command: bool, has_url: bool) -> str | None:
+    value = str(raw or "").strip().lower().replace("_", "-")
+    if not value:
+        if has_url:
+            return "streamable-http"
+        if has_command:
+            return "stdio"
+        return None
+    aliases = {
+        "stdio": "stdio",
+        "http": "streamable-http",
+        "streamable-http": "streamable-http",
+        "streamablehttp": "streamable-http",
+        "sse": "sse",
+        "http-sse": "sse",
+    }
+    return aliases.get(value)
 
 
 def load_mcp_config(path: Path | None = None) -> list[MCPServerConfig]:
@@ -98,7 +169,17 @@ def load_mcp_config(path: Path | None = None) -> list[MCPServerConfig]:
         if not isinstance(payload, dict):
             continue
         command = str(payload.get("command", "")).strip()
-        if not command:
+        url = str(payload.get("url", "")).strip()
+        transport = _normalize_transport(
+            payload.get("transport"),
+            has_command=bool(command),
+            has_url=bool(url),
+        )
+        if not transport:
+            continue
+        if transport == "stdio" and not command:
+            continue
+        if transport in {"streamable-http", "sse"} and not url:
             continue
         args = payload.get("args", [])
         if not isinstance(args, list):
@@ -106,12 +187,22 @@ def load_mcp_config(path: Path | None = None) -> list[MCPServerConfig]:
         env = payload.get("env", {})
         if not isinstance(env, dict):
             env = {}
+        headers = payload.get("headers", {})
+        if not isinstance(headers, dict):
+            headers = {}
         enabled = payload.get("disabled") is not True
+        timeout = payload.get("timeout")
+        sse_read_timeout = payload.get("sse_read_timeout")
         configs.append(MCPServerConfig(
             name=name,
+            transport=transport,
             command=command,
             args=[str(a) for a in args],
             env={str(k): str(v) for k, v in env.items()},
+            url=url,
+            headers={str(k): str(v) for k, v in headers.items()},
+            timeout=float(timeout) if isinstance(timeout, (int, float)) else None,
+            sse_read_timeout=float(sse_read_timeout) if isinstance(sse_read_timeout, (int, float)) else None,
             enabled=enabled,
         ))
     return configs
@@ -239,10 +330,10 @@ class MCPConnection:
 
 
 class MCPClientPool:
-    """Manages stdio MCP sessions and exposes them as LangChain tools.
+    """Manages MCP sessions across multiple transports.
 
     The pool keeps an ``AsyncExitStack`` so all subprocesses and
-    ``ClientSession`` async-context-managers are torn down together
+    transport / ``ClientSession`` async-context-managers are torn down together
     when ``aclose()`` is called.
     """
 
@@ -255,37 +346,196 @@ class MCPClientPool:
     def connections(self) -> list[MCPConnection]:
         return list(self._connections)
 
+    @staticmethod
+    def _build_tools(*, config: MCPServerConfig, listed: Any, invoke) -> list[StructuredTool]:
+        tools: list[StructuredTool] = []
+        for spec in getattr(listed, "tools", []) or []:
+            tool = _build_mcp_tool(
+                server_name=config.name,
+                tool_name=spec.name,
+                description=getattr(spec, "description", "") or "",
+                schema=getattr(spec, "inputSchema", None),
+                invoke=invoke,
+            )
+            tools.append(tool)
+        return tools
+
+    @staticmethod
+    @asynccontextmanager
+    async def _httpx_client_factory(
+        cfg: MCPServerConfig,
+        *,
+        headers: dict[str, Any] | None = None,
+        auth: Any = None,
+        timeout: Any = None,
+        **_: Any,
+    ):
+        merged_headers = {str(k): str(v) for k, v in (headers or {}).items()}
+        merged_headers.update(cfg.headers)
+        effective_timeout = timeout
+        if effective_timeout is None and cfg.timeout is not None:
+            if cfg.sse_read_timeout is not None:
+                effective_timeout = httpx.Timeout(cfg.timeout, read=cfg.sse_read_timeout)
+            else:
+                effective_timeout = cfg.timeout
+        event_hooks = None
+        if _debug_enabled():
+            async def _log_request(request: httpx.Request) -> None:
+                logger.warning(
+                    "MCP HTTP request server=%s transport=%s method=%s url=%s headers=%s",
+                    cfg.name,
+                    cfg.transport,
+                    request.method,
+                    request.url,
+                    _sanitize_headers(request.headers),
+                )
+
+            async def _log_response(response: httpx.Response) -> None:
+                req = response.request
+                logger.warning(
+                    "MCP HTTP response server=%s transport=%s status=%s method=%s url=%s",
+                    cfg.name,
+                    cfg.transport,
+                    response.status_code,
+                    getattr(req, "method", "?"),
+                    getattr(req, "url", "?"),
+                )
+
+            event_hooks = {
+                "request": [_log_request],
+                "response": [_log_response],
+            }
+        async with httpx.AsyncClient(
+            headers=merged_headers or None,
+            auth=auth,
+            timeout=effective_timeout,
+            event_hooks=event_hooks,
+        ) as client:
+            yield client
+
+    async def _connect_stdio(self, cfg: MCPServerConfig, sdk: tuple) -> list[StructuredTool]:
+        ClientSession, StdioServerParameters, stdio_client, _, _ = sdk
+        params = StdioServerParameters(
+            command=cfg.command,
+            args=cfg.args,
+            env=cfg.env or None,
+        )
+        read, write = await self._stack.enter_async_context(stdio_client(params))
+        session = await self._stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
+        listed = await session.list_tools()
+        return self._build_tools(config=cfg, listed=listed, invoke=session.call_tool)
+
+    async def _build_http_transport_kwargs(self, cfg: MCPServerConfig, sig: inspect.Signature) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {}
+        transport_mode = "sdk-default"
+        if "http_client" in sig.parameters:
+            transport_mode = "http_client"
+            kwargs["http_client"] = await self._stack.enter_async_context(
+                self._httpx_client_factory(cfg)
+            )
+        elif "httpx_client" in sig.parameters:
+            transport_mode = "httpx_client"
+            kwargs["httpx_client"] = await self._stack.enter_async_context(
+                self._httpx_client_factory(cfg)
+            )
+        elif "httpx_client_factory" in sig.parameters:
+            transport_mode = "httpx_client_factory"
+            kwargs["httpx_client_factory"] = lambda **kw: self._httpx_client_factory(cfg, **kw)
+        elif "headers" in sig.parameters and cfg.headers:
+            transport_mode = "headers"
+            kwargs["headers"] = cfg.headers
+        if "timeout" in sig.parameters and cfg.timeout is not None:
+            kwargs["timeout"] = cfg.timeout
+        if "sse_read_timeout" in sig.parameters and cfg.sse_read_timeout is not None:
+            kwargs["sse_read_timeout"] = cfg.sse_read_timeout
+        if _debug_enabled():
+            logger.warning(
+                "MCP HTTP transport setup server=%s transport=%s mode=%s url=%s headers=%s timeout=%s sse_read_timeout=%s",
+                cfg.name,
+                cfg.transport,
+                transport_mode,
+                cfg.url,
+                _sanitize_headers(cfg.headers),
+                cfg.timeout,
+                cfg.sse_read_timeout,
+            )
+        return kwargs
+
+    async def _connect_streamable_http(self, cfg: MCPServerConfig, sdk: tuple) -> list[StructuredTool]:
+        ClientSession, _, _, streamable_http_client, _ = sdk
+        if streamable_http_client is None:
+            raise MCPUnavailableError("Installed MCP SDK does not provide streamable-http client support")
+        sig = inspect.signature(streamable_http_client)
+        kwargs = await self._build_http_transport_kwargs(cfg, sig)
+        streams = await self._stack.enter_async_context(streamable_http_client(cfg.url, **kwargs))
+        read, write = streams[0], streams[1]
+        get_session_id = streams[2] if len(streams) > 2 and callable(streams[2]) else None
+        session = await self._stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
+        if _debug_enabled():
+            logger.warning(
+                "MCP streamable-http initialized server=%s session_id=%s",
+                cfg.name,
+                get_session_id() if get_session_id else None,
+            )
+        listed = await session.list_tools()
+        if _debug_enabled():
+            logger.warning(
+                "MCP streamable-http listed tools server=%s session_id=%s tool_count=%s",
+                cfg.name,
+                get_session_id() if get_session_id else None,
+                len(getattr(listed, "tools", []) or []),
+            )
+
+        async def _invoke_tool(name: str, arguments: dict[str, Any]) -> Any:
+            if _debug_enabled():
+                logger.warning(
+                    "MCP streamable-http call server=%s tool=%s session_id=%s",
+                    cfg.name,
+                    name,
+                    get_session_id() if get_session_id else None,
+                )
+            return await session.call_tool(name, arguments)
+
+        return self._build_tools(config=cfg, listed=listed, invoke=_invoke_tool)
+
+    async def _connect_sse(self, cfg: MCPServerConfig, sdk: tuple) -> list[StructuredTool]:
+        ClientSession, _, _, _, sse_client = sdk
+        if sse_client is None:
+            raise MCPUnavailableError("Installed MCP SDK does not provide SSE client support")
+        sig = inspect.signature(sse_client)
+        kwargs = await self._build_http_transport_kwargs(cfg, sig)
+        streams = await self._stack.enter_async_context(sse_client(cfg.url, **kwargs))
+        read, write = streams[0], streams[1]
+        session = await self._stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
+        listed = await session.list_tools()
+        return self._build_tools(config=cfg, listed=listed, invoke=session.call_tool)
+
+    async def _connect_single(self, cfg: MCPServerConfig, sdk: tuple) -> list[StructuredTool]:
+        if cfg.transport == "stdio":
+            return await self._connect_stdio(cfg, sdk)
+        if cfg.transport == "streamable-http":
+            return await self._connect_streamable_http(cfg, sdk)
+        if cfg.transport == "sse":
+            return await self._connect_sse(cfg, sdk)
+        raise ValueError(f"unsupported MCP transport: {cfg.transport}")
+
     async def connect_all(self, configs: list[MCPServerConfig]) -> list[MCPConnection]:
-        ClientSession, StdioServerParameters, stdio_client = _import_mcp()
+        sdk: tuple | None = None
 
         for cfg in configs:
             if not cfg.enabled:
                 self._connections.append(MCPConnection(config=cfg, error="disabled"))
                 continue
+            if sdk is None:
+                sdk = _import_mcp()
             connection = MCPConnection(config=cfg)
             try:
-                params = StdioServerParameters(
-                    command=cfg.command,
-                    args=cfg.args,
-                    env=cfg.env or None,
-                )
-                read, write = await self._stack.enter_async_context(stdio_client(params))
-                session = await self._stack.enter_async_context(ClientSession(read, write))
-                await session.initialize()
-                listed = await session.list_tools()
-                tools = []
-                for spec in getattr(listed, "tools", []) or []:
-                    tool = _build_mcp_tool(
-                        server_name=cfg.name,
-                        tool_name=spec.name,
-                        description=getattr(spec, "description", "") or "",
-                        schema=getattr(spec, "inputSchema", None),
-                        invoke=session.call_tool,
-                    )
-                    tools.append(tool)
-                connection.tools = tools
+                connection.tools = await self._connect_single(cfg, sdk)
             except Exception as e:
-                logger.warning("MCP server '%s' failed to connect: %s", cfg.name, e)
+                logger.warning("MCP server '%s' (%s) failed to connect: %s", cfg.name, cfg.transport, e)
                 connection.error = f"{type(e).__name__}: {e}"
             self._connections.append(connection)
         return self._connections

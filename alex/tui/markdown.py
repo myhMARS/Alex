@@ -21,18 +21,15 @@ string and Textual displays it verbatim.
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from rich.markdown import Markdown
 
-
-_FALSY = {"0", "false", "no", "off", ""}
+from alex.config import is_tui_markdown_enabled_by_default
 
 
 def _initial_state() -> bool:
-    raw = os.environ.get("ALEX_TUI_MARKDOWN", "1").strip().lower()
-    return raw not in _FALSY
+    return is_tui_markdown_enabled_by_default()
 
 
 _markdown_enabled: bool = _initial_state()

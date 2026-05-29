@@ -18,16 +18,12 @@ dependencies = [
     { name = "langchain-core" },
     { name = "langchain-deepseek" },
     { name = "langchain-openai" },
+    { name = "mcp" },
     { name = "prompt-toolkit" },
     { name = "python-dotenv" },
     { name = "rich" },
     { name = "textual" },
     { name = "tzdata" },
-]
-
-[package.optional-dependencies]
-mcp = [
-    { name = "mcp" },
 ]
 
 [package.dev-dependencies]
@@ -50,14 +46,13 @@ requires-dist = [
     { name = "langchain-core", specifier = ">=0.3.0" },
     { name = "langchain-deepseek", specifier = ">=1.0.1" },
     { name = "langchain-openai", specifier = ">=0.2.0" },
-    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0.0" },
+    { name = "mcp", specifier = ">=1.0.0" },
     { name = "prompt-toolkit", specifier = ">=3.0.52" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "rich", specifier = ">=13.7.0" },
     { name = "textual", specifier = ">=8.2.6" },
     { name = "tzdata", specifier = ">=2025.1" },
 ]
-provides-extras = ["mcp"]
 
 [package.metadata.requires-dev]
 dev = [

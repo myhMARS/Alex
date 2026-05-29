@@ -9,6 +9,7 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.timer import Timer
 from textual.widgets import Header, Input, Static
 
 from alex.agent.ports import AgentFacade
@@ -188,11 +189,27 @@ class AlexApp(ChatControllerMixin, App):
         margin: 0;
         height: auto;
     }
+    ToolBubble > #tool-output-summary {
+        color: $success;
+        padding: 0;
+        margin: 0;
+        height: auto;
+    }
+    ToolBubble > #tool-output-full {
+        color: $success;
+        padding: 0;
+        margin: 0;
+        height: auto;
+    }
+    ToolBubble > .hidden {
+        display: none;
+    }
     """
 
     BINDINGS = [
         Binding("ctrl+t", "toggle_thinking", "Thinking", show=False, priority=True),
         Binding("ctrl+k", "toggle_skills", "Skills", show=False, priority=True),
+        Binding("ctrl+o", "toggle_tool_output", "Tool Output", show=False, priority=True),
         Binding("ctrl+g", "rate_good", "Good", show=False, priority=True),
         Binding("ctrl+b", "rate_bad", "Bad", show=False, priority=True),
         Binding("ctrl+c", "quit", "Quit", show=False),
@@ -205,12 +222,15 @@ class AlexApp(ChatControllerMixin, App):
         self._history = ChatHistory()
         self._thinking_expanded = False
         self._skills_expanded = False
+        self._tool_output_expanded = False
 
         # Phase 3: view state, projector, notifications replace scattered attrs
         self._view_state = SessionViewState()
         self._notif = NotificationController(self, self._view_state)
         self._projector = ChatProjector(self)
         self._mcp_pool: MCPClientPool | None = None
+        self._mcp_status_message: str = "未开始加载"
+        self._status_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -234,7 +254,11 @@ class AlexApp(ChatControllerMixin, App):
             pass
         self._agent.set_session_context(self._history.session_id, self._history.cron_history)
         self._install_permission_hook()
+        self._status_timer = self.set_interval(1.0, self._refresh_status_bar_tick)
         self._start_services_with_bus()
+
+    def _refresh_status_bar_tick(self) -> None:
+        self._projector.refresh_status_bar()
 
     def _install_permission_hook(self) -> None:
         """Inject the TUI confirm prompt into the agent's permission policy.
@@ -277,25 +301,38 @@ class AlexApp(ChatControllerMixin, App):
             await self._agent.start_services()
         except Exception:
             pass
+        self._projector.refresh_status_bar()
 
         await self._connect_mcp()
+        self._projector.refresh_status_bar()
 
     async def _connect_mcp(self) -> None:
         """Load and register MCP tools from ``~/.alex/mcp.json``.
 
-        Failures are surfaced as toasts so a missing optional dependency
+        Failures are surfaced as toasts so a missing required dependency
         or a misconfigured server doesn't block startup.
         """
+        self._mcp_status_message = "加载中"
         try:
             pool, tools = await load_mcp_tools_from_config()
         except MCPUnavailableError as e:
+            self._mcp_status_message = f"不可用：{e}"
             self._notif.show_toast(f"MCP 不可用：{e}", duration=4)
             return
         except Exception as e:
+            self._mcp_status_message = f"加载失败：{type(e).__name__}: {e}"
             self._notif.show_toast(f"MCP 加载失败：{type(e).__name__}: {e}", duration=4)
             return
 
         self._mcp_pool = pool
+        connections = pool.connections
+        connected = sum(1 for conn in connections if not conn.error)
+        if not connections:
+            self._mcp_status_message = "未发现 MCP server 配置"
+        else:
+            self._mcp_status_message = (
+                f"已处理 {len(connections)} 个 server，连接成功 {connected} 个，注册 {len(tools)} 个工具"
+            )
         if not tools:
             return
         for tool in tools:
@@ -395,8 +432,16 @@ class AlexApp(ChatControllerMixin, App):
             self._show_help()
             return
 
+        if cmd == "/output":
+            self.action_toggle_tool_output()
+            return
+
         if cmd == "/cron" or cmd.startswith("/cron "):
             self._handle_cron_cmd(user_input[5:].strip() if len(user_input) > 5 else "")
+            return
+
+        if cmd == "/mcp":
+            self._handle_mcp_cmd()
             return
 
         if cmd == "/skills" or cmd.startswith("/skills "):
@@ -426,7 +471,7 @@ class AlexApp(ChatControllerMixin, App):
         vs = self._view_state
 
         # Create and mount the bubble immediately for streaming
-        bubble = AlexBubble()
+        bubble = AlexBubble(tool_output_expanded=self._tool_output_expanded)
         chat_view.mount(bubble)
         chat_view.scroll_end()
 

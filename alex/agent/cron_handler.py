@@ -9,7 +9,7 @@ import uuid
 
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 from alex.bus.events import (
     CronJobEvent,
@@ -244,6 +244,167 @@ class CronTurnHandler:
                         session_id=sid, turn_id=cron_turn_id,
                         source="cron", error=str(e),
                     ))
+        finally:
+            self._active_streams.discard(stream_id)
+
+    async def run_prompt(
+        self,
+        *,
+        session_id: str,
+        job_id: str,
+        name: str,
+        prompt: str,
+        stream_id: str,
+        graph,
+    ) -> str:
+        if stream_id in self._active_streams:
+            return ""
+        self._active_streams.add(stream_id)
+
+        try:
+            async with self._turn_lock:
+                cron_turn_id = uuid.uuid4().hex[:12]
+                sid = session_id or self._session_id
+                tool_args = {
+                    "job_id": job_id,
+                    "name": name,
+                    "prompt": prompt,
+                }
+                self._push_notification(TurnStarted(
+                    session_id=sid, turn_id=cron_turn_id, source="cron", kind="cron",
+                ))
+                self._push_notification(ToolStarted(
+                    session_id=sid, turn_id=cron_turn_id,
+                    tool_id=stream_id, tool_name="cron", tool_input=tool_args,
+                    is_cron=True, stream_id=stream_id,
+                ))
+                self._push_notification(ToolFinished(
+                    session_id=sid, turn_id=cron_turn_id,
+                    tool_id=stream_id, output=prompt,
+                    is_cron=True, stream_id=stream_id,
+                ))
+
+                prev_msgs = await self._memory.get_context(session_id=sid)
+                self._ensure_reasoning_roundtrip(prev_msgs)
+                messages = [*prev_msgs, HumanMessage(content=prompt)]
+
+                collected_content = ""
+                collected_thinking = ""
+                last_flush = time.monotonic()
+                token_buf = ""
+                thinking_buf = ""
+                intermediate_msgs: list[BaseMessage] = []
+                _final_ai_msg: AIMessage | None = None
+
+                try:
+                    async for event in graph.astream_events(
+                        {"messages": messages},
+                        config={"callbacks": self._callbacks, "recursion_limit": self._max_iterations * 6 + 10},
+                        version="v2",
+                    ):
+                        kind = event.get("event", "")
+                        if kind == "on_chat_model_stream":
+                            chunk = event.get("data", {}).get("chunk")
+                            if chunk:
+                                reasoning = None
+                                if hasattr(chunk, "additional_kwargs"):
+                                    reasoning = chunk.additional_kwargs.get("reasoning_content")
+                                if reasoning:
+                                    collected_thinking += reasoning
+                                    thinking_buf += reasoning
+                                if chunk.content:
+                                    collected_content += chunk.content
+                                    token_buf += chunk.content
+
+                            now = time.monotonic()
+                            if now - last_flush > 0.05:
+                                if thinking_buf:
+                                    self._push_notification(ThinkingUpdated(
+                                        session_id=sid, delta=thinking_buf, stream_id=stream_id,
+                                    ))
+                                    thinking_buf = ""
+                                if token_buf:
+                                    self._push_notification(TokenEmitted(
+                                        session_id=sid, delta=token_buf, stream_id=stream_id,
+                                    ))
+                                    token_buf = ""
+                                last_flush = now
+
+                        elif kind == "on_chat_model_end":
+                            msg = (event.get("data") or {}).get("output")
+                            if isinstance(msg, AIMessage):
+                                if msg.tool_calls:
+                                    intermediate_msgs.append(msg)
+                                else:
+                                    _final_ai_msg = msg
+
+                        elif kind == "on_tool_start":
+                            rid = str(event.get("run_id") or "")
+                            tname = event.get("name", "")
+                            input_data = event.get("data", {}).get("input")
+                            self._push_notification(ToolStarted(
+                                session_id=sid, turn_id=cron_turn_id,
+                                tool_id=rid, tool_name=tname, tool_input=input_data,
+                                is_cron=True, stream_id=stream_id,
+                            ))
+
+                        elif kind == "on_tool_end":
+                            rid = str(event.get("run_id") or "")
+                            out = event.get("data", {}).get("output")
+                            if isinstance(out, ToolMessage):
+                                intermediate_msgs.append(out)
+                            self._push_notification(ToolFinished(
+                                session_id=sid, turn_id=cron_turn_id,
+                                tool_id=rid,
+                                output=out.content if isinstance(out, ToolMessage) else out,
+                                is_cron=True, stream_id=stream_id,
+                            ))
+
+                    if thinking_buf:
+                        self._push_notification(ThinkingUpdated(
+                            session_id=sid, delta=thinking_buf, stream_id=stream_id,
+                        ))
+                    if token_buf:
+                        self._push_notification(TokenEmitted(
+                            session_id=sid, delta=token_buf, stream_id=stream_id,
+                        ))
+
+                    cron_batch: list[BaseMessage] = [HumanMessage(content=prompt), *intermediate_msgs]
+                    if _final_ai_msg is not None:
+                        cron_batch.append(_final_ai_msg)
+                    else:
+                        cron_batch.append(AIMessage(
+                            content=collected_content,
+                            additional_kwargs={"reasoning_content": collected_thinking or ""},
+                        ))
+
+                    await self._memory.add_messages(cron_batch, session_id=sid)
+                    full_history = await self._memory.get_context(session_id=sid)
+
+                    self._push_notification(CronBatch(
+                        session_id=sid, stream_id=stream_id, messages=cron_batch,
+                    ))
+                    self._push_notification(CronDone(
+                        session_id=sid, stream_id=stream_id,
+                        content=collected_content, thinking=collected_thinking,
+                    ))
+                    self._push_notification(TurnCompleted(
+                        session_id=sid, turn_id=cron_turn_id,
+                        source="cron", kind="cron", messages=full_history,
+                        content=collected_content, thinking=collected_thinking,
+                    ))
+                    return collected_content
+                except Exception as e:
+                    logger.warning("Cron prompt execution failed", exc_info=True)
+                    self._push_notification(CronError(
+                        session_id=sid, stream_id=stream_id,
+                        error=f"{type(e).__name__}: {e}",
+                    ))
+                    self._push_notification(TurnFailed(
+                        session_id=sid, turn_id=cron_turn_id,
+                        source="cron", error=str(e),
+                    ))
+                    raise
         finally:
             self._active_streams.discard(stream_id)
 

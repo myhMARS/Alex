@@ -304,6 +304,24 @@ def _format_no_matches(opts: _GrepOptions) -> str:
     return f"No matches for /{opts.pattern}/ in {opts.path}"
 
 
+def _render_grep_result(
+    *,
+    opts: _GrepOptions,
+    body_lines: list[str],
+    matched_files: list[str],
+    body_suffix: str = "",
+) -> str:
+    header = f"Pattern: /{opts.pattern}/  mode: {opts.output_mode}  scope: {opts.path}\n"
+    file_lines = matched_files[: opts.head_limit]
+    files_suffix = (
+        f"\n... ({len(matched_files) - opts.head_limit} more files truncated, raise head_limit to see them)"
+        if len(matched_files) > opts.head_limit else ""
+    )
+    files_block = "Files:\n" + "\n".join(file_lines) + files_suffix
+    body = "\n".join(body_lines)
+    return header + files_block + "\n\n" + body + body_suffix
+
+
 def _truncate_grep_output(text: str, opts: _GrepOptions) -> str:
     lines = text.splitlines()
     if not lines:
@@ -315,6 +333,56 @@ def _truncate_grep_output(text: str, opts: _GrepOptions) -> str:
     )
     header = f"Pattern: /{opts.pattern}/  mode: {opts.output_mode}  scope: {opts.path}\n"
     return header + "\n".join(truncated) + suffix
+
+
+async def _run_rg_files_with_matches(opts: _GrepOptions) -> list[str] | None:
+    file_opts = _GrepOptions(
+        pattern=opts.pattern,
+        path=opts.path,
+        glob=opts.glob,
+        output_mode="files_with_matches",
+        ignore_case=opts.ignore_case,
+        show_line_numbers=False,
+        after_context=0,
+        before_context=0,
+        head_limit=opts.head_limit,
+        multiline=opts.multiline,
+        type=opts.type,
+    )
+    argv = _build_rg_argv(file_opts)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except OSError:
+        return None
+
+    try:
+        stdout, _stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=DEFAULT_GREP_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        await proc.wait()
+        return None
+
+    if proc.returncode == 1 and not stdout:
+        return []
+    if proc.returncode not in (0, 1):
+        return None
+    return [line for line in stdout.decode("utf-8", errors="replace").splitlines() if line.strip()]
+
+
+async def _run_grep_with_matches(opts: _GrepOptions) -> tuple[str, list[str] | None]:
+    result = await _run_rg(opts)
+    if result.startswith("Error:") or result.startswith("Error spawning") or result.startswith("No matches for "):
+        return result, []
+    return result, await _run_rg_files_with_matches(opts)
 
 
 # Pure-Python fallback ─────────────────────────────────────────────────
@@ -381,6 +449,7 @@ def _python_grep(opts: _GrepOptions) -> str:
 
     candidates = _iter_candidate_files(opts)
     output_lines: list[str] = []
+    matched_files: list[str] = []
     truncated_overflow = False  # True when we stopped collecting because of head_limit
 
     if opts.output_mode == "files_with_matches":
@@ -392,7 +461,9 @@ def _python_grep(opts: _GrepOptions) -> str:
                 if len(output_lines) >= opts.head_limit:
                     truncated_overflow = True
                     break
-                output_lines.append(str(path))
+                path_str = str(path)
+                matched_files.append(path_str)
+                output_lines.append(path_str)
     elif opts.output_mode == "count":
         for path in candidates:
             text = _read_text_safely(path)
@@ -403,6 +474,7 @@ def _python_grep(opts: _GrepOptions) -> str:
                 if len(output_lines) >= opts.head_limit:
                     truncated_overflow = True
                     break
+                matched_files.append(str(path))
                 output_lines.append(f"{path}:{count}")
     else:  # content
         for path in candidates:
@@ -419,11 +491,15 @@ def _python_grep(opts: _GrepOptions) -> str:
                     if len(output_lines) >= opts.head_limit:
                         truncated_overflow = True
                         break
+                    if str(path) not in matched_files:
+                        matched_files.append(str(path))
                     start_line = text.count("\n", 0, m.start()) + 1
                     snippet = file_lines[start_line - 1] if start_line - 1 < len(file_lines) else ""
                     output_lines.append(_format_content_line(path, start_line, snippet, opts))
             else:
                 produced = _python_content_match(path, file_lines, compiled, opts)
+                if produced:
+                    matched_files.append(str(path))
                 room = opts.head_limit - len(output_lines)
                 if len(produced) > room:
                     output_lines.extend(produced[:room])
@@ -434,8 +510,12 @@ def _python_grep(opts: _GrepOptions) -> str:
     if not output_lines:
         return _format_no_matches(opts)
     suffix = "\n... (results truncated; raise head_limit to see more)" if truncated_overflow else ""
-    header = f"Pattern: /{opts.pattern}/  mode: {opts.output_mode}  scope: {opts.path}\n"
-    return header + "\n".join(output_lines) + suffix
+    return _render_grep_result(
+        opts=opts,
+        body_lines=output_lines,
+        matched_files=matched_files,
+        body_suffix=suffix,
+    )
 
 
 def _python_content_match(
@@ -522,7 +602,19 @@ def _make_grep(allowed_roots: list[Path]):
             return f"Error: {e}"
 
         if _ripgrep_available():
-            return await _run_rg(opts)
+            result, matched_files = await _run_grep_with_matches(opts)
+            if matched_files is None or result.startswith("Error:") or result.startswith("Error spawning") or result.startswith("No matches for "):
+                return result
+            body_lines = result.splitlines()
+            if not body_lines:
+                return result
+            if body_lines[0].startswith("Pattern: /"):
+                body_lines = body_lines[1:]
+            return _render_grep_result(
+                opts=opts,
+                body_lines=body_lines,
+                matched_files=matched_files,
+            )
         return await asyncio.to_thread(_python_grep, opts)
 
     return _grep

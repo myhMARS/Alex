@@ -87,17 +87,48 @@ class ChatProjector:
             result = str(rec.get("result") or rec.get("error") or "")
             if len(result) > 120:
                 result = result[:120] + "..."
-            params = str(rec.get("params", {}))
-            if len(params) > 120:
-                params = params[:120] + "..."
+            prompt = str(rec.get("prompt") or rec.get("params", {}).get("prompt", ""))
+            if len(prompt) > 120:
+                prompt = prompt[:120] + "..."
             lines.extend([
                 f"- [{rec.get('execution_id', '')}] {rec.get('name', '')} ({rec.get('status', '')})",
                 f"  job_id: {rec.get('job_id', '')}",
-                f"  action: {rec.get('action', '')}",
+                f"  recurring: {rec.get('recurring', True)}",
+                f"  durable: {rec.get('durable', False)}",
                 f"  started: {cls.fmt_ts(rec.get('started_at'))}",
                 f"  finished: {cls.fmt_ts(rec.get('finished_at'))}",
-                f"  params: {params}",
+                f"  prompt: {prompt}",
                 f"  result: {result}",
+                "",
+            ])
+        return "\n".join(lines).rstrip()
+
+    @classmethod
+    def format_cron_jobs_page(cls, jobs: list[dict], query: str = "") -> str:
+        header = f"当前 cron 任务 ({len(jobs)})"
+        if query:
+            header += f"\n筛选: {query}"
+        header += "\n"
+        if not jobs:
+            return header + "\n  [无任务]\n"
+        lines = [header]
+        for job in jobs:
+            prompt = str(job.get("prompt") or "")
+            if len(prompt) > 120:
+                prompt = prompt[:120] + "..."
+            last_outcome = str(job.get("last_result") or job.get("last_error") or "")
+            if len(last_outcome) > 120:
+                last_outcome = last_outcome[:120] + "..."
+            lines.extend([
+                f"- [{job.get('id', '')}] {job.get('name', '')} ({job.get('status', '')})",
+                f"  cron: {job.get('cron', '')}",
+                f"  recurring: {job.get('recurring', True)}",
+                f"  durable: {job.get('durable', False)}",
+                f"  next_run: {cls.fmt_ts(job.get('next_run_at'))}",
+                f"  last_started: {cls.fmt_ts(job.get('last_started_at'))}",
+                f"  last_finished: {cls.fmt_ts(job.get('last_finished_at'))}",
+                f"  prompt: {prompt}",
+                f"  last_outcome: {last_outcome}",
                 "",
             ])
         return "\n".join(lines).rstrip()
@@ -136,7 +167,7 @@ class ChatProjector:
         if sid in self._cron_renderers:
             return
         chat_view = self._app.query_one("#chat-view", VerticalScroll)
-        bubble = AlexBubble()
+        bubble = AlexBubble(tool_output_expanded=self._app._tool_output_expanded)
         chat_view.mount(bubble)
         chat_view.scroll_end()
         renderer = StreamRenderer(bubble)
@@ -235,6 +266,9 @@ class ChatProjector:
             "job_id": event.job_id,
             "name": event.name,
             "status": event.status,
+            "prompt": event.prompt,
+            "durable": event.durable,
+            "recurring": event.recurring,
             "action": event.action,
             "params": dict(event.params or {}),
             "runs_done": event.runs_done,

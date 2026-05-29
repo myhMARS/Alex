@@ -182,10 +182,10 @@ class TurnOrchestrator:
                 kind="user", messages=full_history, content=collected_content,
                 thinking=collected_thinking,
             ))
-        except Exception:
+        except Exception as e:
             logger.warning("User turn failed", exc_info=True)
             self._push_notification(TurnFailed(
-                session_id=sid, turn_id=turn_id, source="agent", kind="user",
+                session_id=sid, turn_id=turn_id, source="agent", error=str(e),
             ))
             raise
 

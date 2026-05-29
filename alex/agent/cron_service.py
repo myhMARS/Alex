@@ -23,7 +23,8 @@ class CronService:
     def bind_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._manager.bind_event_loop(loop)
 
-    async def start_services(self) -> None:
+    async def start_services(self, *, runner: callable, session_id: str = "") -> None:
+        await self._manager.restore_durable_jobs(runner=runner, session_id=session_id)
         await self._manager._ensure_scheduler()
 
     async def shutdown(self) -> None:
@@ -33,26 +34,18 @@ class CronService:
         self,
         *,
         session_id: str,
-        name: str,
-        cron: str = "",
-        interval_seconds: int | None = None,
-        repeat: int = 1,
-        subscribe: bool = False,
-        run_now: bool = False,
-        action: str = "",
-        params: dict | None = None,
+        cron: str,
+        prompt: str,
+        recurring: bool = True,
+        durable: bool = False,
         runner: callable,
     ) -> str:
         return await self._manager.schedule(
             session_id=session_id,
-            name=name,
             cron=cron,
-            interval_seconds=interval_seconds,
-            repeat=repeat,
-            subscribe=subscribe,
-            run_now=run_now,
-            action=action,
-            params=params or {},
+            prompt=prompt,
+            recurring=recurring,
+            durable=durable,
             runner=runner,
         )
 

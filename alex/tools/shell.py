@@ -111,6 +111,21 @@ def _truncate(data: bytes) -> str:
     return head.decode("utf-8", errors="replace") + "\n\n[Output truncated...]"
 
 
+def _format_shell_result(*, stdout: bytes, stderr: bytes, exit_code: int) -> str:
+    out = _truncate(stdout).strip()
+    err = _truncate(stderr).strip()
+    if exit_code == 0:
+        if out and err:
+            return f"{out}\n{err}"
+        if out:
+            return out
+        if err:
+            return err
+        return ""
+    detail = err or out or "(no output)"
+    return f"Error: command exited with code {exit_code}\n{detail}"
+
+
 # ── bash ──────────────────────────────────────────────────────────────
 
 
@@ -201,13 +216,10 @@ def _make_bash(allowed_roots: list[Path]):
             await proc.wait()
             return f"Error: bash command timed out after {timeout_seconds}s"
 
-        return (
-            f"shell: bash\n"
-            f"command: {command}\n"
-            f"cwd: {workdir}\n"
-            f"exit_code: {proc.returncode}\n"
-            f"--- stdout ---\n{_truncate(stdout)}\n"
-            f"--- stderr ---\n{_truncate(stderr)}"
+        return _format_shell_result(
+            stdout=stdout,
+            stderr=stderr,
+            exit_code=int(proc.returncode or 0),
         )
 
     return _bash
@@ -347,14 +359,10 @@ def _make_pwsh(allowed_roots: list[Path]):
             await proc.wait()
             return f"Error: pwsh command timed out after {timeout_seconds}s"
 
-        engine = Path(pwsh_path).name
-        return (
-            f"shell: {engine}\n"
-            f"command: {command}\n"
-            f"cwd: {workdir}\n"
-            f"exit_code: {proc.returncode}\n"
-            f"--- stdout ---\n{_truncate(stdout)}\n"
-            f"--- stderr ---\n{_truncate(stderr)}"
+        return _format_shell_result(
+            stdout=stdout,
+            stderr=stderr,
+            exit_code=int(proc.returncode or 0),
         )
 
     return _pwsh

@@ -11,7 +11,7 @@ class ToolExecutionContext:
     """Runtime context injected into every tool execution.
 
     Replaces the bare ``session_id`` string so future session-aware
-    tools (audit, logging, cron_history) can receive context without
+    tools (audit, logging, cron jobs) can receive context without
     implicit coupling to the agent host.
     """
 
@@ -42,14 +42,10 @@ class CronScheduler(Protocol):
     async def schedule_cron_job(
         self,
         *,
-        name: str,
-        cron: str = "",
-        interval_seconds: int | None = None,
-        repeat: int = 1,
-        subscribe: bool = False,
-        run_now: bool = False,
-        action: str = "",
-        params: dict | None = None,
+        cron: str,
+        prompt: str,
+        recurring: bool = True,
+        durable: bool = False,
     ) -> str: ...
 
     async def cancel_cron_job(self, job_id: str) -> bool: ...

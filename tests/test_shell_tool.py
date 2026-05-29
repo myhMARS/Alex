@@ -59,16 +59,14 @@ class TestBashTool:
     async def test_runs_simple_command(self, sandbox: Path):
         tool = create_bash_tool(allowed_roots=[sandbox])
         result = await tool.coroutine(command="echo hello")
-        assert "exit_code: 0" in result
-        assert "hello" in result
+        assert result.strip() == "hello"
 
     @pytest.mark.asyncio
     async def test_supports_pipes(self, sandbox: Path):
         tool = create_bash_tool(allowed_roots=[sandbox])
         result = await tool.coroutine(command="printf 'a\\nb\\nc\\n' | wc -l")
-        assert "exit_code: 0" in result
         # wc -l counts lines; we should see "3" somewhere in stdout.
-        assert "3" in result
+        assert result.strip() == "3"
 
     @pytest.mark.asyncio
     async def test_cwd_outside_roots_blocked(self, sandbox: Path, tmp_path_factory):
@@ -137,8 +135,7 @@ class TestPwshTool:
     async def test_runs_simple_command(self, sandbox: Path):
         tool = create_pwsh_tool(allowed_roots=[sandbox])
         result = await tool.coroutine(command="Write-Output 'hello'")
-        assert "exit_code: 0" in result
-        assert "hello" in result
+        assert result.strip() == "hello"
 
     @pytest.mark.asyncio
     async def test_supports_pipeline(self, sandbox: Path):
@@ -146,8 +143,7 @@ class TestPwshTool:
         result = await tool.coroutine(
             command="1..3 | Measure-Object | Select-Object -ExpandProperty Count",
         )
-        assert "exit_code: 0" in result
-        assert "3" in result
+        assert result.strip() == "3"
 
     @pytest.mark.asyncio
     async def test_cwd_outside_roots_blocked(self, sandbox: Path, tmp_path_factory):

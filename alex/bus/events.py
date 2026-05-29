@@ -235,7 +235,9 @@ class CronJobEvent(DomainEvent):
     job_id: str = ""
     name: str = ""
     status: str = ""         # SUCCESS / FAILED / RUNNING / CANCELLED
-    subscribe: bool = False  # True when the job has a subscribed LLM reply
+    prompt: str = ""
+    recurring: bool = True
+    durable: bool = False
     action: str = ""
     params: dict = field(default_factory=dict)
     runs_done: int = 0

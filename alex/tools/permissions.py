@@ -40,7 +40,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -48,6 +47,8 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from langchain_core.tools import BaseTool
+
+from alex.config import get_allowed_permissions, get_denied_permissions
 
 # A confirm hook returns ``True``/``False`` or ``(granted, remember)``.
 ConfirmResult = bool | tuple[bool, bool]
@@ -217,16 +218,8 @@ class PermissionPolicy:
     def from_env(cls, *, confirm_hook: ConfirmHook | None = None,
                  audit_logger: AuditLogger | None = None) -> "PermissionPolicy":
         """Build a policy from ``ALEX_TOOL_PERMISSIONS`` / ``ALEX_TOOL_DENY``."""
-        allowed = set(DEFAULT_ALLOWED)
-        denied: set[str] = set()
-
-        raw_allow = os.environ.get("ALEX_TOOL_PERMISSIONS", "").strip()
-        if raw_allow:
-            allowed = {tok.strip().lower() for tok in raw_allow.split(",") if tok.strip()}
-
-        raw_deny = os.environ.get("ALEX_TOOL_DENY", "").strip()
-        if raw_deny:
-            denied = {tok.strip().lower() for tok in raw_deny.split(",") if tok.strip()}
+        allowed = get_allowed_permissions(DEFAULT_ALLOWED)
+        denied = get_denied_permissions()
 
         return cls(
             allowed=allowed,

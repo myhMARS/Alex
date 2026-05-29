@@ -39,6 +39,7 @@ Agent 自身**不**直接依赖 `CronManager`、`SessionPersistence`、`deserial
 | `list_cron_jobs()` / `cancel_cron_job(job_id)` | cron 任务管理（委托 CronService） |
 | `schedule_cron_job(**kwargs)` | 创建定时任务（委托 CronService） |
 | `list_session_cron_history(query, limit)` | 当前 session 的 cron 执行历史 |
+| `format_cron_jobs(query, limit)` | 格式化当前 cron 任务列表 |
 | `execute_tool_action(session_id, action, params)` | 按名称执行工具（cron runner 入口；构造 `ToolExecutionContext`，受权限策略约束） |
 | `reflect() → dict` | 强制触发技能反思 |
 | `list_skills()` / `delete_skill(target)` / `deprecate_skill(target)` | 技能 CRUD |
@@ -62,16 +63,19 @@ Agent 通过 `push_notification()` 向 EventBus 发布以下事件：
 Agent 自动注册两个内置工具（无需主程序显式装配）：
 
 - `load_skill` — 按名加载技能完整执行流程，命中后 `SkillLoaded` 事件推到 TUI
-- `cron_history` — 查询当前 session 的 cron 执行历史
+- `cron_jobs` — 查询当前 cron 任务列表，包含 durable 持久化任务
 
 `main.py` / `create_agent()` 还会再注册一组本地能力工具：`read` / `write` / `edit` / `grep` / `glob` / `git_inspect` / `bash` / `pwsh` / `time` / `web_search` / `web_fetch` / `cron`。详见 [tools.md](./tools.md)。
 
 ## Cron 后台任务
 
 - 基于 **APScheduler** 的异步调度器（通过 `CronService → CronManager`）
-- 支持 `interval_seconds` 和 5-6 字段 **crontab** 两种触发方式
-- `subscribe=true` 时，每次执行结果以流式对话形式注入 TUI（cron turn 走与用户 turn 共享的 `StreamRenderer`）
-- Agent 的 `execute_tool_action()` 作为 runner 注入 CronService；调用同样受 `PermissionPolicy` 与审计日志约束
+- 使用本地时区的标准 5 字段 **crontab** 表达式
+- 每次触发都执行一段 `prompt`，结果以 cron 流式对话注入 TUI；`prompt` 必须只描述真实任务内容，不能包含提醒包装、到时措辞、状态说明或装饰性文本
+- `durable=true` 时任务持久化到 `~/.alex/cron/`，重启后自动恢复并重新绑定到当前会话
+- durable 只持久化任务定义；Alex 关闭时不会在后台继续执行，恢复后仍只会在会话活跃且空闲时触发
+- Agent 的 `execute_cron_prompt()` 作为 runner 注入 CronService；调度任务仍沿用统一权限与审计链路
+- TUI 右侧 `后台任务` 状态栏展示当前 `RUNNING` / `SCHEDULED` 任务，并按秒刷新 `next:` 倒计时
 
 ## 权限与审计
 

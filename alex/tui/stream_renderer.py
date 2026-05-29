@@ -7,8 +7,9 @@ the event-bus path (cron turns) delegate to a StreamRenderer instance.
 
 from __future__ import annotations
 
-from alex.tui.view_models import ChatTurn
 from alex.tui.presenter import AlexBubble, ToolBubble
+from alex.tui.tool_display import extract_read_path, is_read_tool_name
+from alex.tui.view_models import ChatTurn
 
 
 class StreamRenderer:
@@ -27,6 +28,8 @@ class StreamRenderer:
         self._inflight_tools: dict[str, dict] = {}
         self._inflight_bubbles: dict[str, ToolBubble] = {}
         self._inflight_order: list[str] = []
+        self._read_bubble: ToolBubble | None = None
+        self._read_paths: list[str] = []
         self.message_batch: list | None = None
 
     # ── event handlers ──────────────────────────────────────────────────
@@ -47,6 +50,11 @@ class StreamRenderer:
         self.collected = ""
         self._inflight_tools[tool_id] = {"id": tool_id, "name": tool_name, "args": args, "output": "", "prefix": prefix}
         self._inflight_order.append(tool_id)
+        if is_read_tool_name(tool_name):
+            if self._read_bubble is None:
+                self._read_bubble = self.bubble.insert_tool("read", {})
+            self._inflight_bubbles[tool_id] = self._read_bubble
+            return
         self._inflight_bubbles[tool_id] = self.bubble.insert_tool(tool_name, args)
 
     def on_tool_finished(self, tool_id: str, output: str = "") -> None:
@@ -58,14 +66,22 @@ class StreamRenderer:
         if tid and tid in self._inflight_tools:
             output_str = str(output or "")
             self._inflight_tools[tid]["output"] = output_str
-            self.tool_calls.append(self._inflight_tools.pop(tid))
+            tool_call = self._inflight_tools.pop(tid)
+            self.tool_calls.append(tool_call)
+            if is_read_tool_name(str(tool_call.get("name") or "")):
+                path = extract_read_path(tool_call)
+                if path not in self._read_paths:
+                    self._read_paths.append(path)
             try:
                 self._inflight_order.remove(tid)
             except ValueError:
                 pass
         tb = self._inflight_bubbles.pop(tid, None) if tid else None
         if tb:
-            tb.set_done(output_str)
+            if is_read_tool_name(str(getattr(tb, "_name", ""))):
+                tb.set_done("\n".join(self._read_paths))
+            else:
+                tb.set_done(output_str)
 
     def on_batch(self, messages: list) -> None:
         self.message_batch = messages

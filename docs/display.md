@@ -77,7 +77,7 @@
 | `/skills dep <id>` | 按名称或 ID 前缀废弃技能 |
 | `/merge-skills` | LLM 驱动的技能去重合并 |
 | `/reflect` | 手动触发技能反思 |
-| `/cron [query]` | 查询当前会话 cron 执行历史 |
+| `/cron [query]` | 查询当前 cron 任务列表，包含 durable 任务 |
 | `:q` | 关闭覆盖面板（help/skills/sessions） |
 | `/x` | 关闭 Toast 通知 |
 
@@ -97,7 +97,8 @@
 
 右侧 `#status-bar` 实时显示所有 Cron 后台任务：
 - 图标：⟳ (运行中) / ⏱ (已调度)
-- 显示任务名、状态、下次运行倒计时、已完成次数
+- 显示任务名、状态、下次运行倒计时、是否 durable
+- `next:` 倒计时按秒刷新；durable 任务在重启恢复后会立即出现在列表中，并重新绑定到当前会话
 
 ## 流式响应
 

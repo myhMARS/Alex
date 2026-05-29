@@ -29,7 +29,7 @@ def _make_test_tool() -> StructuredTool:
     )
 
 
-_BASE_TOOL_COUNT = 2  # built-in load_skill + cron_history
+_BASE_TOOL_COUNT = 2  # built-in load_skill + cron_jobs
 
 
 async def _consume_stream(agent, message: str) -> list:
