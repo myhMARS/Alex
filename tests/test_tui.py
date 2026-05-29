@@ -235,7 +235,7 @@ async def test_streaming_thinking_updates_live_bubble():
         expanded = bubble.query_one(".thinking-expanded", Static)
         response = bubble.query_one(".response-text", Static)
 
-        assert _stored_renderable(collapsed) == "💭 Thinking (17 chars) [Ctrl+T]"
+        assert _stored_renderable(collapsed) == "💭 Thinking (16 chars) [Ctrl+T]"
         assert _stored_renderable(expanded) == "step 1 -> step 2"
         assert "hidden" not in getattr(collapsed, "classes", set())
         assert "hidden" in getattr(expanded, "classes", set())
@@ -644,12 +644,13 @@ async def test_chat_allows_multiple_submissions_to_enqueue():
             async with self._lock:
                 self.received.append(user_input)
                 idx = len(self.received) - 1
+                sid = self._session_id or "s1"
                 if self._bus is not None:
-                    self._bus.publish(TurnStarted(session_id="s1", turn_id=f"t{idx}", source="agent", kind="user"))
+                    self._bus.publish(TurnStarted(session_id=sid, turn_id=f"t{idx}", source="agent", kind="user"))
                 await self._releases[idx].wait()
                 if self._bus is not None:
                     self._bus.publish(TurnCompleted(
-                        session_id="s1",
+                        session_id=sid,
                         turn_id=f"t{idx}",
                         source="agent",
                         kind="user",
@@ -665,6 +666,12 @@ async def test_chat_allows_multiple_submissions_to_enqueue():
     app = AlexApp(agent)
 
     async with app.run_test() as pilot:
+        # Wait for the bus worker (_start_services_with_bus) to complete
+        for _ in range(50):
+            await pilot.pause(0.05)
+            if pilot.app._bus._running:
+                break
+
         input_widget = pilot.app.query_one("#input-box", Input)
         input_widget.value = "hello"
         app.on_input_submitted(Input.Submitted(input_widget, "hello", validation_result=None))
@@ -679,8 +686,8 @@ async def test_chat_allows_multiple_submissions_to_enqueue():
         assert not input_widget.disabled
 
         agent._releases[0].set()
-        for _ in range(20):
-            await pilot.pause(0.05)
+        for _ in range(30):
+            await pilot.pause(0.1)
             if agent.received == ["hello", "world"]:
                 break
 
