@@ -13,23 +13,27 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator
+from datetime import datetime
 
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool as LCBaseTool
 
 from alex.agent.chat_service import ChatAppService
+from alex.agent.composition import (
+    create_default_config,
+    create_default_llm,
+    create_default_memory,
+    create_default_skill_service,
+)
 from alex.agent.cron_service import CronService
 from alex.agent.feedback_service import FeedbackAppService
 from alex.agent.session_service import SessionService
 from alex.agent.skill_admin_service import SkillAdminAppService
 from alex.bus import AsyncEventBus
-from alex.bus.events import CronJobEvent
-from alex.config import get_llm_config
-from alex.llm.factory import LLMFactory
+from alex.llm.base import LLMConfig
 from alex.memory.base import MemoryBase
-from alex.memory.buffer import BufferMemory
-from alex.skill.models import SkillManager
+from alex.skill import SkillService
 from alex.tools.permissions import PermissionPolicy
 
 logger = logging.getLogger(__name__)
@@ -49,17 +53,19 @@ class Agent:
         tools: list[LCBaseTool] | None = None,
         callbacks: list[BaseCallbackHandler] | None = None,
         memory: MemoryBase | None = None,
-        skill_manager: SkillManager | None = None,
+        skill_manager: SkillService | None = None,
         llm: BaseChatModel | None = None,
+        config: LLMConfig | None = None,
         event_bus: AsyncEventBus | None = None,
         permissions: PermissionPolicy | None = None,
     ) -> None:
-        self._llm = llm or LLMFactory.create(get_llm_config())
+        self._llm = llm or create_default_llm()
+        self._config = config or create_default_config()
         self._system_prompt = system_prompt or "You are a helpful AI assistant."
         self._max_iterations = max_iterations
         self._callbacks = callbacks or []
-        self._memory = memory or BufferMemory()
-        self._skills = skill_manager or SkillManager()
+        self._memory = memory or create_default_memory()
+        self._skills = skill_manager or create_default_skill_service()
         self._session_id: str = ""
         self._bus = event_bus
         self._turn_skill_ids: dict[str, list[str]] = {}
@@ -70,13 +76,13 @@ class Agent:
 
         self._skill_admin = SkillAdminAppService(
             skill_manager=self._skills,
-            llm=self._llm,
+            config=self._config,
         )
 
         self._feedback = FeedbackAppService(
             memory=self._memory,
             skill_manager=self._skills,
-            llm=self._llm,
+            config=self._config,
             push_notification=self.push_notification,
         )
 
@@ -92,12 +98,12 @@ class Agent:
         )
         self._chat.register_builtin_tools(
             load_skill_fn=self._create_load_skill_fn(),
-            cron_history_fn=self._create_cron_history_fn(),
+            cron_jobs_fn=self._create_cron_jobs_fn(),
         )
         if tools:
             self._chat.register_tools_batch(tools)
 
-        self._cron = CronService(self.push_notification)
+        self._cron = CronService(self._push_notification_from_scheduler)
 
     # ── built-in tool factories ──────────────────────────────────────────
 
@@ -107,11 +113,58 @@ class Agent:
             return await skill_admin.load_skill(skill_name)
         return _load_skill
 
-    def _create_cron_history_fn(self):
-        format_fn = self._chat.format_cron_history
-        async def _cron_history(query: str = "", limit: int = 10) -> str:
-            return format_fn(query=query, limit=limit)
-        return _cron_history
+    def _filter_cron_jobs(self, query: str = "", limit: int = 10) -> list[dict]:
+        jobs = list(self.list_cron_jobs())
+        q = (query or "").strip().lower()
+        if q:
+            jobs = [
+                job for job in jobs
+                if q in str(job.get("id", "")).lower()
+                or q in str(job.get("name", "")).lower()
+                or q in str(job.get("status", "")).lower()
+                or q in str(job.get("cron", "")).lower()
+                or q in str(job.get("prompt", "")).lower()
+            ]
+        return jobs[: max(1, min(int(limit), 50))]
+
+    @staticmethod
+    def _fmt_ts(ts: float | None) -> str:
+        if not ts:
+            return "-"
+        return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+
+    def format_cron_jobs(self, query: str = "", limit: int = 10) -> str:
+        jobs = self._filter_cron_jobs(query=query, limit=limit)
+        if not jobs:
+            return "No cron jobs found."
+        blocks: list[str] = []
+        for job in jobs:
+            prompt = str(job.get("prompt") or "")
+            if len(prompt) > 160:
+                prompt = prompt[:160] + "..."
+            last_outcome = str(job.get("last_result") or job.get("last_error") or "")
+            if len(last_outcome) > 160:
+                last_outcome = last_outcome[:160] + "..."
+            blocks.append(
+                "\n".join([
+                    f"- [{job.get('id', '')}] {job.get('name', '')}",
+                    f"  status: {job.get('status', '')}",
+                    f"  cron: {job.get('cron', '')}",
+                    f"  recurring: {job.get('recurring', True)}",
+                    f"  durable: {job.get('durable', False)}",
+                    f"  next_run: {self._fmt_ts(job.get('next_run_at'))}",
+                    f"  last_started: {self._fmt_ts(job.get('last_started_at'))}",
+                    f"  last_finished: {self._fmt_ts(job.get('last_finished_at'))}",
+                    f"  prompt: {prompt}",
+                    f"  last_outcome: {last_outcome}",
+                ])
+            )
+        return "\n\n".join(blocks)
+
+    def _create_cron_jobs_fn(self):
+        async def _cron_jobs(query: str = "", limit: int = 10) -> str:
+            return self.format_cron_jobs(query=query, limit=limit)
+        return _cron_jobs
 
     # ── public API ───────────────────────────────────────────────────────
 
@@ -157,7 +210,10 @@ class Agent:
         return self._chat.format_cron_history(query=query, limit=limit)
 
     async def start_services(self) -> None:
-        await self._cron.start_services()
+        await self._cron.start_services(
+            runner=self.execute_cron_prompt,
+            session_id=self.session_id,
+        )
 
     def unregister_tool(self, name: str) -> None:
         self._chat.unregister_tool(name)
@@ -181,47 +237,54 @@ class Agent:
         self._bus = bus
         self._chat.set_event_bus(bus)
 
-    def push_notification(self, event) -> None:
-        """Publish *event* to the bus and, for subscribed cron jobs,
-        trigger the cron reply handler.
-
-        This is the single entry point for all event publishing —
-        there is no separate code path hiding behind chat_service.
-        """
-        # 1. Always publish to the event bus for observers (TUI, store, etc.)
+    def _publish_bus_event(self, event) -> None:
         if self._bus is not None:
             self._bus.publish(event)
 
-        # 2. Subscribed cron jobs additionally kick off an LLM reply turn
-        if isinstance(event, CronJobEvent) and event.subscribe:
-            self._chat.dispatch_cron_reply(event)
+    def _push_notification_from_scheduler(self, event) -> None:
+        """Bridge sync scheduler callbacks to the shared bus publisher."""
+        self._publish_bus_event(event)
+
+    async def push_notification(self, event) -> None:
+        """Publish *event* to the bus — the single event publishing path."""
+        self._publish_bus_event(event)
 
     async def execute_tool_action(self, session_id: str, action: str, params: dict) -> str:
         return await self._chat.execute_tool_action(session_id, action, params)
 
+    async def execute_cron_prompt(
+        self,
+        session_id: str,
+        job_id: str,
+        name: str,
+        prompt: str,
+        stream_id: str,
+        wait_until_done: bool = True,
+    ) -> str:
+        return await self._chat.execute_cron_prompt(
+            session_id=session_id,
+            job_id=job_id,
+            name=name,
+            prompt=prompt,
+            stream_id=stream_id,
+            wait_until_done=wait_until_done,
+        )
+
     async def schedule_cron_job(
         self,
         *,
-        name: str,
-        cron: str = "",
-        interval_seconds: int | None = None,
-        repeat: int = 1,
-        subscribe: bool = False,
-        run_now: bool = False,
-        action: str = "",
-        params: dict | None = None,
+        cron: str,
+        prompt: str,
+        recurring: bool = True,
+        durable: bool = False,
     ) -> str:
         return await self._cron.schedule(
             session_id=self.session_id,
-            name=name,
             cron=cron,
-            interval_seconds=interval_seconds,
-            repeat=repeat,
-            subscribe=subscribe,
-            run_now=run_now,
-            action=action,
-            params=params or {},
-            runner=self.execute_tool_action,
+            prompt=prompt,
+            recurring=recurring,
+            durable=durable,
+            runner=self.execute_cron_prompt,
         )
 
     def list_cron_jobs(self) -> list[dict]:
@@ -232,6 +295,7 @@ class Agent:
 
     async def shutdown(self) -> None:
         await self._cron.shutdown()
+        await self._chat.shutdown()
 
     @property
     def is_reflecting(self) -> bool:

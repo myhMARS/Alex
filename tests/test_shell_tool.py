@@ -12,13 +12,17 @@ import shutil
 from pathlib import Path
 
 import pytest
+pytest.importorskip("langchain_core")
 
+import alex.tools.shell as shell_mod
 from alex.tools.permissions import PERMISSION_SHELL, required_permission
 from alex.tools.shell import (
     _bash_denylist_violation,
+    _format_shell_result,
     _pwsh_denylist_violation,
     _resolve_bash,
     _resolve_pwsh,
+    _truncate,
     create_available_shell_tools,
     create_bash_tool,
     create_pwsh_tool,
@@ -50,6 +54,26 @@ class TestMetadata:
         assert required_permission(tool) == PERMISSION_SHELL
 
 
+class TestShellFormattingHelpers:
+    def test_format_shell_result_returns_empty_for_success_with_no_output(self):
+        result = _format_shell_result(stdout=b"", stderr=b"", exit_code=0)
+        assert result == ""
+
+    def test_format_shell_result_prefers_stderr_for_failures(self):
+        result = _format_shell_result(stdout=b"partial", stderr=b"boom", exit_code=2)
+        assert result == "Error: command exited with code 2\nboom"
+
+    def test_format_shell_result_includes_stdout_and_stderr_on_success(self):
+        result = _format_shell_result(stdout=b"hello\n", stderr=b"warning\n", exit_code=0)
+        assert result == "hello\nwarning"
+
+    def test_truncate_drops_partial_utf8_tail_before_decoding(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(shell_mod, "MAX_OUTPUT_BYTES", 4)
+        result = _truncate("你好".encode("utf-8"))
+        assert result == "你\n\n[Output truncated...]"
+        assert "\ufffd" not in result
+
+
 # ── bash ──────────────────────────────────────────────────────────────
 
 
@@ -59,16 +83,14 @@ class TestBashTool:
     async def test_runs_simple_command(self, sandbox: Path):
         tool = create_bash_tool(allowed_roots=[sandbox])
         result = await tool.coroutine(command="echo hello")
-        assert "exit_code: 0" in result
-        assert "hello" in result
+        assert result.strip() == "hello"
 
     @pytest.mark.asyncio
     async def test_supports_pipes(self, sandbox: Path):
         tool = create_bash_tool(allowed_roots=[sandbox])
         result = await tool.coroutine(command="printf 'a\\nb\\nc\\n' | wc -l")
-        assert "exit_code: 0" in result
         # wc -l counts lines; we should see "3" somewhere in stdout.
-        assert "3" in result
+        assert result.strip() == "3"
 
     @pytest.mark.asyncio
     async def test_cwd_outside_roots_blocked(self, sandbox: Path, tmp_path_factory):
@@ -137,8 +159,7 @@ class TestPwshTool:
     async def test_runs_simple_command(self, sandbox: Path):
         tool = create_pwsh_tool(allowed_roots=[sandbox])
         result = await tool.coroutine(command="Write-Output 'hello'")
-        assert "exit_code: 0" in result
-        assert "hello" in result
+        assert result.strip() == "hello"
 
     @pytest.mark.asyncio
     async def test_supports_pipeline(self, sandbox: Path):
@@ -146,8 +167,7 @@ class TestPwshTool:
         result = await tool.coroutine(
             command="1..3 | Measure-Object | Select-Object -ExpandProperty Count",
         )
-        assert "exit_code: 0" in result
-        assert "3" in result
+        assert result.strip() == "3"
 
     @pytest.mark.asyncio
     async def test_cwd_outside_roots_blocked(self, sandbox: Path, tmp_path_factory):

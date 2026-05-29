@@ -14,13 +14,17 @@ from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool as LCBaseTool
 
+from alex.agent.composition import (
+    create_default_config,
+    create_default_llm,
+    create_default_memory,
+    create_default_skill_service,
+)
 from alex.agent.service import Agent
 from alex.bus import AsyncEventBus
-from alex.config import get_llm_config
-from alex.llm.factory import LLMFactory
+from alex.llm.base import LLMConfig
 from alex.memory.base import MemoryBase
-from alex.memory.buffer import BufferMemory
-from alex.skill.models import SkillManager
+from alex.skill import SkillService
 from alex.tools.permissions import AuditLogger, PermissionPolicy
 from alex.tools.plugin_loader import PluginLoadResult, install_plugins
 
@@ -34,8 +38,9 @@ def create_agent(
     tools: list[LCBaseTool] | None = None,
     callbacks: list[BaseCallbackHandler] | None = None,
     memory: MemoryBase | None = None,
-    skill_manager: SkillManager | None = None,
+    skill_manager: SkillService | None = None,
     llm: BaseChatModel | None = None,
+    config: LLMConfig | None = None,
     event_bus: AsyncEventBus | None = None,
     llm_factory: Callable[[], BaseChatModel] | None = None,
     permissions: PermissionPolicy | None = None,
@@ -61,9 +66,10 @@ def create_agent(
     Returns the agent together with the per-plugin load results so the
     host can surface diagnostics for failures.
     """
-    _llm = llm or (llm_factory() if llm_factory else LLMFactory.create(get_llm_config()))
-    _memory = memory or BufferMemory()
-    _skills = skill_manager or SkillManager()
+    _config = config or create_default_config()
+    _llm = llm or (llm_factory() if llm_factory else create_default_llm())
+    _memory = memory or create_default_memory()
+    _skills = skill_manager or create_default_skill_service()
     _system_prompt = system_prompt or "You are a helpful AI assistant."
 
     if audit_logger is None and audit_path is not False:
@@ -84,6 +90,7 @@ def create_agent(
         memory=_memory,
         skill_manager=_skills,
         llm=_llm,
+        config=_config,
         event_bus=event_bus,
         permissions=_permissions,
     )

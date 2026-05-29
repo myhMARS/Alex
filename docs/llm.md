@@ -29,6 +29,8 @@
 
 - 使用 OpenAI SDK 的 `response_format: {"type": "json_object"}` 确保 JSON 输出
 - DeepSeek provider 自动通过 `extra_body` 禁用 thinking mode（避免混入 reasoning_content）
+- 接受可选 `config: LLMConfig` 参数，由上层通过依赖注入传入；`None` 时回退到 `get_llm_config()`
+- 底层 `AsyncOpenAI` client 按 config 做 SHA256 digest 缓存，同配置复用连接池，config 变化时自动关闭旧 client 重建
 - 返回纯 JSON 字符串，由调用方配合 `json_repair` 解析
 
 ## 目录结构

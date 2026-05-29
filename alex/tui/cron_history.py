@@ -11,8 +11,9 @@ class CronHistoryReadModel:
     """Per-session cron execution history — read model only.
 
     Updated by ChatProjector.persist_cron_record() when CronJobEvent
-    fires with status SUCCESS or FAILED.  Queried by the /cron command
-    and the cron_history tool.
+    fires with status SUCCESS or FAILED. Used for persisted execution
+    records, not for the current `/cron` job list or the `cron_jobs`
+    built-in tool.
     """
 
     def __init__(self) -> None:
@@ -54,6 +55,6 @@ def _record_matches(rec: dict, q: str) -> bool:
         str(rec.get("job_id", "")),
         str(rec.get("name", "")),
         str(rec.get("status", "")),
-        str(rec.get("action", "")),
+        str(rec.get("prompt", "")),
     ]
     return any(q in item.lower() for item in haystacks if item)

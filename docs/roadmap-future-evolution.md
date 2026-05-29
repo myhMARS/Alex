@@ -15,7 +15,7 @@
 |--------|------|---------|
 | 工具 | 12+ 内置工具 + MCP Client + 用户插件 + 权限策略 + 审计日志 | 无 embedding 检索工具匹配 |
 | 技能 | tag + keyword 检索，LLM 反思/合并稳定 | 无 embedding、无组合技能、无 provenance、无 A/B |
-| Cron | APScheduler 异步调度，subscribe 流式推送 | 任务定义不落盘、无变化检测、无重试策略 |
+| Cron | APScheduler 异步调度，prompt 驱动 cron 流式对话，durable 任务定义可恢复到当前会话 | 无变化检测、无重试策略 |
 | 可观测性 | TUI bubble + AuditLogger 审计日志 | 无 token/成本统计、无 trace、无 replay |
 | 多入口 | 仅 TUI | 无 API、无 headless、无 daemon |
 | 安全 | shell deny list + PermissionPolicy + AuditLogger | 无 secret 扫描、明文落盘、shell 无沙箱 |
@@ -59,7 +59,7 @@
 
 ### 现状
 
-- 12+ 内置工具：`time` / `web_search` / `web_fetch` / `cron` / `read` / `write` / `edit` / `glob` / `grep` / `git_inspect` / `bash` / `pwsh` + 2 内置（`load_skill` / `cron_history`）
+- 12+ 内置工具：`time` / `web_search` / `web_fetch` / `cron` / `read` / `write` / `edit` / `glob` / `grep` / `git_inspect` / `bash` / `pwsh` + 2 内置（`load_skill` / `cron_jobs`）
 - MCP Client（`tools/mcp_client.py`）自动发现 `~/.alex/mcp.json` 中的 MCP Server
 - 用户插件（`tools/plugin_loader.py`）自动扫描 `~/.alex/plugins/*.py`
 - 权限策略 + 审计日志（`PermissionPolicy` + `AuditLogger`），副作用工具弹 modal 确认
@@ -108,8 +108,8 @@
 ### 现状
 
 - APScheduler 异步调度（`CronManager`）
-- 任务定义和执行历史均不落盘（design.md 约束第 5 条）
-- subscribe=true 时结果以流式对话注入 TUI
+- durable 任务定义落盘到 `~/.alex/cron/`，重启后恢复并重新绑定到当前会话；执行历史仍按 session 保存
+- cron 触发时直接执行 `prompt`，结果以流式对话注入 TUI；`prompt` 约束为真实任务内容，不应包含提醒包装或到时文案
 
 ### 演进项
 

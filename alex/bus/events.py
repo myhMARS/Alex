@@ -98,6 +98,7 @@ class ToolExecutionCompleted(DomainEvent):
 class TurnCompleted(DomainEvent):
     kind: str = "user"
     messages: list[Any] = field(default_factory=list)
+    message_batch: list[Any] = field(default_factory=list)
     content: str = ""
     thinking: str = ""
 
@@ -235,9 +236,9 @@ class CronJobEvent(DomainEvent):
     job_id: str = ""
     name: str = ""
     status: str = ""         # SUCCESS / FAILED / RUNNING / CANCELLED
-    subscribe: bool = False  # True when the job has a subscribed LLM reply
-    action: str = ""
-    params: dict = field(default_factory=dict)
+    prompt: str = ""
+    recurring: bool = True
+    durable: bool = False
     runs_done: int = 0
     started_at: float | None = None
     finished_at: float | None = None

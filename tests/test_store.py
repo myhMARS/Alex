@@ -1,11 +1,15 @@
 """Tests for SessionPersistence — save/load/list/delete through store adapter."""
 
 import json
+import os
 import tempfile
+import threading
+import time
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+pytest.importorskip("langchain_core")
 from langchain_core.messages import HumanMessage, AIMessage
 
 from alex.store.session_adapter import SessionPersistence
@@ -50,6 +54,25 @@ class TestSessionPersistence:
     def test_delete_nonexistent(self):
         assert SessionPersistence.delete("nonexistent-xyz") is False
 
+    def test_save_uses_atomic_replace(self, monkeypatch):
+        sid = "test-atomic-save"
+        messages = [HumanMessage(content="atomic")]
+        replace_calls: list[tuple[str, str]] = []
+        original_replace = os.replace
+
+        def _replace(src: str, dst: str) -> None:
+            replace_calls.append((src, dst))
+            original_replace(src, dst)
+
+        monkeypatch.setattr("alex.store.session.os.replace", _replace)
+        try:
+            SessionPersistence.save(sid, messages)
+            assert replace_calls
+            target = str(SESSIONS_DIR / f"{sid}.json")
+            assert target in {dst for _, dst in replace_calls}
+        finally:
+            SessionPersistence.delete(sid)
+
     def test_append_cron_record(self):
         sid = "test-cron-append"
         messages = [HumanMessage(content="cron test")]
@@ -80,6 +103,49 @@ class TestSessionPersistence:
             SessionPersistence.append_cron_record(sid, record)
             bundle = SessionPersistence.load(sid)
             assert len(bundle.get("cron_history", [])) == 1
+        finally:
+            SessionPersistence.delete(sid)
+
+    def test_save_preserves_existing_cron_history(self):
+        sid = "test-save-preserve-cron-history"
+        try:
+            SessionPersistence.save(sid, [HumanMessage(content="first")])
+            SessionPersistence.append_cron_record(sid, {
+                "execution_id": "exec-1",
+                "job_id": "job-1",
+                "name": "job",
+                "status": "SUCCESS",
+            })
+            SessionPersistence.save(sid, [HumanMessage(content="second")])
+            bundle = SessionPersistence.load(sid)
+            cron = bundle.get("cron_history", [])
+            assert len(cron) == 1
+            assert cron[0]["execution_id"] == "exec-1"
+        finally:
+            SessionPersistence.delete(sid)
+
+    def test_append_cron_record_serializes_same_session_writes(self, monkeypatch):
+        sid = "test-cron-serialized-writes"
+        original_atomic_write = __import__("alex.store.session", fromlist=["_atomic_write_json"])._atomic_write_json
+
+        def _slow_atomic_write(path, data):
+            time.sleep(0.05)
+            return original_atomic_write(path, data)
+
+        monkeypatch.setattr("alex.store.session._atomic_write_json", _slow_atomic_write)
+        try:
+            SessionPersistence.save(sid, [HumanMessage(content="base")])
+            r1 = {"execution_id": "exec-1", "job_id": "job-1", "name": "job1", "status": "SUCCESS"}
+            r2 = {"execution_id": "exec-2", "job_id": "job-2", "name": "job2", "status": "SUCCESS"}
+            t1 = threading.Thread(target=SessionPersistence.append_cron_record, args=(sid, r1))
+            t2 = threading.Thread(target=SessionPersistence.append_cron_record, args=(sid, r2))
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
+            bundle = SessionPersistence.load(sid)
+            execution_ids = {item["execution_id"] for item in bundle.get("cron_history", [])}
+            assert execution_ids == {"exec-1", "exec-2"}
         finally:
             SessionPersistence.delete(sid)
 
@@ -125,7 +191,7 @@ class TestSessionPersistence:
 
             bus.publish(CronJobEvent(
                 session_id=sid, job_id="j1", name="test job",
-                status="SUCCESS", action="notify", runs_done=1,
+                status="SUCCESS", prompt="test prompt", runs_done=1,
                 result="ok", tool_call_id="exec-bus",
             ))
             import asyncio

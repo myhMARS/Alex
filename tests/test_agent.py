@@ -1,6 +1,7 @@
 """Core tests for the Agent."""
 
-from unittest.mock import AsyncMock, patch
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 pytest.importorskip("langchain_core")
@@ -9,7 +10,8 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from alex.agent import Agent
-from alex.bus.events import TokenEmitted
+from alex.bus import AsyncEventBus
+from alex.bus.events import CronJobEvent, TokenEmitted
 
 
 class _TestInput(BaseModel):
@@ -29,7 +31,7 @@ def _make_test_tool() -> StructuredTool:
     )
 
 
-_BASE_TOOL_COUNT = 2  # built-in load_skill + cron_history
+_BASE_TOOL_COUNT = 2  # built-in load_skill + cron_jobs
 
 
 async def _consume_stream(agent, message: str) -> list:
@@ -73,6 +75,17 @@ class TestToolRegistry:
     def test_unregister_nonexistent_does_not_raise(self):
         agent = Agent()
         agent.unregister_tool("nonexistent")
+
+    @pytest.mark.asyncio
+    async def test_push_notification_accepts_cron_job_event_without_subscribe_field(self):
+        agent = Agent()
+        bus = MagicMock()
+        agent.bind_event_bus(bus)
+
+        event = CronJobEvent(job_id="job-1", name="daily", status="SUCCESS")
+        await agent.push_notification(event)
+
+        bus.publish.assert_called_once_with(event)
 
 
 class TestHistory:
@@ -143,3 +156,77 @@ class TestChatStream:
                     msgs = second_call["messages"]
                     assert len(msgs) >= 2  # includes previous messages + new HumanMessage
                     assert msgs[-1].content == "Second"
+
+    @pytest.mark.asyncio
+    async def test_user_turn_streams_via_bus_when_bus_is_bound(self):
+        agent = Agent()
+        bus = AsyncEventBus()
+        await bus.start()
+        agent.bind_event_bus(bus)
+        seen_bus_tokens: list[str] = []
+
+        async def _on_token(event: TokenEmitted) -> None:
+            seen_bus_tokens.append(event.delta)
+
+        await bus.subscribe(TokenEmitted, _on_token)
+
+        try:
+            with patch.object(agent._chat._prompt, "ensure_skills_prompt", return_value=False):
+                with patch.object(agent._feedback, "maybe_reflect", new_callable=AsyncMock):
+                    with patch.object(agent._chat, "_graph") as mock_graph:
+                        mock_stream = mock_graph.astream_events
+
+                        async def _events():
+                            yield {"event": "on_chat_model_stream", "data": {"chunk": AIMessage(content="bus-path")}}
+                            yield {"event": "on_chat_model_end", "data": {"output": AIMessage(content="bus-path")}}
+
+                        mock_stream.return_value = _events()
+                        collected = []
+                        async for event in agent.chat_stream("Hi"):
+                            if isinstance(event, TokenEmitted):
+                                collected.append(event.delta)
+        finally:
+            await bus.shutdown()
+
+        assert "".join(collected) == "bus-path"
+        assert "".join(seen_bus_tokens) == "bus-path"
+
+    @pytest.mark.asyncio
+    async def test_user_and_cron_turns_share_single_fifo_queue(self):
+        agent = Agent()
+
+        order: list[str] = []
+        started_second_user = asyncio.Event()
+
+        async def _stream(input_data, config, version):
+            message = input_data["messages"][-1].content
+            order.append(message)
+            if message == "first":
+                await asyncio.sleep(0.05)
+            if message == "second":
+                started_second_user.set()
+            yield {"event": "on_chat_model_stream", "data": {"chunk": AIMessage(content=f"reply:{message}")}}
+            yield {"event": "on_chat_model_end", "data": {"output": AIMessage(content=f"reply:{message}")}}
+
+        with patch.object(agent._chat._prompt, "ensure_skills_prompt", return_value=False):
+            with patch.object(agent._feedback, "maybe_reflect", new_callable=AsyncMock):
+                graph = MagicMock()
+                graph.astream_events = _stream
+                agent._chat._graph = graph
+
+                first_task = asyncio.create_task(_consume_stream(agent, "first"))
+                await asyncio.sleep(0.01)
+                cron_task = asyncio.create_task(agent.execute_cron_prompt(
+                    session_id=agent.session_id,
+                    job_id="job-1",
+                    name="cron",
+                    prompt="cron-prompt",
+                    stream_id="cron:1",
+                ))
+                await asyncio.sleep(0.01)
+                second_task = asyncio.create_task(_consume_stream(agent, "second"))
+
+                await asyncio.gather(first_task, cron_task, second_task)
+
+        assert started_second_user.is_set()
+        assert order == ["first", "cron-prompt", "second"]

@@ -3,21 +3,18 @@
 from __future__ import annotations
 
 import asyncio
-import time
 
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.timer import Timer
 from textual.widgets import Header, Input, Static
 
 from alex.agent.ports import AgentFacade
 from alex.bus import AsyncEventBus
 from alex.bus.events import (
-    CronBatch,
     CronDebugEvent,
-    CronDone,
-    CronError,
     CronJobEvent,
     SkillLoaded,
     SkillReflectErrorEvent,
@@ -26,16 +23,17 @@ from alex.bus.events import (
     TokenEmitted,
     ToolFinished,
     ToolStarted,
+    TurnCompleted,
+    TurnFailed,
+    TurnStarted,
 )
 from alex.tools.mcp_client import (
     MCPClientPool,
     MCPUnavailableError,
     load_mcp_tools_from_config,
 )
-from alex.tui.view_models import ChatHistory, ChatTurn
+from alex.tui.view_models import ChatHistory
 from alex.tui.view_state import SessionViewState
-from alex.tui.presenter import AlexBubble, UserBubble
-from alex.tui.stream_renderer import StreamRenderer
 from alex.tui.chat_projector import ChatProjector
 from alex.tui.notification_controller import NotificationController
 from alex.tui.controller import ChatControllerMixin
@@ -47,152 +45,12 @@ class AlexApp(ChatControllerMixin, App):
     TITLE = "Alex"
     SUB_TITLE = "/help for shortcuts"
 
-    CSS = """
-    #main {
-        height: 1fr;
-    }
-    #left-pane {
-        height: 1fr;
-        width: 1fr;
-    }
-    #chat-view {
-        height: 1fr;
-        overflow-y: scroll;
-        padding: 0 1;
-    }
-    #page-view {
-        height: 1fr;
-        overflow-y: scroll;
-        padding: 1 2;
-    }
-    #page-view.hidden {
-        display: none;
-    }
-    #chat-view.hidden {
-        display: none;
-    }
-    #page-title {
-        text-style: bold;
-        margin: 0 0 1 0;
-        height: auto;
-    }
-    #page-content {
-        height: auto;
-    }
-    #status-bar {
-        width: 34;
-        border: round $panel;
-        border-title-color: $text-muted;
-        padding: 0 1;
-    }
-    #status-title {
-        text-style: bold;
-        margin: 0 0 1 0;
-        height: auto;
-    }
-    #status-content {
-        height: 1fr;
-    }
-    #input-box {
-        dock: bottom;
-        height: 3;
-        margin: 0 1;
-    }
-    .feedback-prompt {
-        color: $text-muted;
-        padding: 0 1;
-        margin: 0;
-        height: auto;
-    }
-    .feedback-done {
-        color: $success;
-        padding: 0 1;
-        margin: 0;
-        height: auto;
-    }
-    .alex-toast {
-        dock: top;
-        height: 1;
-        background: $panel;
-        color: $text;
-        padding: 0 2;
-        text-align: right;
-        text-style: bold;
-    }
-    .alex-toast-hidden {
-        display: none;
-    }
-    AlexBubble {
-        margin: 0 0 0 0;
-        padding: 0 1;
-        border: round $success;
-        border-title-color: $success;
-        border-title-style: bold;
-        height: auto;
-    }
-    AlexBubble > .thinking-collapsed {
-        height: 1;
-        color: $text-muted;
-        padding: 0;
-        margin: 0;
-    }
-    AlexBubble > .thinking-expanded {
-        color: $text-muted;
-        padding: 0 1;
-        margin: 0 0 1 0;
-        border: dashed $warning;
-        border-title-color: $warning;
-        height: auto;
-    }
-    AlexBubble > .skills-collapsed {
-        height: 1;
-        color: $text-muted;
-        padding: 0;
-        margin: 0;
-    }
-    AlexBubble > .skills-expanded {
-        color: $text-muted;
-        padding: 0;
-        margin: 0 0 1 0;
-        height: auto;
-    }
-    AlexBubble > .response-prefix {
-        padding: 0;
-        margin: 0 0 1 0;
-        height: auto;
-    }
-    AlexBubble > .response-text {
-        padding: 0;
-        margin: 0;
-        height: auto;
-    }
-    AlexBubble > .hidden {
-        display: none;
-    }
-    ToolBubble {
-        margin: 0 0 0 2;
-        border: solid $primary;
-        border-title-color: $text-muted;
-        height: auto;
-        padding: 0 1;
-    }
-    ToolBubble > #tool-args {
-        color: $text-muted;
-        padding: 0;
-        margin: 0;
-        height: auto;
-    }
-    ToolBubble > #tool-output {
-        color: $success;
-        padding: 0;
-        margin: 0;
-        height: auto;
-    }
-    """
+    CSS_PATH = "alex.tcss"
 
     BINDINGS = [
         Binding("ctrl+t", "toggle_thinking", "Thinking", show=False, priority=True),
         Binding("ctrl+k", "toggle_skills", "Skills", show=False, priority=True),
+        Binding("ctrl+o", "toggle_tool_output", "Tool Output", show=False, priority=True),
         Binding("ctrl+g", "rate_good", "Good", show=False, priority=True),
         Binding("ctrl+b", "rate_bad", "Bad", show=False, priority=True),
         Binding("ctrl+c", "quit", "Quit", show=False),
@@ -201,16 +59,19 @@ class AlexApp(ChatControllerMixin, App):
     def __init__(self, agent: AgentFacade, event_bus: AsyncEventBus | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self._agent = agent
-        self._bus = event_bus
+        self._bus = event_bus or AsyncEventBus()
         self._history = ChatHistory()
         self._thinking_expanded = False
         self._skills_expanded = False
+        self._tool_output_expanded = False
 
         # Phase 3: view state, projector, notifications replace scattered attrs
         self._view_state = SessionViewState()
         self._notif = NotificationController(self, self._view_state)
         self._projector = ChatProjector(self)
         self._mcp_pool: MCPClientPool | None = None
+        self._mcp_status_message: str = "未开始加载"
+        self._status_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -234,7 +95,11 @@ class AlexApp(ChatControllerMixin, App):
             pass
         self._agent.set_session_context(self._history.session_id, self._history.cron_history)
         self._install_permission_hook()
+        self._status_timer = self.set_interval(1.0, self._refresh_status_bar_tick)
         self._start_services_with_bus()
+
+    def _refresh_status_bar_tick(self) -> None:
+        self._projector.refresh_status_bar()
 
     def _install_permission_hook(self) -> None:
         """Inject the TUI confirm prompt into the agent's permission policy.
@@ -263,13 +128,14 @@ class AlexApp(ChatControllerMixin, App):
             await bus.subscribe(CronDebugEvent, p.on_cron_debug_event)
             await bus.subscribe(SkillReflectEvent, p.on_skill_reflect_event)
             await bus.subscribe(SkillReflectErrorEvent, p.on_skill_reflect_error_event)
-            await bus.subscribe(ToolStarted, p.on_cron_tool_started)
-            await bus.subscribe(ToolFinished, p.on_cron_tool_finished)
-            await bus.subscribe(ThinkingUpdated, p.on_cron_thinking)
-            await bus.subscribe(TokenEmitted, p.on_cron_token)
-            await bus.subscribe(CronBatch, p.on_cron_batch)
-            await bus.subscribe(CronDone, p.on_cron_done)
-            await bus.subscribe(CronError, p.on_cron_error)
+            await bus.subscribe(TurnStarted, p.on_turn_started)
+            await bus.subscribe(SkillLoaded, p.on_skill_loaded)
+            await bus.subscribe(ThinkingUpdated, p.on_thinking)
+            await bus.subscribe(TokenEmitted, p.on_token)
+            await bus.subscribe(ToolStarted, p.on_tool_started)
+            await bus.subscribe(ToolFinished, p.on_tool_finished)
+            await bus.subscribe(TurnCompleted, p.on_turn_completed)
+            await bus.subscribe(TurnFailed, p.on_turn_failed)
             await self._agent.subscribe_store(bus)
             if self._agent.bus is None:
                 self._agent.bind_event_bus(bus)
@@ -277,25 +143,38 @@ class AlexApp(ChatControllerMixin, App):
             await self._agent.start_services()
         except Exception:
             pass
+        self._projector.refresh_status_bar()
 
         await self._connect_mcp()
+        self._projector.refresh_status_bar()
 
     async def _connect_mcp(self) -> None:
         """Load and register MCP tools from ``~/.alex/mcp.json``.
 
-        Failures are surfaced as toasts so a missing optional dependency
+        Failures are surfaced as toasts so a missing required dependency
         or a misconfigured server doesn't block startup.
         """
+        self._mcp_status_message = "加载中"
         try:
             pool, tools = await load_mcp_tools_from_config()
         except MCPUnavailableError as e:
+            self._mcp_status_message = f"不可用：{e}"
             self._notif.show_toast(f"MCP 不可用：{e}", duration=4)
             return
         except Exception as e:
+            self._mcp_status_message = f"加载失败：{type(e).__name__}: {e}"
             self._notif.show_toast(f"MCP 加载失败：{type(e).__name__}: {e}", duration=4)
             return
 
         self._mcp_pool = pool
+        connections = pool.connections
+        connected = sum(1 for conn in connections if not conn.error)
+        if not connections:
+            self._mcp_status_message = "未发现 MCP server 配置"
+        else:
+            self._mcp_status_message = (
+                f"已处理 {len(connections)} 个 server，连接成功 {connected} 个，注册 {len(tools)} 个工具"
+            )
         if not tools:
             return
         for tool in tools:
@@ -340,14 +219,15 @@ class AlexApp(ChatControllerMixin, App):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle user input submission."""
         user_input = event.value.strip()
-        event.input.clear()
+        notif = self._notif
 
         if not user_input:
             return
 
+        event.input.clear()
+
         cmd = user_input.lower()
         vs = self._view_state
-        notif = self._notif
 
         # ── modal gate: when a page panel is showing, only allow :q, /x, and resume selection ──
         if vs.page_mode is not None:
@@ -395,8 +275,16 @@ class AlexApp(ChatControllerMixin, App):
             self._show_help()
             return
 
+        if cmd == "/output":
+            self.action_toggle_tool_output()
+            return
+
         if cmd == "/cron" or cmd.startswith("/cron "):
             self._handle_cron_cmd(user_input[5:].strip() if len(user_input) > 5 else "")
+            return
+
+        if cmd == "/mcp":
+            self._handle_mcp_cmd()
             return
 
         if cmd == "/skills" or cmd.startswith("/skills "):
@@ -409,91 +297,17 @@ class AlexApp(ChatControllerMixin, App):
 
         # If previous response wasn't rated, treat the new message as implicit skip
         notif.dismiss_feedback()
+        self._projector.note_user_submission(user_input)
 
-        # Show user message immediately
-        chat_view = self.query_one("#chat-view", VerticalScroll)
-        chat_view.mount(UserBubble(user_input))
-        self._projector.trim_chat_view(chat_view)
-
-        # Start async response
+        # Start async response; the user bubble is mounted only when the turn
+        # is actually dequeued for processing.
         self._run_chat(user_input)
 
-    @work(exclusive=True)
+    @work
     async def _run_chat(self, user_input: str) -> None:
-        """Run agent chat — streams response directly into the Alex bubble."""
-        chat_view = self.query_one("#chat-view", VerticalScroll)
-        notif = self._notif
-        vs = self._view_state
-
-        # Create and mount the bubble immediately for streaming
-        bubble = AlexBubble()
-        chat_view.mount(bubble)
-        chat_view.scroll_end()
-
-        renderer = StreamRenderer(bubble)
-        section_start = 0
-        _last_ui_update = time.monotonic()
-        _last_scroll = time.monotonic()
-
+        """Run agent chat — rendering and history updates are bus-driven."""
         try:
-            async for event in self._agent.chat_stream(user_input):
-                if isinstance(event, ThinkingUpdated):
-                    renderer.on_thinking(event.delta)
-
-                elif isinstance(event, TokenEmitted):
-                    renderer.on_token(event.delta)
-
-                elif isinstance(event, SkillLoaded):
-                    renderer.on_skill_loaded(event.skill_name, event.skill_pattern)
-
-                elif isinstance(event, ToolStarted):
-                    tid = event.tool_id or f"{event.tool_name}:{time.monotonic_ns()}"
-                    renderer.on_tool_started(tid, event.tool_name, event.tool_input)
-                    section_start = len(renderer.collected)
-
-                elif isinstance(event, ToolFinished):
-                    renderer.on_tool_finished(event.tool_id or "", str(event.output or ""))
-
-                # Throttle UI updates — ~50ms for smooth streaming
-                now = time.monotonic()
-                if now - _last_ui_update > 0.05:
-                    section_text = renderer.collected[section_start:]
-                    if section_text:
-                        bubble.set_response(section_text)
-                    elif renderer.thinking and section_start == 0:
-                        bubble.set_response(f"  \U0001f4ad Thinking... ({len(renderer.thinking)} chars)")
-                    if now - _last_scroll > 0.25:
-                        chat_view.scroll_end()
-                        _last_scroll = now
-                    await asyncio.sleep(0)
-                    _last_ui_update = now
-
+            async for _ in self._agent.chat_stream(user_input):
+                await asyncio.sleep(0)
         except Exception as e:
-            bubble.finalize(ChatTurn(
-                user_input=user_input,
-                response=f"Error: {e}",
-                thinking=renderer.thinking,
-                tool_calls=list(renderer.tool_calls),
-                skills=list(renderer.skills),
-            ))
-            return
-
-        # Finalize the bubble with complete turn data
-        result = self._agent.last_turn_result
-        turn = ChatTurn(
-            user_input=user_input,
-            response=renderer.collected,
-            thinking=renderer.thinking,
-            tool_calls=list(renderer.tool_calls),
-            skills=list(renderer.skills),
-        )
-        self._history.add(turn, messages_delta=getattr(result, 'message_batch', None))
-        bubble.finalize(turn)
-        if result:
-            vs.pending_feedback_turn_id = getattr(result, 'turn_id', '')
-
-        # Show feedback prompt only when skills were actually used
-        if renderer.skills:
-            notif.show_feedback_prompt()
-
-        self._projector.refresh_status_bar()
+            self._notif.show_toast(f"对话执行失败：{e}", duration=3)

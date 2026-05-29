@@ -10,27 +10,23 @@ from alex.agent.ports import (
 from alex.agent.chat_service import ChatAppService
 from alex.agent.feedback_service import FeedbackAppService
 from alex.agent.skill_admin_service import SkillAdminAppService
-from alex.agent.orchestrator import TurnOrchestrator, TurnResult
-from alex.agent.cron_handler import CronTurnHandler
 from alex.agent.prompt import PromptAssembler
-from alex.agent.feedback import FeedbackRecorder
 from alex.agent.session_service import SessionService
 from alex.agent.cron_service import CronService
+from alex.agent.turn_processor import TurnProcessor, TurnResult
 
 __all__ = [
     "Agent",
     "AgentFacade",
     "ChatAppService",
     "CronService",
-    "CronTurnHandler",
     "FeedbackAppService",
-    "FeedbackRecorder",
     "LLMGateway",
     "MemoryPort",
     "PromptAssembler",
     "SessionService",
     "SkillAdminAppService",
-    "TurnOrchestrator",
+    "TurnProcessor",
     "TurnResult",
     "create_agent",
 ]

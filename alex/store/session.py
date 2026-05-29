@@ -9,6 +9,9 @@ reconstruction, rather than approximating from a UI view-model.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -18,6 +21,8 @@ from typing import Any
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 SESSIONS_DIR = Path.home() / ".alex" / "sessions"
+_SESSION_LOCKS: dict[str, threading.RLock] = {}
+_SESSION_LOCKS_GUARD = threading.Lock()
 
 # ── serialization -----------------------------------------------------------
 
@@ -96,14 +101,33 @@ def _session_path(session_id: str) -> Path:
     return SESSIONS_DIR / f"{session_id}.json"
 
 
+def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
+    payload = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+    fd, tmp_path = tempfile.mkstemp(prefix=".alex.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(payload)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _get_session_lock(session_id: str) -> threading.RLock:
+    with _SESSION_LOCKS_GUARD:
+        lock = _SESSION_LOCKS.get(session_id)
+        if lock is None:
+            lock = threading.RLock()
+            _SESSION_LOCKS[session_id] = lock
+        return lock
+
+
 def save_session(session_id: str, messages: list[BaseMessage]) -> Path:
     """Persist a message sequence to ~/.alex/sessions/<session_id>.json."""
-    existing = load_session_raw(session_id) or {}
-    return save_session_bundle(
-        session_id,
-        messages,
-        cron_history=list(existing.get("cron_history", []) or []),
-    )
+    return save_session_bundle(session_id, messages)
 
 
 def save_session_bundle(
@@ -112,21 +136,25 @@ def save_session_bundle(
     cron_history: list[dict[str, Any]] | None = None,
 ) -> Path:
     """Persist messages plus session-scoped cron execution history."""
-    path = _session_path(session_id)
-    existing = load_session_raw(session_id) or {}
-    created_at = existing.get("created_at") or datetime.now().isoformat()
-    first_msg = messages[0].content if messages else ""
-    if first_msg and len(first_msg) > 80:
-        first_msg = first_msg[:80]
-    data: dict[str, Any] = {
-        "session_id": session_id,
-        "created_at": created_at,
-        "first_message": first_msg,
-        "messages": serialize_messages(messages),
-        "cron_history": list(cron_history or []),
-    }
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    return path
+    with _get_session_lock(session_id):
+        path = _session_path(session_id)
+        existing = load_session_raw(session_id) or {}
+        created_at = existing.get("created_at") or datetime.now().isoformat()
+        first_msg = messages[0].content if messages else ""
+        if first_msg and len(first_msg) > 80:
+            first_msg = first_msg[:80]
+        effective_cron_history = cron_history
+        if effective_cron_history is None:
+            effective_cron_history = list(existing.get("cron_history", []) or [])
+        data: dict[str, Any] = {
+            "session_id": session_id,
+            "created_at": created_at,
+            "first_message": first_msg,
+            "messages": serialize_messages(messages),
+            "cron_history": list(effective_cron_history),
+        }
+        _atomic_write_json(path, data)
+        return path
 
 
 def load_session(session_id: str) -> list[BaseMessage] | None:
@@ -161,15 +189,16 @@ def load_session_bundle(session_id: str) -> dict[str, Any] | None:
 
 def append_cron_history(session_id: str, record: dict[str, Any]) -> Path | None:
     """Append one completed cron execution record to a session file."""
-    bundle = load_session_bundle(session_id)
-    if bundle is None:
-        return None
-    history = list(bundle.get("cron_history", []) or [])
-    execution_id = str(record.get("execution_id", ""))
-    if execution_id and any(str(item.get("execution_id", "")) == execution_id for item in history):
-        return _session_path(session_id)
-    history.append(record)
-    return save_session_bundle(session_id, bundle["messages"], history)
+    with _get_session_lock(session_id):
+        bundle = load_session_bundle(session_id)
+        if bundle is None:
+            return None
+        history = list(bundle.get("cron_history", []) or [])
+        execution_id = str(record.get("execution_id", ""))
+        if execution_id and any(str(item.get("execution_id", "")) == execution_id for item in history):
+            return _session_path(session_id)
+        history.append(record)
+        return save_session_bundle(session_id, bundle["messages"], history)
 
 
 def load_session_raw(session_id: str) -> dict[str, Any] | None:
@@ -215,8 +244,9 @@ def list_sessions() -> list[SessionMeta]:
 
 def delete_session(session_id: str) -> bool:
     """Delete a session file.  Returns True if the file existed."""
-    path = _session_path(session_id)
-    if path.exists():
-        path.unlink()
-        return True
-    return False
+    with _get_session_lock(session_id):
+        path = _session_path(session_id)
+        if path.exists():
+            path.unlink()
+            return True
+        return False

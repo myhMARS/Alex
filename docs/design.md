@@ -7,14 +7,14 @@ Alex 是一个支持工具调用、流式输出的对话式 AI Agent 智能体�
 - **工具调用**：动态注册/注销工具，统一权限策略与审计日志
 - **本地能力**：`read` / `write` / `edit` / `grep` / `glob` / `git_inspect` / `bash` / `pwsh` 让 Alex 真的能在终端"动手"
 - **副作用确认**：写文件 / 跑 shell 弹 modal 并展示 diff / argv，用户确认后才执行；每次决策追加到审计日志
-- **MCP & 用户插件**：自动发现 `~/.alex/mcp.json` 中的 MCP server 与 `~/.alex/plugins/*.py` 中的自定义工具
+- **MCP & 用户插件**：自动发现 `~/.alex/mcp.json` 中的 MCP server（支持 stdio 与 HTTP transport）与 `~/.alex/plugins/*.py` 中的自定义工具
 - **流式输出**：token 级别流式响应，支持 thinking 内容实时展示
 - **Markdown 渲染**：终态回复自动以 Rich Markdown 渲染（代码块/列表/加粗/内联代码），流式期间保持纯文本以避免布局抖动
 - **上下文管理**：抽象记忆接口，可扩展接入外部记忆框架
 - **模型适配**：工厂模式统一适配多平台 LLM（DeepSeek thinking mode 支持）
 - **自适应成长**：从历史对话中自主提炼技能，持续进化
 - **TUI 交互**：基于 Textual 的终端界面，支持滚动、折叠、会话持久化、modal 确认
-- **Cron 后台任务**：APScheduler 驱动的定时任务调度，支持 subscribe 流式推送
+- **Cron 后台任务**：APScheduler 驱动的 prompt 驱动后台任务调度，支持 durable 任务定义持久化与恢复到当前会话，结果以 cron 流式对话注入 TUI
 - **事件总线**：`AsyncEventBus` 统一跨模块通信，替代轮询式通知队列
 
 ---
@@ -166,15 +166,15 @@ Alex 的最终目标，不只是做一个"能聊天、能调用工具"的终端 
 ```
 alex/
 ├── agent/                      # Agent 应用层
-│   ├── service.py              # Agent — 薄 facade
+│   ├── service.py              # Agent — 薄 facade，通过 LLMConfig 注入子服务
 │   ├── factory.py              # create_agent() — 装配 + 插件加载
+│   ├── composition.py          # 共享默认依赖构造 helper（config/llm/memory/skills）
 │   ├── chat_service.py         # ChatAppService（聊天流、工具执行、图管理）
 │   ├── session_service.py      # SessionService（session 持久化边界）
 │   ├── cron_service.py         # CronService（cron 调度）
 │   ├── feedback_service.py     # FeedbackAppService
 │   ├── skill_admin_service.py  # SkillAdminAppService
-│   ├── orchestrator.py         # TurnOrchestrator
-│   ├── cron_handler.py         # CronTurnHandler
+│   ├── turn_processor.py       # TurnProcessor
 │   ├── prompt.py               # PromptAssembler
 │   └── ports.py                # AgentFacade Protocol
 ├── bus/                        # 事件总线
@@ -197,18 +197,19 @@ alex/
 │   └── manager.py              # CronManager APScheduler
 ├── tools/                      # 工具层
 │   ├── registry.py / executor.py / ports.py
+│   ├── _path.py / _binary.py   # 共享路径校验 + 二进制检测
 │   ├── permissions.py          # PermissionPolicy + AuditLogger + summariser
 │   ├── plugin_loader.py        # 用户插件
-│   ├── mcp_client.py           # MCP stdio 客户端
+│   ├── mcp_client.py           # MCP 多 transport 客户端
 │   ├── fs.py                   # read / write / edit + FileReadTracker
 │   ├── search.py               # grep / glob
 │   ├── shell.py                # bash / pwsh
 │   ├── git.py                  # git_inspect
 │   ├── time.py / web_search.py / web_fetch.py / cron.py
 ├── tui/                        # TUI 界面
-│   ├── app.py                  # AlexApp 主类
+│   ├── app.py / alex.tcss      # AlexApp 主类 + CSS 样式表（CSS_PATH 外部加载）
 │   ├── controller.py           # 命令分发、session、toggles
-│   ├── chat_projector.py       # bus → widget
+│   ├── chat_projector.py       # bus → widget（含 _ProjectorHost Protocol）
 │   ├── notification_controller.py # toast / feedback / 权限确认
 │   ├── confirm_screen.py       # PermissionConfirmScreen modal
 │   ├── view_state.py / view_models.py / cron_history.py

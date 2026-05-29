@@ -16,6 +16,7 @@ from typing import Literal
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+from alex.tools._path import resolve_path_in_allowed_roots
 from alex.tools.permissions import PERMISSION_READ
 
 
@@ -39,17 +40,9 @@ class GitInspectInput(BaseModel):
 
 
 def _resolve_repo(raw: str | None, allowed_roots: list[Path]) -> Path:
-    candidate = Path(raw).expanduser() if raw else Path.cwd()
-    if not candidate.is_absolute():
-        candidate = Path.cwd() / candidate
-    resolved = candidate.resolve(strict=False)
-    for root in allowed_roots:
-        try:
-            resolved.relative_to(root.resolve(strict=False))
-            return resolved
-        except ValueError:
-            continue
-    raise ValueError(f"path '{raw}' is outside the allowed roots")
+    return resolve_path_in_allowed_roots(
+        raw, allowed_roots, default_to_cwd=True, label="path",
+    )
 
 
 def _truncate(data: bytes) -> str:

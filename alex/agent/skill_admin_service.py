@@ -6,17 +6,16 @@ deletion, deprecation, merging, and load-tool creation.
 
 from __future__ import annotations
 
-from langchain_core.language_models import BaseChatModel
-
-from alex.skill.models import SkillManager
+from alex.llm.base import LLMConfig
+from alex.skill import SkillService
 
 
 class SkillAdminAppService:
     """Application service for skill CRUD and management."""
 
-    def __init__(self, skill_manager: SkillManager, llm: BaseChatModel) -> None:
+    def __init__(self, skill_manager: SkillService, config: LLMConfig | None = None) -> None:
         self._skills = skill_manager
-        self._llm = llm
+        self._config = config
 
     def list_skills(self) -> list[dict]:
         all_skills = self._skills.list_all()
@@ -56,7 +55,7 @@ class SkillAdminAppService:
         return None
 
     async def merge_skills(self) -> dict:
-        return await self._skills.merge_skills(self._llm)
+        return await self._skills.merge_skills(config=self._config)
 
     async def load_skill(self, skill_name: str) -> str:
         skill = self._skills.get_skill_by_name(skill_name)

@@ -42,7 +42,7 @@
 | `ToolExecutionContext` | `tools/ports.py` | 一等运行时上下文（session_id / source / metadata） |
 | `PermissionPolicy` | `tools/permissions.py` | 权限策略（环境驱动，可注入 confirm hook） |
 | `plugin_loader` | `tools/plugin_loader.py` | 用户插件发现与装载 |
-| `mcp_client` | `tools/mcp_client.py` | MCP 服务器适配（stdio） |
+| `mcp_client` | `tools/mcp_client.py` | MCP 服务器适配（stdio + HTTP） |
 
 ---
 
@@ -148,9 +148,9 @@ async def _summarise(args: dict) -> tuple[str, list[PreviewBlock]]:
 | `time` | — | 时区别名 + ISO 8601 |
 | `web_search` | `network` | DDG，最多 15 条结果 |
 | `web_fetch` | `network` | 长度上限，跳过 script/style |
-| `cron` | — | 调度后台任务 |
+| `cron` | — | 用 5 字段 cron 调度 prompt 驱动的后台任务，可选 durable 持久化；`prompt` 必须只包含真实任务内容，不能带提醒包装、到时措辞、状态说明或装饰性文本；持久化只负责重启恢复，恢复后绑定当前会话，不会在 Alex 关闭后后台执行 |
 | `load_skill` | — | 内置：按名加载技能详情 |
-| `cron_history` | — | 内置：查询当前会话 cron 执行历史 |
+| `cron_jobs` | — | 内置：查询当前 cron 任务列表，包含 durable 任务 |
 | `read` | `read` | 限定 allowed roots，二进制拒绝，自动截断；同时刷新 `FileReadTracker` |
 | `write` | `write` | tempfile + os.replace 原子写，限大小，限 root；写完同步 tracker |
 | `edit` | `write` | 精确字符串替换，必须先 `read`/`write` 过；外部修改会被检测并拒绝；唯一性检查（除非 `replace_all`） |
@@ -274,15 +274,17 @@ ALEX_TOOLS = [
 
 ### 设计
 
-通过 stdio 协议与外部 MCP 服务器通信，每个 server 启动一个长生命周期子进程；连接成功后调用 `list_tools()` 拿到 schema，封装为 `StructuredTool`，登记到 `ToolRegistry`。
+Alex 的 MCP client 同时支持两类接入方式：
 
-`mcp` SDK 是 **可选依赖**：
+- `command` 型：通过 stdio 启动本地 MCP server 子进程
+- `url` 型：通过 HTTP 连接远端 MCP server，默认使用 `streamable-http`
+- 显式兼容旧式 `transport: "sse"` 配置
 
-```bash
-uv pip install -e ".[mcp]"
-```
+连接成功后统一调用 `list_tools()` 拿到 schema，封装为 `StructuredTool`，登记到 `ToolRegistry`。对 Agent 来说，stdio / HTTP 只是 transport 差异，工具注册与调用路径保持一致。
 
-未安装时 `load_mcp_tools_from_config()` 在配置文件存在但有 server 时抛 `MCPUnavailableError`，启动器把错误转成 toast 提示，不阻塞 TUI。
+`mcp` SDK 现在属于项目主依赖，正常安装 Alex 时会一并安装。
+
+如果运行环境缺少 `mcp` 包，`load_mcp_tools_from_config()` 仍会抛 `MCPUnavailableError`，启动器把错误转成 toast 提示，避免 MCP 故障阻塞 TUI 启动。
 
 ### 配置
 
@@ -291,20 +293,51 @@ uv pip install -e ".[mcp]"
 ```json
 {
   "mcpServers": {
-    "filesystem": {
-      "command": "uvx",
-      "args": ["mcp-server-filesystem", "/Users/me/Notes"],
+    "local-server": {
+      "command": "your-mcp-command",
+      "args": ["--your-arg", "value"],
       "env": {}
     },
-    "github": {
-      "command": "uvx",
-      "args": ["mcp-server-github"],
-      "env": {"GITHUB_TOKEN": "ghp_xxx"},
+    "http-server": {
+      "url": "http://localhost:8000/mcp",
+      "headers": {
+        "Authorization": "Bearer token-value",
+        "X-Custom-Header": "custom-value"
+      },
+      "timeout": 15
+    },
+    "sse-server": {
+      "transport": "sse",
+      "url": "http://localhost:8123/sse",
+      "headers": {"Authorization": "Bearer token-value"},
+      "timeout": 15,
+      "sse_read_timeout": 60,
       "disabled": false
     }
   }
 }
 ```
+
+字段约定：
+
+| 字段 | 适用 transport | 说明 |
+|------|----------------|------|
+| `command` | `stdio` | 本地可执行程序 |
+| `args` | `stdio` | 子进程参数列表 |
+| `env` | `stdio` | 传给子进程的环境变量 |
+| `url` | `streamable-http` / `sse` | 远端 MCP server 地址 |
+| `headers` | `streamable-http` / `sse` | 注入到 HTTP 请求的头 |
+| `transport` | 全部 | 可选；支持 `stdio`、`streamable-http`、`sse` |
+| `timeout` | `streamable-http` / `sse` | HTTP 客户端总超时 |
+| `sse_read_timeout` | `streamable-http` / `sse` | 流式读取超时，主要用于 SSE/长连接 |
+| `disabled` | 全部 | `true` 时跳过连接 |
+
+推断规则：
+
+- 只给 `command`，默认按 `stdio` 处理
+- 只给 `url`，默认按 `streamable-http` 处理
+- `transport: "http"` 会被归一化成 `streamable-http`
+- `transport: "http-sse"` 会被归一化成 `sse`
 
 ### 工具命名
 
@@ -317,7 +350,10 @@ uv pip install -e ".[mcp]"
 
 ### 生命周期
 
-- `MCPClientPool.connect_all()` 通过 `AsyncExitStack` 持有所有 `stdio_client` 和 `ClientSession` 上下文
+- `MCPClientPool.connect_all()` 通过 `AsyncExitStack` 持有所有 transport 上下文和 `ClientSession`
+- stdio server 持有 `stdio_client(...)` 子进程上下文
+- HTTP server 持有 `streamable_http_client(...)` 或 `sse_client(...)` 连接上下文
+- HTTP 模式下会为 SDK 注入 `httpx.AsyncClient` 工厂，用于合并 `headers`、`timeout`、`sse_read_timeout`
 - TUI 在 `_do_shutdown()` 调用 `pool.aclose()` 统一回收子进程
 - 单个 server 连接失败被记录到 `MCPConnection.error`，其他 server 不受影响
 
@@ -358,7 +394,9 @@ alex/tools/
 ├── executor.py            # ToolExecutor + 权限检查
 ├── permissions.py         # PermissionPolicy + 内置常量
 ├── plugin_loader.py       # 用户插件装载
-├── mcp_client.py          # MCP stdio 客户端 + tool 适配
+├── mcp_client.py          # MCP 多 transport 客户端 + tool 适配
+├── _path.py               # resolve_path_in_allowed_roots — 共享路径安全校验
+├── _binary.py             # looks_like_binary — 共享二进制检测
 ├── time.py
 ├── web_search.py
 ├── web_fetch.py
@@ -386,12 +424,12 @@ alex/tools/
 | `tests/test_shell_tool.py` | bash + pwsh 元数据、deny list（鉴别 token / 别名 / 大小写）、cwd 越界、超时、空命令、host 检测；解释器缺失时整组测试自动 skip |
 | `tests/test_git_tool.py` | status/diff/log + 越界拒绝（依赖本机 git，缺失则 skip） |
 | `tests/test_plugin_loader.py` | 三种入口、坏插件隔离、空入口报错 |
-| `tests/test_mcp_client.py` | 配置解析、schema 转换、SDK 缺失、disabled、tool 调用 |
+| `tests/test_mcp_client.py` | 配置解析、stdio/HTTP transport 连接、schema 转换、SDK 缺失、disabled、tool 调用 |
 | `tests/test_confirm_screen.py` | 权限确认 modal 底部按键提示渲染（防止 Rich markup 吞 `[Y]` `[N]` 等字符） |
 | `tests/test_markdown_rendering.py` | `render_response` 行为、`bubble.finalize` 切到 Markdown、流式期间保持纯文本、`insert_tool` 提交 prefix 也走 Markdown |
 | `tests/test_time_tool.py` | time 工具时区别名 + ISO 8601 输出 |
-| `tests/test_cron.py` | cron 调度 / subscribe / 执行历史 |
-| `tests/test_crontab.py` | crontab 表达式解析与校验 |
+| `tests/test_cron.py` | cron prompt 调度 / durable 恢复 / 执行历史 |
+| `tests/test_crontab.py` | 5 字段 crontab 表达式解析与校验 |
 | `tests/test_tui.py` | TUI 渲染 / session 生命周期 / 工具气泡顺序 / 消息序列保真 |
 
 总计：258 / 258 通过。

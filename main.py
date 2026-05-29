@@ -17,11 +17,13 @@ from __future__ import annotations
 import logging
 
 from alex.agent import Agent, create_agent
+from alex.app_logging import configure_logging
 from alex.bus import AsyncEventBus
 from alex.prompts import get_system_prompt
 from alex.tools import (
     FileReadTracker,
     create_available_shell_tools,
+    create_cron_cancel_tool,
     create_edit_tool,
     create_read_tool,
     create_write_tool,
@@ -64,6 +66,7 @@ def _build_agent(bus: AsyncEventBus | None = None) -> Agent:
         event_bus=bus,
     )
     agent.register_tool(create_cron_tool(agent))
+    agent.register_tool(create_cron_cancel_tool(agent))
 
     for result in plugin_results:
         if result.error:
@@ -74,6 +77,8 @@ def _build_agent(bus: AsyncEventBus | None = None) -> Agent:
 
 def main() -> None:
     """Entry point — launches the Textual TUI."""
+    log_path = configure_logging()
+    logger.info("Alex logging initialized at %s", log_path)
     bus = AsyncEventBus()
     agent = _build_agent(bus)
     from alex.tui import AlexApp

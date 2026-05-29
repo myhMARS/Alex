@@ -1,0 +1,155 @@
+#main {
+    height: 1fr;
+}
+#left-pane {
+    height: 1fr;
+    width: 1fr;
+}
+#chat-view {
+    height: 1fr;
+    overflow-y: scroll;
+    padding: 0 1;
+}
+#page-view {
+    height: 1fr;
+    overflow-y: scroll;
+    padding: 1 2;
+}
+#page-view.hidden {
+    display: none;
+}
+#chat-view.hidden {
+    display: none;
+}
+#page-title {
+    text-style: bold;
+    margin: 0 0 1 0;
+    height: auto;
+}
+#page-content {
+    height: auto;
+}
+#status-bar {
+    width: 34;
+    border: round $panel;
+    border-title-color: $text-muted;
+    padding: 0 1;
+}
+#status-title {
+    text-style: bold;
+    margin: 0 0 1 0;
+    height: auto;
+}
+#status-content {
+    height: 1fr;
+}
+#input-box {
+    dock: bottom;
+    height: 3;
+    margin: 0 1;
+}
+.feedback-prompt {
+    color: $text-muted;
+    padding: 0 1;
+    margin: 0;
+    height: auto;
+}
+.feedback-done {
+    color: $success;
+    padding: 0 1;
+    margin: 0;
+    height: auto;
+}
+.alex-toast {
+    dock: top;
+    height: 1;
+    background: $panel;
+    color: $text;
+    padding: 0 2;
+    text-align: right;
+    text-style: bold;
+}
+.alex-toast-hidden {
+    display: none;
+}
+AlexBubble {
+    margin: 0 0 0 0;
+    padding: 0 1;
+    border: round $success;
+    border-title-color: $success;
+    border-title-style: bold;
+    height: auto;
+}
+AlexBubble > .thinking-collapsed {
+    height: 1;
+    color: $text-muted;
+    padding: 0;
+    margin: 0;
+}
+AlexBubble > .thinking-expanded {
+    color: $text-muted;
+    padding: 0 1;
+    margin: 0 0 1 0;
+    border: dashed $warning;
+    border-title-color: $warning;
+    height: auto;
+}
+AlexBubble > .skills-collapsed {
+    height: 1;
+    color: $text-muted;
+    padding: 0;
+    margin: 0;
+}
+AlexBubble > .skills-expanded {
+    color: $text-muted;
+    padding: 0;
+    margin: 0 0 1 0;
+    height: auto;
+}
+AlexBubble > .response-prefix {
+    padding: 0;
+    margin: 0 0 1 0;
+    height: auto;
+}
+AlexBubble > .response-text {
+    padding: 0;
+    margin: 0;
+    height: auto;
+}
+AlexBubble > .hidden {
+    display: none;
+}
+ToolBubble {
+    margin: 0 0 0 2;
+    border: solid $primary;
+    border-title-color: $text-muted;
+    height: auto;
+    padding: 0 1;
+}
+ToolBubble > #tool-args {
+    color: $text-muted;
+    padding: 0;
+    margin: 0;
+    height: auto;
+}
+ToolBubble > #tool-output {
+    color: $success;
+    padding: 0;
+    margin: 0;
+    height: auto;
+}
+ToolBubble > #tool-output-summary {
+    color: $success;
+    padding: 0;
+    margin: 0;
+    height: auto;
+}
+ToolBubble > #tool-output-full {
+    color: $success;
+    padding: 0;
+    margin: 0;
+    height: auto;
+}
+ToolBubble > .hidden {
+    display: none;
+}

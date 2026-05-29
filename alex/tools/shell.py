@@ -32,6 +32,7 @@ from pathlib import Path
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+from alex.tools._path import resolve_path_in_allowed_roots
 from alex.tools.permissions import (
     PERMISSION_SHELL,
     PreviewBlock,
@@ -89,26 +90,32 @@ _PWSH_DENIED_TOKENS = frozenset({
 
 
 def _resolve_cwd(raw: str | None, allowed_roots: list[Path]) -> Path:
-    if not raw:
-        return Path.cwd()
-    candidate = Path(raw).expanduser()
-    if not candidate.is_absolute():
-        candidate = Path.cwd() / candidate
-    resolved = candidate.resolve(strict=False)
-    for root in allowed_roots:
-        try:
-            resolved.relative_to(root.resolve(strict=False))
-            return resolved
-        except ValueError:
-            continue
-    raise ValueError(f"cwd '{raw}' is outside the allowed roots")
+    return resolve_path_in_allowed_roots(
+        raw, allowed_roots, default_to_cwd=True, label="cwd",
+    )
 
 
 def _truncate(data: bytes) -> str:
     if len(data) <= MAX_OUTPUT_BYTES:
         return data.decode("utf-8", errors="replace")
     head = data[:MAX_OUTPUT_BYTES]
-    return head.decode("utf-8", errors="replace") + "\n\n[Output truncated...]"
+    safe_head = head.decode("utf-8", errors="ignore").encode("utf-8")
+    return safe_head.decode("utf-8", errors="replace") + "\n\n[Output truncated...]"
+
+
+def _format_shell_result(*, stdout: bytes, stderr: bytes, exit_code: int) -> str:
+    out = _truncate(stdout).strip()
+    err = _truncate(stderr).strip()
+    if exit_code == 0:
+        if out and err:
+            return f"{out}\n{err}"
+        if out:
+            return out
+        if err:
+            return err
+        return ""
+    detail = err or out or "(no output)"
+    return f"Error: command exited with code {exit_code}\n{detail}"
 
 
 # ── bash ──────────────────────────────────────────────────────────────
@@ -201,13 +208,10 @@ def _make_bash(allowed_roots: list[Path]):
             await proc.wait()
             return f"Error: bash command timed out after {timeout_seconds}s"
 
-        return (
-            f"shell: bash\n"
-            f"command: {command}\n"
-            f"cwd: {workdir}\n"
-            f"exit_code: {proc.returncode}\n"
-            f"--- stdout ---\n{_truncate(stdout)}\n"
-            f"--- stderr ---\n{_truncate(stderr)}"
+        return _format_shell_result(
+            stdout=stdout,
+            stderr=stderr,
+            exit_code=int(proc.returncode or 0),
         )
 
     return _bash
@@ -347,14 +351,10 @@ def _make_pwsh(allowed_roots: list[Path]):
             await proc.wait()
             return f"Error: pwsh command timed out after {timeout_seconds}s"
 
-        engine = Path(pwsh_path).name
-        return (
-            f"shell: {engine}\n"
-            f"command: {command}\n"
-            f"cwd: {workdir}\n"
-            f"exit_code: {proc.returncode}\n"
-            f"--- stdout ---\n{_truncate(stdout)}\n"
-            f"--- stderr ---\n{_truncate(stderr)}"
+        return _format_shell_result(
+            stdout=stdout,
+            stderr=stderr,
+            exit_code=int(proc.returncode or 0),
         )
 
     return _pwsh

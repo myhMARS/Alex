@@ -1,19 +1,14 @@
-"""FeedbackAppService — feedback recording, episode tracking, and reflection.
-
-Extracted from FeedbackRecorder.  Manages per-session feedback state,
-recording turn episodes, and triggering periodic / forced reflection.
-"""
+"""FeedbackAppService — feedback recording, episode tracking, and reflection."""
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
 
-from langchain_core.language_models import BaseChatModel
-
 from alex.bus.events import SkillReflectErrorEvent, SkillReflectEvent
+from alex.llm.base import LLMConfig
 from alex.memory.base import MemoryBase
-from alex.skill.models import SkillManager
+from alex.skill import SkillService
 
 logger = logging.getLogger(__name__)
 
@@ -32,21 +27,21 @@ class FeedbackAppService:
     """Application service for feedback recording and skill reflection.
 
     Each session gets its own FeedbackSessionState managed via
-    ``_sessions[session_id]``.  The old FeedbackRecorder instance-level
-    mutable fields are replaced by this dictionary.
+    ``_sessions[session_id]`` so episode buffers and reflection counters
+    stay isolated across session switches.
     """
 
     def __init__(
         self,
         memory: MemoryBase,
-        skill_manager: SkillManager,
-        llm: BaseChatModel,
-        push_notification: callable,
+        skill_manager: SkillService,
+        config: LLMConfig | None = None,
+        push_notification: callable = None,
         session_id: str = "",
     ) -> None:
         self._memory = memory
         self._skills = skill_manager
-        self._llm = llm
+        self._config = config
         self._push_notification = push_notification
         self._session_id = session_id
         self._sessions: dict[str, FeedbackSessionState] = {session_id: FeedbackSessionState()}
@@ -115,9 +110,9 @@ class FeedbackAppService:
         try:
             recent = await self._memory.get_context(session_id=self._session_id)
             recent = recent[-20:]
-            summary = await self._skills.reflect(recent, self._llm, episodes=state.episodes)
+            summary = await self._skills.reflect(recent, config=self._config, episodes=state.episodes)
             state.episodes.clear()
-            self._push_notification(SkillReflectEvent(
+            await self._push_notification(SkillReflectEvent(
                 new=summary.get("new", 0),
                 updated=summary.get("updated", 0),
                 deprecated=summary.get("deprecated", 0),
@@ -127,5 +122,5 @@ class FeedbackAppService:
             return summary
         except Exception:
             logger.warning("Skill reflection failed", exc_info=True)
-            self._push_notification(SkillReflectErrorEvent(error="reflection failed"))
+            await self._push_notification(SkillReflectErrorEvent(error="reflection failed"))
             return None

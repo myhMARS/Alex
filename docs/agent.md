@@ -12,10 +12,10 @@ Agent 是整个系统的薄编排 facade，把 LLM、Memory、Tools（含权限�
 | `SessionService` | `session_service.py` | session 持久化边界 + 历史恢复（通过 `store/session_serializer`） |
 | `CronService` | `cron_service.py` | `CronManager` 生命周期封装（绑定 loop / start / shutdown / schedule / cancel） |
 | `FeedbackAppService` | `feedback_service.py` | 用户评分、episodes 采集、条件反思触发；per-session state 隔离 |
-| `SkillAdminAppService` | `skill_admin_service.py` | 技能 CRUD / merge / load_skill 入口 |
-| `TurnOrchestrator` | `orchestrator.py` | 单个用户 turn 编排（LLM 流 + 工具调用 + 记忆写入 + 事件发布） |
-| `CronTurnHandler` | `cron_handler.py` | cron 触发后的流式 LLM 回复 |
+| `SkillAdminAppService` | `skill_admin_service.py` | 技能 CRUD / merge / load_skill 入口（通过 `LLMConfig` 注入） |
+| `TurnProcessor` | `turn_processor.py` | 单消费者 FIFO；统一处理用户 turn 与 cron turn 的流式执行、记忆写入和事件发布 |
 | `PromptAssembler` | `prompt.py` | 动态 prompt 组装（技能目录注入） |
+| `composition.py` | `composition.py` | 共享默认依赖构造 helper（config / llm / memory / skill_service），供 `factory.py` 和 `Agent.__init__` 复用 |
 
 `create_agent()`（`factory.py`）作为对外的装配入口：默认值合并、权限策略构造、`AuditLogger` 挂载、用户插件加载，全在这一处完成。`main.py` 通过它取得 ready-to-use 的 `Agent` 实例。
 
@@ -39,6 +39,7 @@ Agent 自身**不**直接依赖 `CronManager`、`SessionPersistence`、`deserial
 | `list_cron_jobs()` / `cancel_cron_job(job_id)` | cron 任务管理（委托 CronService） |
 | `schedule_cron_job(**kwargs)` | 创建定时任务（委托 CronService） |
 | `list_session_cron_history(query, limit)` | 当前 session 的 cron 执行历史 |
+| `format_cron_jobs(query, limit)` | 格式化当前 cron 任务列表 |
 | `execute_tool_action(session_id, action, params)` | 按名称执行工具（cron runner 入口；构造 `ToolExecutionContext`，受权限策略约束） |
 | `reflect() → dict` | 强制触发技能反思 |
 | `list_skills()` / `delete_skill(target)` / `deprecate_skill(target)` | 技能 CRUD |
@@ -52,26 +53,29 @@ Agent 通过 `push_notification()` 向 EventBus 发布以下事件：
 | 事件 | 触发时机 |
 |------|---------|
 | `UserTurnRequested` | 每个用户 turn 开始时（提升可观测性） |
-| `CronJobEvent` | Cron 任务状态变更（含 `subscribe=True` 时 cron handler 自动接力） |
+| `CronJobEvent` | Cron 任务状态变更（供 TUI / store 等观察者消费） |
 | `SkillReflectEvent` / `SkillReflectErrorEvent` | 技能反思完成/失败 |
 
-`TurnStarted` / `TurnCompleted` / `TurnFailed` 由 `TurnOrchestrator` 和 `CronTurnHandler` 直接发布。
+`TurnStarted` / `TurnCompleted` / `TurnFailed` 由 `TurnProcessor` 直接发布。
 
 ## 内置工具
 
 Agent 自动注册两个内置工具（无需主程序显式装配）：
 
 - `load_skill` — 按名加载技能完整执行流程，命中后 `SkillLoaded` 事件推到 TUI
-- `cron_history` — 查询当前 session 的 cron 执行历史
+- `cron_jobs` — 查询当前 cron 任务列表，包含 durable 持久化任务
 
 `main.py` / `create_agent()` 还会再注册一组本地能力工具：`read` / `write` / `edit` / `grep` / `glob` / `git_inspect` / `bash` / `pwsh` / `time` / `web_search` / `web_fetch` / `cron`。详见 [tools.md](./tools.md)。
 
 ## Cron 后台任务
 
 - 基于 **APScheduler** 的异步调度器（通过 `CronService → CronManager`）
-- 支持 `interval_seconds` 和 5-6 字段 **crontab** 两种触发方式
-- `subscribe=true` 时，每次执行结果以流式对话形式注入 TUI（cron turn 走与用户 turn 共享的 `StreamRenderer`）
-- Agent 的 `execute_tool_action()` 作为 runner 注入 CronService；调用同样受 `PermissionPolicy` 与审计日志约束
+- 使用本地时区的标准 5 字段 **crontab** 表达式
+- 每次触发都执行一段 `prompt`，结果以 cron 流式对话注入 TUI；`prompt` 必须只描述真实任务内容，不能包含提醒包装、到时措辞、状态说明或装饰性文本
+- `durable=true` 时任务持久化到 `~/.alex/cron/`，重启后自动恢复并重新绑定到当前会话
+- durable 只持久化任务定义；Alex 关闭时不会在后台继续执行，恢复后仍只会在会话活跃且空闲时触发
+- Agent 的 `execute_cron_prompt()` 作为 runner 注入 CronService；调度任务仍沿用统一权限与审计链路
+- TUI 右侧 `后台任务` 状态栏展示当前 `RUNNING` / `SCHEDULED` 任务，并按秒刷新 `next:` 倒计时
 
 ## 权限与审计
 
@@ -86,19 +90,18 @@ Agent 自动注册两个内置工具（无需主程序显式装配）：
 
 ## 并发模型
 
-`_turn_lock`（`asyncio.Lock`）确保同一时间只有一个对话轮次在操作 Memory：
+`TurnProcessor` 使用单消费者 FIFO 队列，确保同一时间只有一个对话轮次在操作 Memory：
 
 ```
-User chat (holds lock)        Cron reply (waits)
-     │                            │
-     ├─ read memory               │  ← await lock
-     ├─ stream LLM                │
-     ├─ write batch               │
-     └─ release lock ─────────────┤
-                                  ├─ read memory (latest state)
-                                  ├─ stream LLM
-                                  ├─ write batch
-                                  └─ release lock
+User / cron turn submit
+     │
+     ├─ enqueue FIFO
+     │
+     └─ TurnProcessor single consumer
+          ├─ read memory
+          ├─ stream LLM
+          ├─ write batch
+          └─ process next queued turn
 ```
 
 权限 confirm modal 也通过 `NotificationController` 内部的 `_confirm_lock` 串行化，避免用户 turn 与 cron turn 同时弹窗。
@@ -149,14 +152,13 @@ alex/agent/
 ├── __init__.py
 ├── service.py                  # Agent facade（薄编排层）
 ├── factory.py                  # create_agent() — 装配 + 权限 + AuditLogger + 插件
+├── composition.py              # 共享默认依赖构造 helper
 ├── chat_service.py             # ChatAppService（聊天流、工具执行、图管理、权限）
 ├── session_service.py          # Session 持久化 + 历史恢复边界
 ├── cron_service.py             # CronManager 生命周期封装
-├── feedback_service.py         # FeedbackAppService — 评分 / episodes / 反思
-├── skill_admin_service.py      # SkillAdminAppService — 技能 CRUD / merge
-├── orchestrator.py             # TurnOrchestrator — 用户 turn 编排
-├── cron_handler.py             # CronTurnHandler — cron 流式回复
-├── feedback.py                 # FeedbackRecorder（兼容保留）
+├── feedback_service.py         # FeedbackAppService — 评分 / episodes / 反思（通过 LLMConfig 注入）
+├── skill_admin_service.py      # SkillAdminAppService — 技能 CRUD / merge（通过 LLMConfig 注入）
+├── turn_processor.py           # TurnProcessor — 统一 user/cron turn FIFO 执行
 ├── prompt.py                   # PromptAssembler — 动态 prompt 组装
 └── ports.py                    # AgentFacade Protocol
 ```

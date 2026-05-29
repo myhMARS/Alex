@@ -68,6 +68,7 @@ class TestGrepFilesWithMatches:
     async def test_lists_matching_files(self, repo: Path, force_python_fallback):
         tool = create_grep_tool(allowed_roots=[repo])
         result = await tool.coroutine(pattern="hello", path=str(repo))
+        assert "Files:" in result
         assert "a.py" in result
         assert "b.py" in result
         assert "README.md" not in result  # case-sensitive by default
@@ -110,6 +111,8 @@ class TestGrepContent:
             pattern="hello", path=str(repo / "src" / "a.py"),
             output_mode="content",
         )
+        assert "Files:" in result
+        assert str(repo / "src" / "a.py") in result
         # Format: <path>:<line_no>:<text>
         assert ":3:" in result
         assert "hello world" in result
@@ -144,6 +147,7 @@ class TestGrepCount:
         result = await tool.coroutine(
             pattern="hello", path=str(repo / "src"), output_mode="count",
         )
+        assert "Files:" in result
         # a.py has "def hello" + "print('hello world')" = 2 hits
         assert "a.py:2" in result
         # b.py says "goodbye, hello cruel world" → 1 hit
