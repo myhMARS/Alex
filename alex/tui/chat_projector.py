@@ -10,8 +10,8 @@ from __future__ import annotations
 import time
 from collections import deque
 from datetime import datetime
+from typing import TYPE_CHECKING, Any, Protocol
 
-from textual.app import App
 from textual.containers import VerticalScroll
 from textual.widgets import Static
 
@@ -32,6 +32,28 @@ from alex.bus.events import (
 from alex.tui.presenter import AlexBubble, SystemBubble, UserBubble
 from alex.tui.stream_renderer import StreamRenderer
 
+if TYPE_CHECKING:
+    from alex.agent.ports import AgentFacade
+    from alex.tui.notification_controller import NotificationController
+    from alex.tui.view_models import ChatHistory
+    from alex.tui.view_state import SessionViewState
+
+
+class _ProjectorHost(Protocol):
+    """Minimal interface ChatProjector requires from its host App.
+
+    AlexApp satisfies every attribute; the Protocol exists so
+    ChatProjector never reaches into a concrete App via duck typing.
+    """
+
+    _history: ChatHistory
+    _agent: AgentFacade
+    _notif: NotificationController
+    _tool_output_expanded: bool
+    _view_state: SessionViewState
+
+    def query_one(self, selector: str, expect_type: type) -> Any: ...
+
 
 class ChatProjector:
     """Projects bus events into widget tree mutations.
@@ -41,7 +63,7 @@ class ChatProjector:
     rather than holding the logic themselves.
     """
 
-    def __init__(self, app: App) -> None:
+    def __init__(self, app: _ProjectorHost) -> None:
         self._app = app
         self._active_renderers: dict[str, StreamRenderer] = {}
         self._user_inputs: dict[str, str] = {}

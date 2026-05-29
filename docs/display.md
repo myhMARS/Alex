@@ -35,7 +35,7 @@
 |------|------|------|
 | `AlexApp` | `app.py` | Textual App 主类，wiring center — 装配 projector/notifications/view_state |
 | `ChatControllerMixin` | `controller.py` | 命令分发、page 管理、session 生命周期、toggles（282 行） |
-| `ChatProjector` | `chat_projector.py` | bus→widget 事件投影、cron renderer 管理、status bar、cron history |
+| `ChatProjector` | `chat_projector.py` | bus→widget 事件投影、cron renderer 管理、status bar、cron history；通过 `_ProjectorHost` Protocol 约束对宿主 App 的依赖 |
 | `NotificationController` | `notification_controller.py` | toast 通知、feedback prompt、rating 提交 |
 | `SessionViewState` | `view_state.py` | UI 可变状态 dataclass，`reset()` 统一入口 |
 | `StreamRenderer` | `stream_renderer.py` | 共享流式渲染状态管理（用户/cron turn 共用） |
@@ -169,9 +169,10 @@ CronManager fire
 ```
 alex/tui/
 ├── __init__.py
+├── alex.tcss                   # CSS 样式表（156 行，从 app.py CSS_PATH 加载）
 ├── app.py                      # AlexApp — Textual TUI 主类，wiring center
 ├── controller.py               # ChatControllerMixin — 命令、会话、toggles
-├── chat_projector.py           # ChatProjector — bus→widget 投影，cron renderers
+├── chat_projector.py           # ChatProjector — bus→widget 投影，cron renderers（含 _ProjectorHost Protocol）
 ├── notification_controller.py  # NotificationController — toast、feedback
 ├── view_state.py               # SessionViewState — UI 可变状态 dataclass
 ├── presenter.py                # AlexBubble / UserBubble / ToolBubble / SystemBubble

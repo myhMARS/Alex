@@ -28,7 +28,7 @@ class SkillServicePort(Protocol):
 
     # ── reflection ───────────────────────────────────────────────────────
 
-    async def reflect(self, recent_messages: list, llm: Any, episodes: list[dict] | None = None) -> dict: ...
+    async def reflect(self, recent_messages: list, config: Any | None = None, episodes: list[dict] | None = None) -> dict: ...
 
     # ── CRUD ─────────────────────────────────────────────────────────────
 
@@ -44,7 +44,7 @@ class SkillServicePort(Protocol):
 
     # ── merge ───────────────────────────────────────────────────────────
 
-    async def merge_skills(self, llm: Any) -> dict: ...
+    async def merge_skills(self, config: Any | None = None) -> dict: ...
 
 
 # Legacy alias for backward-compatible references in agent/ports.py

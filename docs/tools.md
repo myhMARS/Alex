@@ -395,6 +395,8 @@ alex/tools/
 ├── permissions.py         # PermissionPolicy + 内置常量
 ├── plugin_loader.py       # 用户插件装载
 ├── mcp_client.py          # MCP 多 transport 客户端 + tool 适配
+├── _path.py               # resolve_path_in_allowed_roots — 共享路径安全校验
+├── _binary.py             # looks_like_binary — 共享二进制检测
 ├── time.py
 ├── web_search.py
 ├── web_fetch.py

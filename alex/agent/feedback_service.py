@@ -5,9 +5,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from langchain_core.language_models import BaseChatModel
-
 from alex.bus.events import SkillReflectErrorEvent, SkillReflectEvent
+from alex.llm.base import LLMConfig
 from alex.memory.base import MemoryBase
 from alex.skill import SkillService
 
@@ -36,13 +35,13 @@ class FeedbackAppService:
         self,
         memory: MemoryBase,
         skill_manager: SkillService,
-        llm: BaseChatModel,
-        push_notification: callable,
+        config: LLMConfig | None = None,
+        push_notification: callable = None,
         session_id: str = "",
     ) -> None:
         self._memory = memory
         self._skills = skill_manager
-        self._llm = llm
+        self._config = config
         self._push_notification = push_notification
         self._session_id = session_id
         self._sessions: dict[str, FeedbackSessionState] = {session_id: FeedbackSessionState()}
@@ -111,7 +110,7 @@ class FeedbackAppService:
         try:
             recent = await self._memory.get_context(session_id=self._session_id)
             recent = recent[-20:]
-            summary = await self._skills.reflect(recent, self._llm, episodes=state.episodes)
+            summary = await self._skills.reflect(recent, config=self._config, episodes=state.episodes)
             state.episodes.clear()
             await self._push_notification(SkillReflectEvent(
                 new=summary.get("new", 0),

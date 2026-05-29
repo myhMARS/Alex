@@ -40,7 +40,7 @@ SkillService（构造函数注入全部依赖）
 | **Skill** | `models.py` | 纯数据类，不含业务逻辑 |
 | **SkillStore** | `repository.py` | JSON 文件持久化 + `~/.alex/skills/prompts/` 模板管理 |
 | **SkillRetriever** | `matcher.py` | 标签匹配 + 关键词 + 置信度加权，返回 top-K |
-| **Reflector** | `reflector.py` | LLM 反思引擎 — 分析对话 + episodes，返回 `ReflectionResult` |
+| **Reflector** | `reflector.py` | LLM 反思引擎 — 通过注入的 `LLMConfig` 调用 `create_json_completion`，分析对话 + episodes，返回 `ReflectionResult` |
 | **EvolutionEngine** | `evolution.py` | 生命周期状态机 — CANDIDATE → ACTIVE → DEPRECATED |
 
 ## 核心业务流程
@@ -189,5 +189,5 @@ alex/skill/
 ├── matcher.py          # SkillRetriever — 标签 + 关键词检索
 ├── reflector.py        # Reflector — LLM JSON-mode 反思引擎（支持 episodes）
 ├── evolution.py        # EvolutionEngine — 进化策略 & 生命周期 + 上限裁剪
-└── ports.py            # SkillService Protocol（历史遗留）
+└── ports.py            # SkillServicePort Protocol — 与 SkillService 当前 API 保持同步
 ```

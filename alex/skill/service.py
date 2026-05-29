@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+from alex.llm.base import LLMConfig
 from alex.prompts import get_skills_section, render
 
 if TYPE_CHECKING:
@@ -59,11 +60,12 @@ class SkillService:
 
     # ── reflection ───────────────────────────────────────────────────────
 
-    async def reflect(self, recent_messages: list, llm, episodes: list[dict] | None = None) -> dict:
+    async def reflect(self, recent_messages: list, config: LLMConfig | None = None, episodes: list[dict] | None = None) -> dict:
         result = await self._reflector.reflect(
             recent_messages,
             [s for s in self._store.list_all() if s.status != "DEPRECATED"],
             episodes=episodes or [],
+            config=config,
         )
 
         for skill in result.new_skills:
@@ -120,7 +122,7 @@ class SkillService:
 
     # ── LLM-based merge ──────────────────────────────────────────────────
 
-    async def merge_skills(self, llm) -> dict:
+    async def merge_skills(self, config: LLMConfig | None = None) -> dict:
         from alex.llm.json_client import create_json_completion
 
         active_skills = [s for s in self._store.list_all() if s.status != "DEPRECATED"]
@@ -137,7 +139,7 @@ class SkillService:
             text = await create_json_completion([
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": "Output ONLY the JSON object. Start with { and end with }."},
-            ])
+            ], config=config)
         except Exception as e:
             return {"merged": 0, "deprecated": 0, "remaining": len(active_skills), "error": str(e)}
 

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
+from alex.llm.base import LLMConfig
 from alex.prompts import get_reflection_prompt
 from alex.skill.models import Skill
 
@@ -26,6 +27,7 @@ class Reflector:
         messages: list[BaseMessage],
         existing_skills: list[Skill],
         episodes: list[dict] | None = None,
+        config: LLMConfig | None = None,
     ) -> ReflectionResult:
         """Analyze accumulated conversation experience to extract reusable methodologies."""
         from alex.llm.json_client import create_json_completion
@@ -57,7 +59,7 @@ class Reflector:
                 api_messages.append({"role": "assistant", "content": msg.content})
         api_messages.append({"role": "user", "content": "Extract execution workflows from this conversation. Output only JSON."})
 
-        text = await create_json_completion(api_messages, max_tokens=4096)
+        text = await create_json_completion(api_messages, max_tokens=4096, config=config)
         return self._parse(text)
 
     def _parse(self, text: str) -> ReflectionResult:

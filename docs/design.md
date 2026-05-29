@@ -166,8 +166,9 @@ Alex 的最终目标，不只是做一个"能聊天、能调用工具"的终端 
 ```
 alex/
 ├── agent/                      # Agent 应用层
-│   ├── service.py              # Agent — 薄 facade
+│   ├── service.py              # Agent — 薄 facade，通过 LLMConfig 注入子服务
 │   ├── factory.py              # create_agent() — 装配 + 插件加载
+│   ├── composition.py          # 共享默认依赖构造 helper（config/llm/memory/skills）
 │   ├── chat_service.py         # ChatAppService（聊天流、工具执行、图管理）
 │   ├── session_service.py      # SessionService（session 持久化边界）
 │   ├── cron_service.py         # CronService（cron 调度）
@@ -196,6 +197,7 @@ alex/
 │   └── manager.py              # CronManager APScheduler
 ├── tools/                      # 工具层
 │   ├── registry.py / executor.py / ports.py
+│   ├── _path.py / _binary.py   # 共享路径校验 + 二进制检测
 │   ├── permissions.py          # PermissionPolicy + AuditLogger + summariser
 │   ├── plugin_loader.py        # 用户插件
 │   ├── mcp_client.py           # MCP 多 transport 客户端
@@ -205,9 +207,9 @@ alex/
 │   ├── git.py                  # git_inspect
 │   ├── time.py / web_search.py / web_fetch.py / cron.py
 ├── tui/                        # TUI 界面
-│   ├── app.py                  # AlexApp 主类
+│   ├── app.py / alex.tcss      # AlexApp 主类 + CSS 样式表（CSS_PATH 外部加载）
 │   ├── controller.py           # 命令分发、session、toggles
-│   ├── chat_projector.py       # bus → widget
+│   ├── chat_projector.py       # bus → widget（含 _ProjectorHost Protocol）
 │   ├── notification_controller.py # toast / feedback / 权限确认
 │   ├── confirm_screen.py       # PermissionConfirmScreen modal
 │   ├── view_state.py / view_models.py / cron_history.py

@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -348,7 +349,8 @@ async def test_reflect_notification_shows_toast():
 async def test_ctrl_o_toggles_tool_output_and_help_mentions_shortcut():
     agent = _AgentStub()
     app = AlexApp(agent)
-    assert "ToolBubble > .hidden" in AlexApp.CSS
+    css_path = Path(__file__).parent.parent / "alex" / "tui" / "alex.tcss"
+    assert "ToolBubble > .hidden" in css_path.read_text()
 
     async with app.run_test() as pilot:
         app._show_help()

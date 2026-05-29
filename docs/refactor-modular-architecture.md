@@ -7,13 +7,13 @@
 1. 我认为 Alex 的理想技术架构应该长什么样
 2. 当前实现距离该目标还差哪些边界、抽象、状态模型和执行链路
 
-这不是“当前代码已经重构完成”的验收稿，而是一份面向未来多个迭代的架构蓝图。它优先反映运行时真实结构，其次再定义理想目标和演进路径。
+这不是"当前代码已经重构完成"的验收稿，而是一份面向未来多个迭代的架构蓝图。它优先反映运行时真实结构，其次再定义理想目标和演进路径。
 
 ---
 
 ## 结论摘要
 
-Alex 已经从早期的”`Agent + TUI + 工具集合`”单体，演进成模块化单体 v2.4：
+Alex 已经从早期的"`Agent + TUI + 工具集合`"单体，演进成模块化单体 v2.6：
 
 - 目录结构已经按模块拆分
 - typed event 已统一，event bus 角色明确（event-only）
@@ -22,22 +22,27 @@ Alex 已经从早期的”`Agent + TUI + 工具集合`”单体，演进成模�
 - Port/adapter 已全对齐：`SessionRepository`、`SkillServicePort`、`AgentFacade`
 - TUI 已拆分为 ChatProjector / SessionViewState / NotificationController（Phase 3，2026-05-27）
 - controller.py 从 608 行降至 282 行（-54%）
-- `ToolExecutionContext` is first-class runtime context（Phase 1/4，2026-05-28）
-- `SessionSerializer` 消除 SessionService 对 store 内部的 import（Phase 4，2026-05-28）
+- `ToolExecutionContext` is first-class runtime context（Phase 4，2026-05-28）
 - `CronHistoryReadModel` 从 ChatHistory 独立（Phase 4，2026-05-28）
 - `create_agent()` factory 替代手工 wiring（Phase 4，2026-05-28）
 - `push_notification` 语义收口，单一发布路径（Phase 4，2026-05-28）
+- 共享 `composition.py` 收口默认构造逻辑，`factory.py` 和 `service.py` 均从此导入（Phase 5，2026-05-29）
+- 共享 `_path.py` / `_binary.py` 消除 tools 重复代码（Phase 5，2026-05-29）
+- `LLMConfig` 显式注入链替代 `llm` 假注入（Phase 5，2026-05-29）
+- `json_client.py` client 缓存，按 config digest 复用连接池（Phase 5，2026-05-29）
+- CSS 外置到 `alex.tcss`，`_ProjectorHost` Protocol 约束 TUI 类型安全（Phase 5，2026-05-29）
+- `CronManager` cross-thread 辅助提取 + `NormalizedCronRunner` 定义（Phase 5，2026-05-29）
 
 当前剩余差距集中在：
 
-1. composition helper 仍未收口到单一模块（`factory.py` / `service.py` 仍有重复构造逻辑）
-2. Cron 虽然稳定可用，但工具入口、生命周期恢复、触发执行的 ownership 仍分散
-3. Read model 仍主要靠 `ChatHistory` 与即时渲染状态，尚未按“真实共享派生状态”增量拆分
+1. `CronManager` 仍承担多职责（~558 行），可进一步拆分为 scheduler / executor / store，但当前 ownership 链路（Agent → CronService → CronManager → APScheduler）已清晰
+2. Read model 仍主要靠 `ChatHistory` 与即时渲染状态，尚未按"真实共享派生状态"增量拆分
+3. `ChatControllerMixin` duck typing 可进一步用 Protocol 约束
 
 因此，当前最准确的判断是：
 
-- 当前架构：模块化单体 v2.4（主路径稳定，边界已基本成型）
-- 下一阶段：在不引入过度抽象的前提下，继续收口 wiring、校正 cron ownership、按需抽取 read model
+- 当前架构：模块化单体 v2.6（主路径稳定，依赖注入链路完整，wiring 已收口到 composition.py）
+- 下一阶段：CronManager 职责细分（可选）、Read model 增量抽取、TUI controller type safety
 
 ---
 
@@ -59,7 +64,7 @@ Alex 已经从早期的”`Agent + TUI + 工具集合`”单体，演进成模�
 
 ### 总体目标
 
-理想状态不是微服务，而是“强边界的进程内模块化单体”。它应该具备以下特征：
+理想状态不是微服务，而是"强边界的进程内模块化单体"。它应该具备以下特征：
 
 1. `TUI` 只负责输入、投影和交互状态，不负责业务编排
 2. application services 负责命令处理和流程调度，不直接做文件 I/O
@@ -134,65 +139,66 @@ TUI command
 ```text
 alex/
 ├── agent/
-│   ├── factory.py              # create_agent() — explicit wiring function
-│   ├── service.py              # Agent — thin facade, wiring only
-│   ├── chat_service.py         # ChatAppService — chat_stream, tool exec, graph
-│   ├── session_service.py      # SessionService — session persistence boundary
-│   ├── cron_service.py         # CronService — cron schedule/cancel/lifecycle
-│   ├── feedback_service.py     # FeedbackAppService — rating, episode, reflection
-│   ├── skill_admin_service.py  # SkillAdminAppService — skill CRUD, merge
-│   ├── turn_processor.py       # TurnProcessor — unified user/cron FIFO execution
-│   ├── prompt.py               # PromptAssembler — system prompt + skills section
-│   └── ports.py                # AgentFacade Protocol
+│   ├── composition.py           # 共享默认依赖构造（单一来源）
+│   ├── factory.py               # create_agent() — 显式 wiring 入口
+│   ├── service.py               # Agent — thin facade，从 composition 导入
+│   ├── chat_service.py          # ChatAppService — chat_stream, tool exec, graph
+│   ├── session_service.py       # SessionService — session persistence boundary
+│   ├── cron_service.py          # CronService — 薄包装，委托 CronManager（57 行）
+│   ├── feedback_service.py      # FeedbackAppService — rating, episode, reflection
+│   ├── skill_admin_service.py   # SkillAdminAppService — skill CRUD, merge
+│   ├── turn_processor.py        # TurnProcessor — unified user/cron FIFO execution
+│   ├── prompt.py                # PromptAssembler — system prompt + skills section
+│   └── ports.py                 # AgentFacade Protocol
 ├── bus/
-│   ├── events.py               # Event → Command/DomainEvent/UIEvent hierarchy
-│   └── in_memory.py            # AsyncEventBus — subscriber-based event dispatch
+│   ├── events.py                # Event → Command/DomainEvent/UIEvent hierarchy
+│   └── in_memory.py             # AsyncEventBus — subscriber-based event dispatch
 ├── memory/
-│   ├── base.py                 # MemoryBase ABC
-│   ├── buffer.py               # BufferMemory — sliding window
-│   └── ports.py                # MemoryService Protocol
+│   ├── base.py                  # MemoryBase ABC
+│   ├── buffer.py                # BufferMemory — sliding window
+│   └── ports.py                 # MemoryService Protocol
 ├── skill/
-│   ├── models.py               # Skill dataclass
-│   ├── service.py              # SkillService — constructor injection
-│   ├── repository.py           # SkillStore — JSON persistence
-│   ├── matcher.py              # SkillRetriever — pattern/keyword matching
-│   ├── reflector.py            # Reflector — LLM-based skill reflection
-│   ├── evolution.py            # EvolutionEngine — lifecycle transitions
-│   └── ports.py                # SkillServicePort Protocol (aligned)
+│   ├── models.py                # Skill dataclass
+│   ├── service.py               # SkillService — constructor injection
+│   ├── repository.py            # SkillStore — JSON persistence
+│   ├── matcher.py               # SkillRetriever — pattern/keyword matching
+│   ├── reflector.py             # Reflector — LLM-based skill reflection
+│   ├── evolution.py             # EvolutionEngine — lifecycle transitions
+│   └── ports.py                 # SkillServicePort Protocol (aligned)
 ├── store/
-│   ├── session.py              # Session file I/O + serialize/deserialize
-│   ├── session_serializer.py   # BaseMessage ↔ dict roundtrip (agent-layer safe)
-│   ├── session_adapter.py      # SessionPersistence — event-driven auto-save
-│   └── ports.py                # SessionRepository Protocol (aligned)
+│   ├── session.py               # Session file I/O + serialize/deserialize
+│   ├── session_serializer.py    # BaseMessage ↔ dict roundtrip (agent-layer safe)
+│   ├── session_adapter.py       # SessionPersistence — event-driven auto-save
+│   └── ports.py                 # SessionRepository Protocol (aligned)
 ├── tools/
-│   ├── cron.py                 # cron tool interface
-│   ├── executor.py             # ToolExecutor
-│   ├── registry.py             # ToolRegistry
-│   ├── permissions.py          # PermissionPolicy + AuditLogger + approval summariser
-│   ├── plugin_loader.py        # user plugin discovery + loading
-│   ├── mcp_client.py           # MCP stdio client + tool adapter
-│   ├── fs.py                   # read / write / edit + FileReadTracker
-│   ├── search.py               # grep / glob
-│   ├── shell.py                # bash / pwsh
-│   ├── git.py                  # git_inspect
-│   ├── time.py                 # Time tool
-│   ├── web_fetch.py            # Web fetch tool
-│   ├── web_search.py           # Web search tool
-│   └── ports.py                # ToolExecutionContext / CronScheduler Protocols
+│   ├── cron.py                  # cron tool interface
+│   ├── executor.py              # ToolExecutor
+│   ├── registry.py              # ToolRegistry
+│   ├── permissions.py           # PermissionPolicy + AuditLogger + approval summariser
+│   ├── plugin_loader.py         # user plugin discovery + loading
+│   ├── mcp_client.py            # MCP stdio client + tool adapter
+│   ├── fs.py                    # read / write / edit + FileReadTracker
+│   ├── search.py                # grep / glob
+│   ├── shell.py                 # bash / pwsh
+│   ├── git.py                   # git_inspect
+│   ├── time.py                  # Time tool
+│   ├── web_fetch.py             # Web fetch tool
+│   ├── web_search.py            # Web search tool
+│   └── ports.py                 # ToolExecutionContext / CronScheduler Protocols
 ├── scheduler/
-│   └── manager.py              # CronManager — APScheduler wrapper
+│   └── manager.py               # CronManager — APScheduler wrapper（~558 行）
 ├── tui/
-│   ├── app.py                  # AlexApp — Textual App, wiring center
-│   ├── controller.py           # ChatControllerMixin — commands, session, toggles
-│   ├── chat_projector.py       # ChatProjector — bus→widget projection, cron renderers
+│   ├── app.py                   # AlexApp — Textual App, wiring center
+│   ├── controller.py            # ChatControllerMixin — commands, session, toggles
+│   ├── chat_projector.py        # ChatProjector — bus→widget projection, cron renderers
 │   ├── notification_controller.py # NotificationController — toast, feedback
-│   ├── view_state.py           # SessionViewState — UI-only mutable state dataclass
-│   ├── presenter.py            # Bubble components (AlexBubble, etc.)
-│   ├── view_models.py          # ChatHistory, ChatTurn
-│   ├── cron_history.py         # CronHistoryReadModel — standalone read model
-│   ├── confirm_screen.py       # PermissionConfirmScreen — permission confirmation modal
-│   ├── markdown.py             # render_response — Rich Markdown rendering
-│   └── stream_renderer.py      # StreamRenderer — shared user/cron rendering
+│   ├── view_state.py            # SessionViewState — UI-only mutable state dataclass
+│   ├── presenter.py             # Bubble components (AlexBubble, etc.)
+│   ├── view_models.py           # ChatHistory, ChatTurn
+│   ├── cron_history.py          # CronHistoryReadModel — standalone read model
+│   ├── confirm_screen.py        # PermissionConfirmScreen — permission confirmation modal
+│   ├── markdown.py              # render_response — Rich Markdown rendering
+│   └── stream_renderer.py       # StreamRenderer — shared user/cron rendering
 └── prompts/
 ```
 
@@ -208,7 +214,7 @@ TUI
     └── AgentFacade (thin facade)
           -> ChatAppService     (chat_stream, tool exec, graph, cron history)
           -> SessionService     (session persistence boundary)
-          -> CronService        (cron schedule/cancel/lifecycle)
+          -> CronService        (cron schedule/cancel/lifecycle, 57 行纯委托)
           -> FeedbackAppService (feedback recording, per-session state, reflection)
           -> SkillAdminAppService (skill CRUD, merge, load_skill)
           -> EventBus
@@ -218,7 +224,7 @@ TUI
 
 ### 当前架构已完成的里程碑（压缩版）
 
-以下内容已经可以视为“现状基线”，不再在本文档中逐条展开：
+以下内容已经可以视为"现状基线"，不再在本文档中逐条展开：
 
 | 阶段 | 已完成内容 |
 |------|------------|
@@ -226,15 +232,15 @@ TUI
 | Phase 2 | Application Layer 拆分完成：`ChatAppService`、`FeedbackAppService`、`SkillAdminAppService`；`Agent` 降为 facade |
 | Phase 3 | TUI 薄化完成：`ChatProjector`、`SessionViewState`、`NotificationController` 分离；`controller.py` 明显收缩 |
 | Phase 4 | runtime 边界收口：`ToolExecutionContext` 一等化、`SessionSerializer` 抽离、`CronHistoryReadModel` 独立、factory wiring 建立 |
-| Phase 5 | adapter 与测试治理增强：`SkillManager` 移除、`SkillStore` 原子写、contract/state/event 语义测试补齐 |
+| Phase 5 | adapter 与测试治理增强：`SkillManager` 移除、`SkillStore` 原子写、contract/state/event 语义测试补齐；wiring 收口到 `composition.py`；CSS 外置；`CronManager` cross-thread 辅助提取 |
 
-保留这个摘要的目的，是让后文聚焦“还没解决的结构问题”，而不是重复记录已经完成的重构履历。
+保留这个摘要的目的，是让后文聚焦"还没解决的结构问题"，而不是重复记录已经完成的重构履历。
 
 ### 当前架构仍存在的核心问题
 
-1. 组合根仍有重复：`_create_default_skill_service` 在 `factory.py` 和 `service.py` 中重复定义，wiring 规则没有收口到单一模块
-2. Cron 的职责边界仍不够清晰：工具入口、调度恢复、触发执行、事件投影虽然都已工作，但 ownership 仍分散在 `tools/cron.py`、`CronService`、`CronManager` 与统一 turn 执行路径之间
-3. Read model 仍以 `ChatHistory` 为中心；虽然 cron history 已独立，但 session list、feedback 等读状态尚未形成稳定抽象
+1. `CronManager` 体量偏大（~558 行），混合了调度、执行、持久化三种职责。ownership 链路（Agent → CronService → CronManager → APScheduler）已清晰，进一步拆分属于优化而非补漏
+2. Read model 仍以 `ChatHistory` 为中心；虽然 cron history 已独立，但 session list、feedback 等读状态尚未形成稳定抽象。当前没有第二个消费者，暂不急于拆分
+3. `ChatControllerMixin` 通过 duck typing 与 `AlexApp` 交互，可进一步用 Protocol 约束类型安全
 
 ---
 
@@ -244,15 +250,16 @@ TUI
 
 | 领域 | 当前架构 | 理想架构 | 差距等级 |
 |------|----------|----------|----------|
-| Agent / Application | ✅ 薄 facade 组合 5 个 app service，wiring 在 Agent.__init__ | 单一 composition root，默认依赖创建规则不重复 | 低 |
+| Agent / Application | ✅ 薄 facade 组合 5 个 app service，wiring 在 `composition.py` 单一收口 | 单一 composition root | 已解决 |
 | Session / Store | ✅ `SessionService` 通过 `session_serializer` 访问，不再直接 import store 内部 | - | 已解决 |
 | Skill | ✅ `SkillServicePort` 已对齐 `SkillService`，`SkillManager` 已移除 | `SkillStore` 支持向量化检索 | 低 |
-| Event System | ✅ typed event + event-only bus 语义明确 | 维持 direct-call + event-only bus，不再引入额外 command bus 叙事 | 低 |
+| Event System | ✅ typed event + event-only bus 语义明确 | 维持 direct-call + event-only bus | 低 |
 | TUI / Projection | ✅ controller 已薄化至 282 行，ChatProjector / SessionViewState / NotificationController 已分离 | - | 已解决 |
 | Tool Runtime | ✅ `ToolExecutionContext` 为一等对象，executor 和所有 caller 已对齐 | - | 已解决 |
-| Cron / Scheduler | 已稳定可用，但工具入口、生命周期恢复、触发执行的职责仍分散 | 明确 ownership：工具负责参数面，`CronService` 负责应用级生命周期，`CronManager` 保持基础设施 adapter，`TurnProcessor` 负责统一执行 | 中 |
+| Cron / Scheduler | ✅ 链路清晰：Agent → CronService(57行) → CronManager → APScheduler；TurnProcessor 统一执行 | CronManager 可按 scheduler/executor/store 进一步拆分（可选） | 低 |
 | Feedback / Reflection | ✅ `FeedbackAppService` + `FeedbackSessionState` per-session 字典 | episodes 持久化为独立日志（可选） | 低 |
-| Read Models | 主要靠 `ChatHistory` 与即时渲染状态 | 明确 projector + read model 边界 | 中 |
+| Read Models | 主要靠 `ChatHistory` 与即时渲染状态 | 明确 projector + read model 边界，按需增量抽取 | 低 |
+| TUI Controller Types | `ChatControllerMixin` 依赖 duck typing | Protocol 约束 `_ProjectorHost` 类型安全 | 低 |
 | Tests / Governance | ✅ contract / state / event 语义测试已补齐 | 持续让关键架构约束有对应测试映射 | 低 |
 
 ---
@@ -268,9 +275,9 @@ TUI
 
 ### 1. 已完成模块（压缩版）
 
-以下模块已经达到“当前架构可接受”的状态，不再作为后续重构重点：
+以下模块已经达到"当前架构可接受"的状态，不再作为后续重构重点：
 
-- Agent / Application Layer：`Agent` 已是薄 facade，主要业务入口在 application services
+- Agent / Application Layer：`Agent` 已是薄 facade，主要业务入口在 application services；wiring 已通过 `composition.py` 单一收口
 - Session / Store Boundary：`SessionRepository` / `SessionSerializer` / `SessionService` 语义已经对齐，agent 不再直接穿透 store 实现
 - Skill 模块：`SkillService` 为统一入口，`SkillAdminAppService` 承接管理操作
 - Event System：已明确采用 direct-call application service + event-only bus
@@ -278,22 +285,15 @@ TUI
 - Tool Runtime：`ToolExecutionContext` 已成为稳定 runtime contract
 - Feedback / Reflection：状态已按 session 隔离
 - Testing / Governance：核心 port / state / event 语义已进入测试保护
+- Wiring / Composition：`composition.py` 为默认依赖构造的唯一来源，`factory.py` 和 `service.py` 均从此导入
 
-后续只需在这些模块上做增量维护，不再建议为了“架构纯度”继续大拆。
+后续只需在这些模块上做增量维护，不再建议为了"架构纯度"继续大拆。
 
 ### 2. Cron / Scheduler
 
 #### 当前问题
 
-cron 功能已经稳定（`cron` 工具调度 + `cron_jobs` 查询 + APScheduler + cron reply 链路），但 lifecycle 与 ownership 仍分散在三处：
-
-- `CronManager`（scheduler/manager.py）— APScheduler 封装 + job 生命周期
-- `TurnProcessor`（agent/turn_processor.py）— user/cron 共用的 FIFO 执行与流式事件分发
-- `Agent._cron`（agent/service.py）— `CronService` 薄包装
-
-cron 本质上是一条“工具触发 + 调度恢复 + 异步执行 + 事件投影”的跨层链路。当前问题不是 `CronService` 存在本身，而是这条链路的职责边界还没有被文档清楚说透。
-
-#### 目标设计（调整后）
+cron 功能已经稳定，ownership 链路清晰：
 
 ```
 tools/cron.py               # cron 工具的 LangChain 接口（schedule/cancel/list）
@@ -302,53 +302,47 @@ tools/cron.py               # cron 工具的 LangChain 接口（schedule/cancel/
 agent/turn_processor.py     # user/cron 共用的 FIFO 执行器
     │
     ▼
-scheduler/manager.py        # CronManager — 对 APScheduler 的纯适配（基础设施）
+scheduler/manager.py        # CronManager — APScheduler 适配 + job 生命周期 + 持久化
     │
     ▼
 bus/events.py               # CronJobEvent — 异步结果通过 EventBus 发布
     │
-    ├── store/session_adapter.py  # 持久化（事件驱动，不参与执行决策）
-    └── tui/chat_projector.py    # TUI 渲染（事件驱动，不参与业务决策）
+    ├── store/session_adapter.py  # 持久化（事件驱动）
+    └── tui/chat_projector.py    # TUI 渲染（事件驱动）
 ```
 
-基于当前实现，我认为原先“必须移除 `CronService`”的目标过度追求纯度，收益有限。更合理的目标是：
+`CronService`（57 行）是纯代理层，逐方法委托 `CronManager`。唯一可改进的是 `CronManager` 自身 ~558 行混合了调度、执行、持久化三种职责，可以按需进一步拆分。
 
-1. 工具层继续负责参数面与 LLM 可见接口
-2. `CronService` 保留为很薄的应用级生命周期边界，负责启动恢复、session 绑定、对 Agent 的稳定 API
-3. `CronManager` 继续作为 APScheduler adapter，不向上暴露过多执行细节
-4. `TurnProcessor` 统一承接 user/cron 执行，不再保留额外的 cron 专用执行器
+#### 目标设计
 
-核心原则从“删掉 `CronService`”调整为“**明确 ownership，避免重复入口**”。
+1. 保持当前 ownership 链路不变
+2. `CronManager` 可选拆分为 `CronScheduler` / `CronExecutor` / `CronStore`，但当前没有多实现需求，拆分收益有限
+3. 出现多宿主（TUI / headless / daemon）场景时再评估
 
 #### 重构路线
 
-Phase A:
+Phase A（当前状态 — 已稳定）:
 
-1. 收口 `CronService` 的职责说明，使其只保留 lifecycle / restore / facade API，不新增业务逻辑
-2. `CronManager` 继续暴露 schedule / cancel / list_jobs，由 `CronService` 统一承接
-3. 清理文档与代码中的旧叙事，避免同时存在“cron 是独立 app service”和“cron 完全不是 app service”两套说法
+1. `CronService` 保持薄 facade，只负责 lifecycle / restore / facade API
+2. `CronManager` 继续暴露 schedule / cancel / list_jobs
+3. `TurnProcessor` 为唯一 turn 执行入口
 
-Phase B:
+Phase B（可选，按需触发）:
 
-1. 保持 `TurnProcessor` 为唯一 turn 执行入口，不再引入新的 coordinator 抽象
-2. 检查启动恢复、durable 任务重绑当前 session、状态栏刷新等语义是否都由单一路径保障
-
-Phase C:
-
-1. `tools/cron.py` 保持调度入口，继续与其他工具走一致的注册路径
-2. 如后续确实出现多宿主（TUI / headless / daemon）场景，再重新评估是否让 `CronService` 下沉或消失
+1. 若 `CronManager` 持续增长或出现第二个 scheduler 实现，再拆 scheduler / executor / store
+2. 若出现多宿主场景，再重新评估 `CronService` 的定位
 
 #### 验收标准
 
-1. `CronService` 的存在理由和边界在文档与实现中一致
-2. cron 工具注册路径与其他工具一致（`ToolRegistry.register`）
-3. TUI 只消费 `CronJobEvent` 投影，store 只消费持久化事件
+1. cron 工具注册路径与其他工具一致（`ToolRegistry.register`）
+2. TUI 只消费 `CronJobEvent` 投影，store 只消费持久化事件
+3. 启动恢复、durable 任务重绑、状态栏刷新均由单一路径保障
 
 ### 3. Read Models / Projection
 
 #### 当前问题
 
-当前 `ChatHistory` 已经很干净，但它仍然同时是：
+当前 `ChatHistory` 同时是：
 
 - TUI 的主要 read model
 - renderer finalize 的落点
@@ -356,26 +350,22 @@ Phase C:
 
 随着 UI 能力增加，它仍然会继续变大。
 
-#### 目标设计（调整后）
-
-原计划一次性拆出 `ChatTimeline` / `CronHistoryReadModel` / `SessionListReadModel` / `FeedbackReadModel` 四套读模型，但按当前代码体量看，没必要一步到位。
-
-更合理的顺序是：
+#### 目标设计
 
 1. 保留 `ChatHistory` 作为 timeline 容器
 2. 继续让 `CronHistoryReadModel` 独立存在
 3. 只在 `session list` 或 `feedback` 出现第二个消费者、第二套投影逻辑时，再抽 `SessionListReadModel` / `FeedbackReadModel`
 
-判断标准不是“概念上是否纯”，而是“是否已经出现多处读路径共享同一份派生状态”。
+判断标准不是"概念上是否纯"，而是"是否已经出现多处读路径共享同一份派生状态"。
 
 #### 重构路线
 
-Phase A:
+Phase A（当前状态）:
 
-1. 维持 `ChatHistory` 作为组合容器，而不是继续削成过细的对象网
-2. 只对已经形成稳定读语义的状态抽独立 read model
+1. 维持 `ChatHistory` 作为组合容器
+2. 只对已经形成稳定读语义的状态（cron history）抽独立 read model
 
-Phase B:
+Phase B（按需触发）:
 
 1. 如果后续出现第二套 timeline 消费路径，再考虑让 `StreamRenderer.finalize()` 输出标准 `RenderedTurn`
 2. 在那之前，优先保持 projector 写入路径简单直接
@@ -387,38 +377,52 @@ Phase B:
 
 ### 4. 组合根 / DI
 
-#### 当前问题
+#### 当前状态
 
-目前最真实的技术债不是“没有 IoC 容器”，而是“组合逻辑没有唯一归属”：
+`composition.py` 已是默认依赖构造的**唯一来源**：
 
-- `factory.py` 和 `service.py` 各自维护 `_create_default_skill_service`
-- wiring 规则存在重复，但复杂度还没高到必须引入外部 DI 框架
+```python
+# composition.py — 四个 factory 函数，单一定义点
+create_default_config()       # LLMConfig
+create_default_llm()          # BaseChatModel
+create_default_memory()       # BufferMemory
+create_default_skill_service() # SkillService
+```
 
-#### 目标设计（调整后）
+`factory.py` 和 `service.py` 都从 `composition` 导入，不存在重复定义。`create_agent()` 是主要 composition root。
 
-短期目标应是 **收口 composition helper**，而不是立即引入 `punq` / `dependency-injector`：
+#### 目标设计
 
-1. 把默认 skill service、默认 permissions、默认 memory/llm 这些构造逻辑收敛到单一 composition 模块
-2. `create_agent()` 继续作为主要 composition root
-3. 只有在出现多宿主、多 profile、复杂测试装配矩阵时，再评估外部 DI container
-
-#### 重构路线
-
-Phase A:
-
-1. 提取共享 builder，消除 `factory.py` / `service.py` 的重复构造逻辑
-2. 保证默认依赖的创建规则只有一个源头
-
-Phase B:
-
-1. 若后续出现多个宿主（例如 headless runner / daemon / RPC host），再评估是否需要真正的 container
-2. 评估标准以“是否减少复杂度”为准，而不是“是否更学院派”
+1. 维持现状：`composition.py` 为单一来源，`create_agent()` 为 composition root
+2. 只有在出现多宿主、多 profile、复杂测试装配矩阵时，再评估外部 DI container（如 `punq`）
+3. 评估标准以"是否减少复杂度"为准，而不是"是否更学院派"
 
 #### 验收标准
 
-1. 默认 wiring 规则只有一个定义位置
-2. `Agent` 不再私自构造与 factory 重复的依赖
-3. 在没有多宿主需求前，不引入额外 DI 框架
+1. ✅ 默认 wiring 规则只有一个定义位置（`composition.py`）
+2. ✅ `Agent` 不再私自构造与 factory 重复的依赖
+3. ✅ 在没有多宿主需求前，不引入额外 DI 框架
+
+### 5. TUI Controller Type Safety
+
+#### 当前问题
+
+`ChatControllerMixin` 通过 duck typing 访问 `AlexApp` 的属性（如 `projector`、`view_state`、`notification_controller`），没有显式类型约束。
+
+#### 目标设计
+
+用 Protocol 定义 `_ProjectorHost`，让 `ChatControllerMixin` 的方法签名显式声明依赖。
+
+#### 重构路线
+
+1. 在 `chat_projector.py` 或新建 `tui/ports.py` 中定义 `ProjectorHost` Protocol
+2. `ChatControllerMixin` 的方法通过 Protocol 类型标注访问 host 属性
+3. `AlexApp` 隐式满足 Protocol，无需显式继承
+
+#### 验收标准
+
+1. `ChatControllerMixin` 中对 `self.projector` / `self.view_state` 等属性的访问有类型检查
+2. 不引入运行时开销（Protocol 是 structural subtyping）
 
 ---
 
@@ -429,34 +433,32 @@ Phase B:
 - Phase 1-5 已完成，覆盖 port 对齐、application/service 拆分、TUI 薄化、runtime 收口、adapter 强化与测试治理
 - 这些阶段的细节不再作为主文档主体；如需追溯变更履历，应查看对应阶段报告
 
-### Phase 6：Wiring 收口 + Cron ownership 校正 + 增量 Read Model (下一阶段)
+### Phase 6：TUI type safety + 文档同步 + 按需优化 (下一阶段)
 
 目标：
 
-- 收口 wiring 与 composition helper，消除重复构造逻辑
-- 校正 cron ownership，使文档与实现对 `CronService` / `CronManager` / `TurnProcessor` 的分工保持一致
-- 只在确有必要时增量抽取新的 read model
+- 为 `ChatControllerMixin` 引入 Protocol 约束，提升 TUI 类型安全
+- 保持 cron / read model / DI 现状，不做过度拆分
+- 在出现真实需求前，不引入新的抽象层
 
 工作项：
 
-1. 提取共享 composition helper，移除 `factory.py` / `service.py` 中重复的默认依赖创建逻辑
-2. 保持 `CronService` 为薄 facade，但明确其只负责 lifecycle / restore / facade API，不再承载额外业务
-3. 复核 cron 启动恢复、durable 任务重绑当前 session、状态栏刷新、`cron_jobs` 查询这些语义是否都由单一路径保障
-4. 如 `session list` 或 feedback 出现第二套消费路径，再抽 `SessionListReadModel` / `FeedbackReadModel`
-5. 清理文档中的历史叙事，避免继续保留“cron 必须完全回到工具层”的旧目标
-6. 暂不引入外部 DI container；只有出现明显的多宿主/多 profile 需求时再评估
+1. 定义 `ProjectorHost` Protocol，约束 `ChatControllerMixin` 对 `AlexApp` 的 duck typing 访问
+2. 保持 `CronManager` 现状（~558 行），ownership 链路已清晰，暂不拆分
+3. 保持 `ChatHistory` + `CronHistoryReadModel` 现状，等出现第二个消费者再增量抽取
+4. 保持 `composition.py` 为 wiring 唯一来源，不引入外部 DI container
 
 完成标志：
 
-- 默认 wiring 规则只有一个定义位置
-- cron 的 ownership 在文档、实现、测试中说法一致
-- 只有真正共享的派生状态才会被抽成 read model
+- `ChatControllerMixin` 的类型访问有 Protocol 约束
+- 文档与实现一致，不保留已解决的"重复 wiring"等历史叙事
+- 无新抽象层引入，架构纯度与复杂度之间保持平衡
 
 ---
 
 ## 最终验收标准
 
-当以下条件都满足时，才能称为“架构重构真正完成”：
+当以下条件都满足时，才能称为"架构重构真正完成"：
 
 1. `AgentFacade` 只负责组合与代理，不再承担主业务逻辑
 2. `SessionRepository`、`SkillServicePort`、`ToolExecutionContext` 均为真实稳定边界
@@ -469,10 +471,9 @@ Phase B:
 
 ## 一句话总结
 
-当前 Alex 已经是模块化单体 v2.4：主路径的 application service、event bus、TUI projector、tool runtime、session/store 边界和测试语义都已基本稳定。真正剩余的问题，不再是“大规模拆层”，而是把少数仍然模糊的 ownership 收口清楚。
+当前 Alex 已经是模块化单体 v2.6：主路径的 application service、event bus、TUI projector、tool runtime、session/store 边界、wiring 收口和测试语义都已基本稳定。真正剩余的问题，不再是"大规模拆层"，而是少数类型安全细节和文档同步。
 
-下一阶段的重点不应再是“为了纯度继续拆”，而是：
-1. 收口 wiring，消除重复构造逻辑
-2. 校正 cron 的 ownership 叙事，使 `CronService` / `CronManager` / `TurnProcessor` 的边界稳定
-3. 只在 UI 读状态出现多个消费者后，再增量抽 read model
-4. 在出现真实需求前，不急于引入外部 DI container
+下一阶段的重点：
+1. TUI controller 的 Protocol 类型约束
+2. 保持 cron / read model / DI 的现状，不过度拆分
+3. 文档持续与实现对齐

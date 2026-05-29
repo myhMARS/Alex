@@ -15,12 +15,14 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool as LCBaseTool
 
 from alex.agent.composition import (
+    create_default_config,
     create_default_llm,
     create_default_memory,
     create_default_skill_service,
 )
 from alex.agent.service import Agent
 from alex.bus import AsyncEventBus
+from alex.llm.base import LLMConfig
 from alex.memory.base import MemoryBase
 from alex.skill import SkillService
 from alex.tools.permissions import AuditLogger, PermissionPolicy
@@ -38,6 +40,7 @@ def create_agent(
     memory: MemoryBase | None = None,
     skill_manager: SkillService | None = None,
     llm: BaseChatModel | None = None,
+    config: LLMConfig | None = None,
     event_bus: AsyncEventBus | None = None,
     llm_factory: Callable[[], BaseChatModel] | None = None,
     permissions: PermissionPolicy | None = None,
@@ -63,6 +66,7 @@ def create_agent(
     Returns the agent together with the per-plugin load results so the
     host can surface diagnostics for failures.
     """
+    _config = config or create_default_config()
     _llm = llm or (llm_factory() if llm_factory else create_default_llm())
     _memory = memory or create_default_memory()
     _skills = skill_manager or create_default_skill_service()
@@ -86,6 +90,7 @@ def create_agent(
         memory=_memory,
         skill_manager=_skills,
         llm=_llm,
+        config=_config,
         event_bus=event_bus,
         permissions=_permissions,
     )

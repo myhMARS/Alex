@@ -21,6 +21,7 @@ from langchain_core.tools import BaseTool as LCBaseTool
 
 from alex.agent.chat_service import ChatAppService
 from alex.agent.composition import (
+    create_default_config,
     create_default_llm,
     create_default_memory,
     create_default_skill_service,
@@ -30,6 +31,7 @@ from alex.agent.feedback_service import FeedbackAppService
 from alex.agent.session_service import SessionService
 from alex.agent.skill_admin_service import SkillAdminAppService
 from alex.bus import AsyncEventBus
+from alex.llm.base import LLMConfig
 from alex.memory.base import MemoryBase
 from alex.skill import SkillService
 from alex.tools.permissions import PermissionPolicy
@@ -53,10 +55,12 @@ class Agent:
         memory: MemoryBase | None = None,
         skill_manager: SkillService | None = None,
         llm: BaseChatModel | None = None,
+        config: LLMConfig | None = None,
         event_bus: AsyncEventBus | None = None,
         permissions: PermissionPolicy | None = None,
     ) -> None:
         self._llm = llm or create_default_llm()
+        self._config = config or create_default_config()
         self._system_prompt = system_prompt or "You are a helpful AI assistant."
         self._max_iterations = max_iterations
         self._callbacks = callbacks or []
@@ -72,13 +76,13 @@ class Agent:
 
         self._skill_admin = SkillAdminAppService(
             skill_manager=self._skills,
-            llm=self._llm,
+            config=self._config,
         )
 
         self._feedback = FeedbackAppService(
             memory=self._memory,
             skill_manager=self._skills,
-            llm=self._llm,
+            config=self._config,
             push_notification=self.push_notification,
         )
 

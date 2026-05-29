@@ -34,7 +34,7 @@ class TestFeedbackSessionState:
         svc = FeedbackAppService(
             memory=MagicMock(),
             skill_manager=MagicMock(),
-            llm=MagicMock(),
+            config=MagicMock(),
             push_notification=_async_noop,
         )
         assert svc.turn_count == 0
@@ -46,7 +46,7 @@ class TestFeedbackSessionState:
         svc = FeedbackAppService(
             memory=MagicMock(),
             skill_manager=MagicMock(),
-            llm=MagicMock(),
+            config=MagicMock(),
             push_notification=_async_noop,
         )
 
@@ -68,7 +68,7 @@ class TestFeedbackSessionState:
         svc = FeedbackAppService(
             memory=MagicMock(),
             skill_manager=MagicMock(),
-            llm=MagicMock(),
+            config=MagicMock(),
             push_notification=_async_noop,
         )
         svc.set_session_id("sid")
@@ -84,7 +84,7 @@ class TestFeedbackSessionState:
         svc = FeedbackAppService(
             memory=MagicMock(),
             skill_manager=MagicMock(),
-            llm=MagicMock(),
+            config=MagicMock(),
             push_notification=_async_noop,
         )
         svc.set_session_id("ep-session")
@@ -112,7 +112,7 @@ class TestFeedbackSessionState:
         svc = FeedbackAppService(
             memory=memory,
             skill_manager=skills,
-            llm=MagicMock(),
+            config=MagicMock(),
             push_notification=lambda e: _append_notification(notifications, e),
         )
         svc.set_session_id("reflect-session")
