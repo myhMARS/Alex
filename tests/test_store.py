@@ -61,7 +61,7 @@ class TestSessionPersistence:
         original_replace = os.replace
 
         def _replace(src: str, dst: str) -> None:
-            replace_calls.append((src, dst))
+            replace_calls.append((str(src), str(dst)))
             original_replace(src, dst)
 
         monkeypatch.setattr("alex.store.session.os.replace", _replace)

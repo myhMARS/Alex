@@ -91,7 +91,7 @@ _PWSH_DENIED_TOKENS = frozenset({
 
 def _resolve_cwd(raw: str | None, allowed_roots: list[Path]) -> Path:
     return resolve_path_in_allowed_roots(
-        raw, allowed_roots, default_to_cwd=True, label="cwd",
+        raw, allowed_roots, default_to_first_root=True, label="cwd",
     )
 
 

@@ -13,7 +13,7 @@
   <a href="#license"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License" /></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.12+-blue.svg" alt="Python 3.12+" /></a>
   <a href="#"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey" alt="Platform" /></a>
-  <a href="#"><img src="https://img.shields.io/badge/tests-258%20passing-success" alt="Tests" /></a>
+  <a href="#"><img src="https://img.shields.io/badge/tests-319%20passed-success" alt="Tests" /></a>
 </p>
 
 ---
@@ -232,6 +232,10 @@ Rate responses with <kbd>Ctrl+G</kbd> / <kbd>Ctrl+B</kbd> to steer which skills 
 
 ## Architecture
 
+Alex is a modular monolith — a thin TUI layer wired to 5 application services
+through a shared composition root, with an event bus for cross-cutting
+projection and persistence.
+
 ```
 main.py
   │
@@ -247,9 +251,11 @@ main.py
 │   Agent (thin facade)                       │
 │   ├─ ChatAppService    (chat, tools, graph) │
 │   ├─ SessionService    (persistence)        │
-│   ├─ CronService       (scheduler)          │
+│   ├─ CronService       (scheduler lifecycle)│
 │   ├─ FeedbackAppService (rating/reflect)    │
 │   └─ SkillAdminAppService (CRUD/merge)      │
+│                                             │
+│   Wiring: composition.create_agent()        │
 └──┬──────────┬──────────┬──────────┬─────────┘
    │          │          │          │
    ▼          ▼          ▼          ▼
@@ -278,32 +284,36 @@ alex/
 ├── agent/                      # Application layer
 │   ├── service.py              # Agent — thin facade
 │   ├── factory.py              # create_agent() — wiring + plugin install
+│   ├── composition.py          # Shared default-dependency constructors
 │   ├── chat_service.py         # chat_stream, tool exec, graph
 │   ├── session_service.py      # persistence boundary
-│   ├── cron_service.py         # scheduler lifecycle
+│   ├── cron_service.py         # scheduler lifecycle (57-line wrapper)
 │   ├── feedback_service.py     # rating, episodes, reflection
 │   ├── skill_admin_service.py  # skill CRUD, merge
 │   ├── turn_processor.py       # unified user/cron turn FIFO processor
 │   ├── prompt.py               # PromptAssembler
 │   └── ports.py                # AgentFacade Protocol
 ├── bus/                        # Event bus
-│   ├── events.py               # Event → Command/DomainEvent/UIEvent
+│   ├── events.py               # typed event hierarchy
 │   └── in_memory.py            # AsyncEventBus
 ├── memory/                     # Conversation memory
-│   ├── base.py
-│   └── buffer.py               # BufferMemory (sliding window)
+│   ├── base.py                 # MemoryBase ABC
+│   ├── buffer.py               # BufferMemory (sliding window)
+│   └── ports.py                # MemoryService Protocol
 ├── skill/                      # Adaptive skill system
 │   ├── service.py              # business logic
-│   ├── repository.py           # SkillStore (JSON)
+│   ├── repository.py           # SkillStore (JSON, atomic writes)
 │   ├── matcher.py              # tag+keyword retrieval
 │   ├── reflector.py            # LLM reflection
-│   └── evolution.py            # lifecycle transitions
+│   ├── evolution.py            # lifecycle transitions
+│   └── ports.py                # SkillServicePort Protocol
 ├── store/                      # Session persistence
 │   ├── session.py              # file I/O
 │   ├── session_serializer.py   # BaseMessage <-> dict
-│   └── session_adapter.py      # SessionPersistence (event-driven)
+│   ├── session_adapter.py      # SessionPersistence (event-driven)
+│   └── ports.py                # SessionRepository Protocol
 ├── scheduler/
-│   └── manager.py              # APScheduler wrapper
+│   └── manager.py              # CronManager — APScheduler + job lifecycle
 ├── tools/
 │   ├── registry.py / executor.py / ports.py
 │   ├── permissions.py          # PermissionPolicy + AuditLogger + summarisers
@@ -314,6 +324,7 @@ alex/
 │   ├── shell.py                # bash / pwsh
 │   ├── git.py                  # git_inspect
 │   ├── time.py / web_search.py / web_fetch.py / cron.py
+│   └── _path.py / _binary.py   # shared OS-level helpers
 ├── tui/
 │   ├── app.py                  # AlexApp — Textual root
 │   ├── controller.py           # commands, session, toggles
@@ -323,10 +334,16 @@ alex/
 │   ├── view_state.py / view_models.py / cron_history.py
 │   ├── presenter.py            # AlexBubble / UserBubble / ToolBubble
 │   ├── stream_renderer.py
-│   └── markdown.py             # Rich Markdown rendering layer
-├── llm/                        # provider factory + JSON-mode client
+│   ├── markdown.py             # Rich Markdown rendering layer
+│   └── alex.tcss               # externalized TUI stylesheet
+├── llm/                        # Multi-provider LLM layer
+│   ├── factory.py              # LLMFactory — provider dispatch
+│   ├── base.py                 # LLMConfig
+│   ├── openai.py / deepseek.py / anthropic.py
+│   └── json_client.py          # JSON-mode client with digest-based caching
 ├── prompts/                    # Jinja2 templates
-└── config.py
+├── config.py
+└── py.typed                    # PEP 561 marker — inline type hints
 ```
 
 ## Documentation
@@ -366,7 +383,7 @@ Full module docs in [`docs/`](docs/):
 uv run pytest -q
 ```
 
-258 tests covering the agent core, TUI rendering, tool gating, permission policy, audit log, plugin loader, MCP client, and Markdown layer. Tests dependent on optional binaries (`bash`, `pwsh`, `git`, `rg`) skip gracefully when those aren't installed.
+319 tests covering the agent core, TUI rendering, tool gating, permission policy, audit log, plugin loader, MCP client, Markdown layer, and contract/state/event semantics across port boundaries. Tests dependent on optional binaries (`bash`, `pwsh`, `git`, `rg`) skip gracefully when those aren't installed.
 
 ## Contributing
 

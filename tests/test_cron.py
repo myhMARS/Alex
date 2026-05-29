@@ -142,7 +142,7 @@ async def test_cron_manager_persists_durable_jobs_atomically(tmp_path, monkeypat
     original_replace = os.replace
 
     def _replace(src: str, dst: str) -> None:
-        replace_calls.append((src, dst))
+        replace_calls.append((str(src), str(dst)))
         original_replace(src, dst)
 
     async def runner(session_id: str, job_id: str, name: str, prompt: str, stream_id: str) -> str:
