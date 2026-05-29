@@ -208,6 +208,7 @@ alex/
 │   ├── time.py / web_search.py / web_fetch.py / cron.py
 ├── tui/                        # TUI 界面
 │   ├── app.py / alex.tcss      # AlexApp 主类 + CSS 样式表（CSS_PATH 外部加载）
+│   ├── ports.py                # _ControllerHost Protocol — TUI structural subtyping
 │   ├── controller.py           # 命令分发、session、toggles
 │   ├── chat_projector.py       # bus → widget（含 _ProjectorHost Protocol）
 │   ├── notification_controller.py # toast / feedback / 权限确认
@@ -215,6 +216,7 @@ alex/
 │   ├── view_state.py / view_models.py / cron_history.py
 │   ├── presenter.py            # AlexBubble / UserBubble / ToolBubble
 │   ├── stream_renderer.py
+│   ├── tool_display.py         # 工具输出渲染组件
 │   └── markdown.py             # render_response — Rich Markdown 渲染层
 ├── llm/                        # LLM 工厂层
 ├── prompts/                    # Jinja2 提示词模板
