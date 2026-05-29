@@ -2,7 +2,7 @@
 
 ## 设计思路
 
-基于 LangGraph 的 `astream_events` API，`TurnOrchestrator` 和 `CronTurnHandler` 直接 yield / publish 类型化的 UI 事件（`ThinkingUpdated`、`TokenEmitted`、`ToolStarted`、`ToolFinished`、`SkillLoaded`）。这些事件类定义在 `alex/bus/events.py` 中。
+基于 LangGraph 的 `astream_events` API，`TurnProcessor` 统一处理用户 turn 与 cron turn，并对外发送类型化的 UI 事件（`ThinkingUpdated`、`TokenEmitted`、`ToolStarted`、`ToolFinished`、`SkillLoaded`）。这些事件类定义在 `alex/bus/events.py` 中。
 
 > **注意**：早期 `alex/streaming/` 模块（`StreamEvent` + `StreamHandler`）已在事件总线重构中移除。流式事件类型现在统一纳入 `Event -> UIEvent` 继承体系。
 
@@ -19,7 +19,7 @@
 ## 用户 turn 流式路径
 
 ```
-TurnOrchestrator.run()
+TurnProcessor.stream_user_turn()
   └── graph.astream_events()
         ├── on_chat_model_stream → yield ThinkingUpdated / TokenEmitted
         ├── on_tool_start       → yield SkillLoaded + ToolStarted
@@ -31,7 +31,7 @@ TurnOrchestrator.run()
 ## Cron turn 流式路径
 
 ```
-CronTurnHandler.handle()
+TurnProcessor.run_cron_turn()
   └── graph.astream_events()
         ├── on_chat_model_stream → bus.publish(ThinkingUpdated(stream_id=...))
         ├── on_tool_start       → bus.publish(ToolStarted(is_cron=True, stream_id=...))

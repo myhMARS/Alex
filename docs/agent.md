@@ -13,8 +13,7 @@ Agent 是整个系统的薄编排 facade，把 LLM、Memory、Tools（含权限�
 | `CronService` | `cron_service.py` | `CronManager` 生命周期封装（绑定 loop / start / shutdown / schedule / cancel） |
 | `FeedbackAppService` | `feedback_service.py` | 用户评分、episodes 采集、条件反思触发；per-session state 隔离 |
 | `SkillAdminAppService` | `skill_admin_service.py` | 技能 CRUD / merge / load_skill 入口 |
-| `TurnOrchestrator` | `orchestrator.py` | 单个用户 turn 编排（LLM 流 + 工具调用 + 记忆写入 + 事件发布） |
-| `CronTurnHandler` | `cron_handler.py` | cron 触发后的流式 LLM 回复 |
+| `TurnProcessor` | `turn_processor.py` | 单消费者 FIFO；统一处理用户 turn 与 cron turn 的流式执行、记忆写入和事件发布 |
 | `PromptAssembler` | `prompt.py` | 动态 prompt 组装（技能目录注入） |
 
 `create_agent()`（`factory.py`）作为对外的装配入口：默认值合并、权限策略构造、`AuditLogger` 挂载、用户插件加载，全在这一处完成。`main.py` 通过它取得 ready-to-use 的 `Agent` 实例。
@@ -53,10 +52,10 @@ Agent 通过 `push_notification()` 向 EventBus 发布以下事件：
 | 事件 | 触发时机 |
 |------|---------|
 | `UserTurnRequested` | 每个用户 turn 开始时（提升可观测性） |
-| `CronJobEvent` | Cron 任务状态变更（含 `subscribe=True` 时 cron handler 自动接力） |
+| `CronJobEvent` | Cron 任务状态变更（供 TUI / store 等观察者消费） |
 | `SkillReflectEvent` / `SkillReflectErrorEvent` | 技能反思完成/失败 |
 
-`TurnStarted` / `TurnCompleted` / `TurnFailed` 由 `TurnOrchestrator` 和 `CronTurnHandler` 直接发布。
+`TurnStarted` / `TurnCompleted` / `TurnFailed` 由 `TurnProcessor` 直接发布。
 
 ## 内置工具
 
@@ -90,19 +89,18 @@ Agent 自动注册两个内置工具（无需主程序显式装配）：
 
 ## 并发模型
 
-`_turn_lock`（`asyncio.Lock`）确保同一时间只有一个对话轮次在操作 Memory：
+`TurnProcessor` 使用单消费者 FIFO 队列，确保同一时间只有一个对话轮次在操作 Memory：
 
 ```
-User chat (holds lock)        Cron reply (waits)
-     │                            │
-     ├─ read memory               │  ← await lock
-     ├─ stream LLM                │
-     ├─ write batch               │
-     └─ release lock ─────────────┤
-                                  ├─ read memory (latest state)
-                                  ├─ stream LLM
-                                  ├─ write batch
-                                  └─ release lock
+User / cron turn submit
+     │
+     ├─ enqueue FIFO
+     │
+     └─ TurnProcessor single consumer
+          ├─ read memory
+          ├─ stream LLM
+          ├─ write batch
+          └─ process next queued turn
 ```
 
 权限 confirm modal 也通过 `NotificationController` 内部的 `_confirm_lock` 串行化，避免用户 turn 与 cron turn 同时弹窗。
@@ -158,9 +156,7 @@ alex/agent/
 ├── cron_service.py             # CronManager 生命周期封装
 ├── feedback_service.py         # FeedbackAppService — 评分 / episodes / 反思
 ├── skill_admin_service.py      # SkillAdminAppService — 技能 CRUD / merge
-├── orchestrator.py             # TurnOrchestrator — 用户 turn 编排
-├── cron_handler.py             # CronTurnHandler — cron 流式回复
-├── feedback.py                 # FeedbackRecorder（兼容保留）
+├── turn_processor.py           # TurnProcessor — 统一 user/cron turn FIFO 执行
 ├── prompt.py                   # PromptAssembler — 动态 prompt 组装
 └── ports.py                    # AgentFacade Protocol
 ```

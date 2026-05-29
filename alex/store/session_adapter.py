@@ -77,8 +77,6 @@ class SessionPersistence:
                 "prompt": event.prompt,
                 "durable": event.durable,
                 "recurring": event.recurring,
-                "action": event.action,
-                "params": dict(event.params or {}),
                 "runs_done": event.runs_done,
                 "started_at": event.started_at,
                 "finished_at": event.finished_at,

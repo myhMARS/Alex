@@ -23,6 +23,7 @@ from alex.prompts import get_system_prompt
 from alex.tools import (
     FileReadTracker,
     create_available_shell_tools,
+    create_cron_cancel_tool,
     create_edit_tool,
     create_read_tool,
     create_write_tool,
@@ -65,6 +66,7 @@ def _build_agent(bus: AsyncEventBus | None = None) -> Agent:
         event_bus=bus,
     )
     agent.register_tool(create_cron_tool(agent))
+    agent.register_tool(create_cron_cancel_tool(agent))
 
     for result in plugin_results:
         if result.error:

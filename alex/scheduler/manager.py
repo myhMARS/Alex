@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
+import os
+import tempfile
 import time
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from alex.bus.events import CronDebugEvent, CronJobEvent
 from alex.config import is_cron_debug_enabled
 
 CRON_DIR = Path.home() / ".alex" / "cron"
+NormalizedCronRunner = Callable[[str, str, str, str, str, bool], Awaitable[str]]
 
 
 class CronParseError(ValueError):
@@ -104,6 +108,58 @@ class CronManager:
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._running_tasks: dict[str, asyncio.Task] = {}
 
+    async def _run_on_bound_loop(self, coro):
+        loop = self._loop
+        if loop is None:
+            return await coro
+        try:
+            cur = asyncio.get_running_loop()
+        except RuntimeError:
+            cur = None
+        if cur is None or cur is loop:
+            return await coro
+        fut = asyncio.run_coroutine_threadsafe(coro, loop)
+        return await asyncio.wrap_future(fut)
+
+    @staticmethod
+    def _normalize_runner(runner: callable) -> NormalizedCronRunner:
+        try:
+            params = inspect.signature(runner).parameters
+        except (TypeError, ValueError):
+            params = {}
+
+        if "wait_until_done" in params:
+            async def _wrapped(
+                session_id: str,
+                job_id: str,
+                name: str,
+                prompt: str,
+                stream_id: str,
+                wait_until_done: bool,
+            ) -> str:
+                return await runner(
+                    session_id,
+                    job_id,
+                    name,
+                    prompt,
+                    stream_id,
+                    wait_until_done=wait_until_done,
+                )
+            return _wrapped
+
+        async def _legacy(
+            session_id: str,
+            job_id: str,
+            name: str,
+            prompt: str,
+            stream_id: str,
+            wait_until_done: bool,
+        ) -> str:
+            _ = wait_until_done
+            return await runner(session_id, job_id, name, prompt, stream_id)
+
+        return _legacy
+
     def bind_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
         sch = self._scheduler
@@ -144,7 +200,18 @@ class CronManager:
         if not job.durable:
             return
         path = self._job_path(job.id)
-        path.write_text(json.dumps(job.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+        payload = json.dumps(job.to_dict(), ensure_ascii=False, indent=2).encode("utf-8")
+        fd, tmp_path = tempfile.mkstemp(prefix=".alex.", suffix=".tmp", dir=str(path.parent))
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(payload)
+            os.replace(tmp_path, path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def _delete_persisted_job(self, job_id: str) -> None:
         path = self._job_path(job_id)
@@ -160,12 +227,6 @@ class CronManager:
             prompt=job.prompt,
             recurring=job.recurring,
             durable=job.durable,
-            action="prompt",
-            params={
-                "prompt": job.prompt,
-                "durable": job.durable,
-                "recurring": job.recurring,
-            },
             runs_done=job.runs_done,
             started_at=job.last_started_at,
             finished_at=job.last_finished_at,
@@ -175,6 +236,7 @@ class CronManager:
         ))
 
     async def restore_durable_jobs(self, *, runner: callable, session_id: str = "") -> None:
+        normalized_runner = self._normalize_runner(runner)
         if not self._storage_dir.exists():
             return
         for path in sorted(self._storage_dir.glob("*.json")):
@@ -193,21 +255,11 @@ class CronManager:
             if session_id:
                 job.session_id = session_id
             self._jobs[job.id] = job
-            self._runners[job.id] = runner
+            self._runners[job.id] = normalized_runner
             self._persist_job(job)
 
     async def _ensure_scheduler(self) -> None:
-        loop = self._loop
-        if loop is not None:
-            try:
-                cur = asyncio.get_running_loop()
-            except RuntimeError:
-                cur = None
-            if cur is not None and cur is not loop:
-                fut = asyncio.run_coroutine_threadsafe(self._ensure_scheduler_inner(), loop)
-                await asyncio.wrap_future(fut)
-                return
-        await self._ensure_scheduler_inner()
+        await self._run_on_bound_loop(self._ensure_scheduler_inner())
 
     async def _ensure_scheduler_inner(self) -> None:
         if self._scheduler is not None:
@@ -299,33 +351,14 @@ class CronManager:
         durable: bool,
         runner: callable,
     ) -> str:
-        loop = self._loop
-        if loop is not None:
-            try:
-                cur = asyncio.get_running_loop()
-            except RuntimeError:
-                cur = None
-            if cur is not None and cur is not loop:
-                fut = asyncio.run_coroutine_threadsafe(
-                    self._schedule_inner(
-                        session_id=session_id,
-                        cron=cron,
-                        prompt=prompt,
-                        recurring=recurring,
-                        durable=durable,
-                        runner=runner,
-                    ),
-                    loop,
-                )
-                return await asyncio.wrap_future(fut)
-        return await self._schedule_inner(
+        return await self._run_on_bound_loop(self._schedule_inner(
             session_id=session_id,
             cron=cron,
             prompt=prompt,
             recurring=recurring,
             durable=durable,
             runner=runner,
-        )
+        ))
 
     async def _schedule_inner(
         self,
@@ -345,6 +378,7 @@ class CronManager:
         if not prompt_text:
             raise CronParseError("Provide prompt")
         _next_cron_time(time.time(), cron_str)
+        normalized_runner = self._normalize_runner(runner)
 
         job_id = uuid.uuid4().hex[:12]
         job = CronJob(
@@ -357,24 +391,15 @@ class CronManager:
             durable=bool(durable),
         )
         self._jobs[job_id] = job
-        self._runners[job_id] = runner
+        self._runners[job_id] = normalized_runner
         self._persist_job(job)
-        self._schedule_aps(job, runner)
+        self._schedule_aps(job, normalized_runner)
         self._aps_job_ids[job_id] = job_id
         self._emit_job_event(job, status=job.status)
         return job_id
 
     async def cancel(self, job_id: str) -> bool:
-        loop = self._loop
-        if loop is not None:
-            try:
-                cur = asyncio.get_running_loop()
-            except RuntimeError:
-                cur = None
-            if cur is not None and cur is not loop:
-                fut = asyncio.run_coroutine_threadsafe(self._cancel_inner(job_id), loop)
-                return await asyncio.wrap_future(fut)
-        return await self._cancel_inner(job_id)
+        return await self._run_on_bound_loop(self._cancel_inner(job_id))
 
     async def _cancel_inner(self, job_id: str) -> bool:
         aps_id = self._aps_job_ids.pop(job_id, None)
@@ -404,7 +429,7 @@ class CronManager:
             self._emit_job_event(job, status=job.status)
         return removed_aps or job is not None
 
-    def _schedule_aps(self, job: CronJob, runner: callable) -> str:
+    def _schedule_aps(self, job: CronJob, runner: NormalizedCronRunner) -> str:
         base = datetime.now().astimezone()
         trigger = _build_cron_trigger(job.cron, base.tzinfo)
 
@@ -427,7 +452,14 @@ class CronManager:
                     self._emit_job_event(job, status=job.status)
 
                     try:
-                        result = await runner(job.session_id, job.id, job.name, job.prompt, stream_id)
+                        result = await runner(
+                            job.session_id,
+                            job.id,
+                            job.name,
+                            job.prompt,
+                            stream_id,
+                            job.recurring,
+                        )
                         if job.status == "CANCELLED":
                             return
                         job.last_result = str(result)

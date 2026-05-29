@@ -32,6 +32,7 @@ from pathlib import Path
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+from alex.tools._path import resolve_path_in_allowed_roots
 from alex.tools.permissions import (
     PERMISSION_SHELL,
     PreviewBlock,
@@ -89,26 +90,17 @@ _PWSH_DENIED_TOKENS = frozenset({
 
 
 def _resolve_cwd(raw: str | None, allowed_roots: list[Path]) -> Path:
-    if not raw:
-        return Path.cwd()
-    candidate = Path(raw).expanduser()
-    if not candidate.is_absolute():
-        candidate = Path.cwd() / candidate
-    resolved = candidate.resolve(strict=False)
-    for root in allowed_roots:
-        try:
-            resolved.relative_to(root.resolve(strict=False))
-            return resolved
-        except ValueError:
-            continue
-    raise ValueError(f"cwd '{raw}' is outside the allowed roots")
+    return resolve_path_in_allowed_roots(
+        raw, allowed_roots, default_to_cwd=True, label="cwd",
+    )
 
 
 def _truncate(data: bytes) -> str:
     if len(data) <= MAX_OUTPUT_BYTES:
         return data.decode("utf-8", errors="replace")
     head = data[:MAX_OUTPUT_BYTES]
-    return head.decode("utf-8", errors="replace") + "\n\n[Output truncated...]"
+    safe_head = head.decode("utf-8", errors="ignore").encode("utf-8")
+    return safe_head.decode("utf-8", errors="replace") + "\n\n[Output truncated...]"
 
 
 def _format_shell_result(*, stdout: bytes, stderr: bytes, exit_code: int) -> str:

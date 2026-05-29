@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 
 from textual import on, work
 from textual.app import App, ComposeResult
@@ -15,10 +14,7 @@ from textual.widgets import Header, Input, Static
 from alex.agent.ports import AgentFacade
 from alex.bus import AsyncEventBus
 from alex.bus.events import (
-    CronBatch,
     CronDebugEvent,
-    CronDone,
-    CronError,
     CronJobEvent,
     SkillLoaded,
     SkillReflectErrorEvent,
@@ -27,16 +23,17 @@ from alex.bus.events import (
     TokenEmitted,
     ToolFinished,
     ToolStarted,
+    TurnCompleted,
+    TurnFailed,
+    TurnStarted,
 )
 from alex.tools.mcp_client import (
     MCPClientPool,
     MCPUnavailableError,
     load_mcp_tools_from_config,
 )
-from alex.tui.view_models import ChatHistory, ChatTurn
+from alex.tui.view_models import ChatHistory
 from alex.tui.view_state import SessionViewState
-from alex.tui.presenter import AlexBubble, UserBubble
-from alex.tui.stream_renderer import StreamRenderer
 from alex.tui.chat_projector import ChatProjector
 from alex.tui.notification_controller import NotificationController
 from alex.tui.controller import ChatControllerMixin
@@ -218,7 +215,7 @@ class AlexApp(ChatControllerMixin, App):
     def __init__(self, agent: AgentFacade, event_bus: AsyncEventBus | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self._agent = agent
-        self._bus = event_bus
+        self._bus = event_bus or AsyncEventBus()
         self._history = ChatHistory()
         self._thinking_expanded = False
         self._skills_expanded = False
@@ -287,13 +284,14 @@ class AlexApp(ChatControllerMixin, App):
             await bus.subscribe(CronDebugEvent, p.on_cron_debug_event)
             await bus.subscribe(SkillReflectEvent, p.on_skill_reflect_event)
             await bus.subscribe(SkillReflectErrorEvent, p.on_skill_reflect_error_event)
-            await bus.subscribe(ToolStarted, p.on_cron_tool_started)
-            await bus.subscribe(ToolFinished, p.on_cron_tool_finished)
-            await bus.subscribe(ThinkingUpdated, p.on_cron_thinking)
-            await bus.subscribe(TokenEmitted, p.on_cron_token)
-            await bus.subscribe(CronBatch, p.on_cron_batch)
-            await bus.subscribe(CronDone, p.on_cron_done)
-            await bus.subscribe(CronError, p.on_cron_error)
+            await bus.subscribe(TurnStarted, p.on_turn_started)
+            await bus.subscribe(SkillLoaded, p.on_skill_loaded)
+            await bus.subscribe(ThinkingUpdated, p.on_thinking)
+            await bus.subscribe(TokenEmitted, p.on_token)
+            await bus.subscribe(ToolStarted, p.on_tool_started)
+            await bus.subscribe(ToolFinished, p.on_tool_finished)
+            await bus.subscribe(TurnCompleted, p.on_turn_completed)
+            await bus.subscribe(TurnFailed, p.on_turn_failed)
             await self._agent.subscribe_store(bus)
             if self._agent.bus is None:
                 self._agent.bind_event_bus(bus)
@@ -377,14 +375,15 @@ class AlexApp(ChatControllerMixin, App):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle user input submission."""
         user_input = event.value.strip()
-        event.input.clear()
+        notif = self._notif
 
         if not user_input:
             return
 
+        event.input.clear()
+
         cmd = user_input.lower()
         vs = self._view_state
-        notif = self._notif
 
         # ── modal gate: when a page panel is showing, only allow :q, /x, and resume selection ──
         if vs.page_mode is not None:
@@ -454,91 +453,17 @@ class AlexApp(ChatControllerMixin, App):
 
         # If previous response wasn't rated, treat the new message as implicit skip
         notif.dismiss_feedback()
+        self._projector.note_user_submission(user_input)
 
-        # Show user message immediately
-        chat_view = self.query_one("#chat-view", VerticalScroll)
-        chat_view.mount(UserBubble(user_input))
-        self._projector.trim_chat_view(chat_view)
-
-        # Start async response
+        # Start async response; the user bubble is mounted only when the turn
+        # is actually dequeued for processing.
         self._run_chat(user_input)
 
-    @work(exclusive=True)
+    @work
     async def _run_chat(self, user_input: str) -> None:
-        """Run agent chat — streams response directly into the Alex bubble."""
-        chat_view = self.query_one("#chat-view", VerticalScroll)
-        notif = self._notif
-        vs = self._view_state
-
-        # Create and mount the bubble immediately for streaming
-        bubble = AlexBubble(tool_output_expanded=self._tool_output_expanded)
-        chat_view.mount(bubble)
-        chat_view.scroll_end()
-
-        renderer = StreamRenderer(bubble)
-        section_start = 0
-        _last_ui_update = time.monotonic()
-        _last_scroll = time.monotonic()
-
+        """Run agent chat — rendering and history updates are bus-driven."""
         try:
-            async for event in self._agent.chat_stream(user_input):
-                if isinstance(event, ThinkingUpdated):
-                    renderer.on_thinking(event.delta)
-
-                elif isinstance(event, TokenEmitted):
-                    renderer.on_token(event.delta)
-
-                elif isinstance(event, SkillLoaded):
-                    renderer.on_skill_loaded(event.skill_name, event.skill_pattern)
-
-                elif isinstance(event, ToolStarted):
-                    tid = event.tool_id or f"{event.tool_name}:{time.monotonic_ns()}"
-                    renderer.on_tool_started(tid, event.tool_name, event.tool_input)
-                    section_start = len(renderer.collected)
-
-                elif isinstance(event, ToolFinished):
-                    renderer.on_tool_finished(event.tool_id or "", str(event.output or ""))
-
-                # Throttle UI updates — ~50ms for smooth streaming
-                now = time.monotonic()
-                if now - _last_ui_update > 0.05:
-                    section_text = renderer.collected[section_start:]
-                    if section_text:
-                        bubble.set_response(section_text)
-                    elif renderer.thinking and section_start == 0:
-                        bubble.set_response(f"  \U0001f4ad Thinking... ({len(renderer.thinking)} chars)")
-                    if now - _last_scroll > 0.25:
-                        chat_view.scroll_end()
-                        _last_scroll = now
-                    await asyncio.sleep(0)
-                    _last_ui_update = now
-
+            async for _ in self._agent.chat_stream(user_input):
+                await asyncio.sleep(0)
         except Exception as e:
-            bubble.finalize(ChatTurn(
-                user_input=user_input,
-                response=f"Error: {e}",
-                thinking=renderer.thinking,
-                tool_calls=list(renderer.tool_calls),
-                skills=list(renderer.skills),
-            ))
-            return
-
-        # Finalize the bubble with complete turn data
-        result = self._agent.last_turn_result
-        turn = ChatTurn(
-            user_input=user_input,
-            response=renderer.collected,
-            thinking=renderer.thinking,
-            tool_calls=list(renderer.tool_calls),
-            skills=list(renderer.skills),
-        )
-        self._history.add(turn, messages_delta=getattr(result, 'message_batch', None))
-        bubble.finalize(turn)
-        if result:
-            vs.pending_feedback_turn_id = getattr(result, 'turn_id', '')
-
-        # Show feedback prompt only when skills were actually used
-        if renderer.skills:
-            notif.show_feedback_prompt()
-
-        self._projector.refresh_status_bar()
+            self._notif.show_toast(f"对话执行失败：{e}", duration=3)

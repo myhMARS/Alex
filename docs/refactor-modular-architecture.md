@@ -141,9 +141,7 @@ alex/
 │   ├── cron_service.py         # CronService — cron schedule/cancel/lifecycle
 │   ├── feedback_service.py     # FeedbackAppService — rating, episode, reflection
 │   ├── skill_admin_service.py  # SkillAdminAppService — skill CRUD, merge
-│   ├── orchestrator.py         # TurnOrchestrator — single turn execution
-│   ├── cron_handler.py         # CronTurnHandler — cron-triggered LLM replies
-│   ├── feedback.py             # FeedbackRecorder (legacy, retained for compat)
+│   ├── turn_processor.py       # TurnProcessor — unified user/cron FIFO execution
 │   ├── prompt.py               # PromptAssembler — system prompt + skills section
 │   └── ports.py                # AgentFacade Protocol
 ├── bus/
@@ -235,7 +233,7 @@ TUI
 ### 当前架构仍存在的核心问题
 
 1. 组合根仍有重复：`_create_default_skill_service` 在 `factory.py` 和 `service.py` 中重复定义，wiring 规则没有收口到单一模块
-2. Cron 的职责边界仍不够清晰：工具入口、调度恢复、触发执行、事件投影虽然都已工作，但 ownership 分散在 `tools/cron.py`、`CronService`、`CronManager`、`CronTurnHandler`
+2. Cron 的职责边界仍不够清晰：工具入口、调度恢复、触发执行、事件投影虽然都已工作，但 ownership 仍分散在 `tools/cron.py`、`CronService`、`CronManager` 与统一 turn 执行路径之间
 3. Read model 仍以 `ChatHistory` 为中心；虽然 cron history 已独立，但 session list、feedback 等读状态尚未形成稳定抽象
 
 ---
@@ -252,7 +250,7 @@ TUI
 | Event System | ✅ typed event + event-only bus 语义明确 | 维持 direct-call + event-only bus，不再引入额外 command bus 叙事 | 低 |
 | TUI / Projection | ✅ controller 已薄化至 282 行，ChatProjector / SessionViewState / NotificationController 已分离 | - | 已解决 |
 | Tool Runtime | ✅ `ToolExecutionContext` 为一等对象，executor 和所有 caller 已对齐 | - | 已解决 |
-| Cron / Scheduler | 已稳定可用，但工具入口、生命周期恢复、触发执行的职责仍分散 | 明确 ownership：工具负责参数面，`CronService` 负责应用级生命周期，`CronManager` 保持基础设施 adapter，`CronTurnHandler` 负责执行 | 中 |
+| Cron / Scheduler | 已稳定可用，但工具入口、生命周期恢复、触发执行的职责仍分散 | 明确 ownership：工具负责参数面，`CronService` 负责应用级生命周期，`CronManager` 保持基础设施 adapter，`TurnProcessor` 负责统一执行 | 中 |
 | Feedback / Reflection | ✅ `FeedbackAppService` + `FeedbackSessionState` per-session 字典 | episodes 持久化为独立日志（可选） | 低 |
 | Read Models | 主要靠 `ChatHistory` 与即时渲染状态 | 明确 projector + read model 边界 | 中 |
 | Tests / Governance | ✅ contract / state / event 语义测试已补齐 | 持续让关键架构约束有对应测试映射 | 低 |
@@ -290,7 +288,7 @@ TUI
 cron 功能已经稳定（`cron` 工具调度 + `cron_jobs` 查询 + APScheduler + cron reply 链路），但 lifecycle 与 ownership 仍分散在三处：
 
 - `CronManager`（scheduler/manager.py）— APScheduler 封装 + job 生命周期
-- `CronTurnHandler`（agent/cron_handler.py）— cron 触发的 LLM reply turn
+- `TurnProcessor`（agent/turn_processor.py）— user/cron 共用的 FIFO 执行与流式事件分发
 - `Agent._cron`（agent/service.py）— `CronService` 薄包装
 
 cron 本质上是一条“工具触发 + 调度恢复 + 异步执行 + 事件投影”的跨层链路。当前问题不是 `CronService` 存在本身，而是这条链路的职责边界还没有被文档清楚说透。
@@ -301,7 +299,7 @@ cron 本质上是一条“工具触发 + 调度恢复 + 异步执行 + 事件投
 tools/cron.py               # cron 工具的 LangChain 接口（schedule/cancel/list）
     │
     ▼
-agent/cron_handler.py       # cron 触发时跑 LLM reply（纯工具回调）
+agent/turn_processor.py     # user/cron 共用的 FIFO 执行器
     │
     ▼
 scheduler/manager.py        # CronManager — 对 APScheduler 的纯适配（基础设施）
@@ -318,7 +316,7 @@ bus/events.py               # CronJobEvent — 异步结果通过 EventBus 发�
 1. 工具层继续负责参数面与 LLM 可见接口
 2. `CronService` 保留为很薄的应用级生命周期边界，负责启动恢复、session 绑定、对 Agent 的稳定 API
 3. `CronManager` 继续作为 APScheduler adapter，不向上暴露过多执行细节
-4. `CronTurnHandler` 只负责 cron 触发后的执行，不再承担额外编排
+4. `TurnProcessor` 统一承接 user/cron 执行，不再保留额外的 cron 专用执行器
 
 核心原则从“删掉 `CronService`”调整为“**明确 ownership，避免重复入口**”。
 
@@ -332,7 +330,7 @@ Phase A:
 
 Phase B:
 
-1. 保持 `CronTurnHandler` 为唯一执行入口，不再引入新的 coordinator 抽象
+1. 保持 `TurnProcessor` 为唯一 turn 执行入口，不再引入新的 coordinator 抽象
 2. 检查启动恢复、durable 任务重绑当前 session、状态栏刷新等语义是否都由单一路径保障
 
 Phase C:
@@ -436,7 +434,7 @@ Phase B:
 目标：
 
 - 收口 wiring 与 composition helper，消除重复构造逻辑
-- 校正 cron ownership，使文档与实现对 `CronService` / `CronManager` / `CronTurnHandler` 的分工保持一致
+- 校正 cron ownership，使文档与实现对 `CronService` / `CronManager` / `TurnProcessor` 的分工保持一致
 - 只在确有必要时增量抽取新的 read model
 
 工作项：
@@ -475,6 +473,6 @@ Phase B:
 
 下一阶段的重点不应再是“为了纯度继续拆”，而是：
 1. 收口 wiring，消除重复构造逻辑
-2. 校正 cron 的 ownership 叙事，使 `CronService` / `CronManager` / `CronTurnHandler` 的边界稳定
+2. 校正 cron 的 ownership 叙事，使 `CronService` / `CronManager` / `TurnProcessor` 的边界稳定
 3. 只在 UI 读状态出现多个消费者后，再增量抽 read model
 4. 在出现真实需求前，不急于引入外部 DI container

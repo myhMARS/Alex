@@ -173,8 +173,7 @@ alex/
 │   ├── cron_service.py         # CronService（cron 调度）
 │   ├── feedback_service.py     # FeedbackAppService
 │   ├── skill_admin_service.py  # SkillAdminAppService
-│   ├── orchestrator.py         # TurnOrchestrator
-│   ├── cron_handler.py         # CronTurnHandler
+│   ├── turn_processor.py       # TurnProcessor
 │   ├── prompt.py               # PromptAssembler
 │   └── ports.py                # AgentFacade Protocol
 ├── bus/                        # 事件总线

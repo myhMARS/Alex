@@ -1,8 +1,4 @@
-"""FeedbackAppService — feedback recording, episode tracking, and reflection.
-
-Extracted from FeedbackRecorder.  Manages per-session feedback state,
-recording turn episodes, and triggering periodic / forced reflection.
-"""
+"""FeedbackAppService — feedback recording, episode tracking, and reflection."""
 
 from __future__ import annotations
 
@@ -32,8 +28,8 @@ class FeedbackAppService:
     """Application service for feedback recording and skill reflection.
 
     Each session gets its own FeedbackSessionState managed via
-    ``_sessions[session_id]``.  The old FeedbackRecorder instance-level
-    mutable fields are replaced by this dictionary.
+    ``_sessions[session_id]`` so episode buffers and reflection counters
+    stay isolated across session switches.
     """
 
     def __init__(
@@ -117,7 +113,7 @@ class FeedbackAppService:
             recent = recent[-20:]
             summary = await self._skills.reflect(recent, self._llm, episodes=state.episodes)
             state.episodes.clear()
-            self._push_notification(SkillReflectEvent(
+            await self._push_notification(SkillReflectEvent(
                 new=summary.get("new", 0),
                 updated=summary.get("updated", 0),
                 deprecated=summary.get("deprecated", 0),
@@ -127,5 +123,5 @@ class FeedbackAppService:
             return summary
         except Exception:
             logger.warning("Skill reflection failed", exc_info=True)
-            self._push_notification(SkillReflectErrorEvent(error="reflection failed"))
+            await self._push_notification(SkillReflectErrorEvent(error="reflection failed"))
             return None

@@ -13,6 +13,11 @@ TOOL_HINT = (
     "only the actual task content, not any reminder wrapper, elapsed-time wording, "
     "status announcement, or decorative/display text."
 )
+TOOL_HINT_CANCEL = (
+    "Use `cron_cancel` to delete or cancel an existing scheduled cron job by its "
+    "`job_id`. Prefer calling `cron_jobs` first when you need to inspect current "
+    "job ids before deleting one."
+)
 
 
 class CronInput(BaseModel):
@@ -20,6 +25,10 @@ class CronInput(BaseModel):
     prompt: str = Field(description="Task prompt to execute every time the cron trigger fires. Must contain only the actual task content; do not include reminder wrappers, elapsed-time wording, status text, or decorative/display text")
     recurring: bool = Field(default=True, description="If true, keep running on every matching schedule; if false, run once then delete")
     durable: bool = Field(default=False, description="If true, persist this job to ~/.alex/cron so it survives restarts")
+
+
+class CronCancelInput(BaseModel):
+    job_id: str = Field(description="Cron job id to cancel and delete")
 
 
 def create_cron_tool(scheduler: CronScheduler) -> StructuredTool:
@@ -55,4 +64,26 @@ def create_cron_tool(scheduler: CronScheduler) -> StructuredTool:
             "status text, or decorative/display text."
         ),
         args_schema=CronInput,
+    )
+
+
+def create_cron_cancel_tool(scheduler: CronScheduler) -> StructuredTool:
+    async def _cron_cancel(job_id: str = "") -> str:
+        target = str(job_id or "").strip()
+        if not target:
+            return "Error: job_id is required"
+
+        cancelled = await scheduler.cancel_cron_job(target)
+        if not cancelled:
+            return f"Error: cron job not found: {target}"
+        return f"Cancelled: {target}"
+
+    return StructuredTool.from_function(
+        coroutine=_cron_cancel,
+        name="cron_cancel",
+        description=(
+            "Cancel and delete an existing scheduled cron job by job id. "
+            "Use `cron_jobs` first if you need to inspect available job ids."
+        ),
+        args_schema=CronCancelInput,
     )

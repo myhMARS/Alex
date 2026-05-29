@@ -14,30 +14,19 @@ from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool as LCBaseTool
 
+from alex.agent.composition import (
+    create_default_llm,
+    create_default_memory,
+    create_default_skill_service,
+)
 from alex.agent.service import Agent
 from alex.bus import AsyncEventBus
-from alex.config import get_llm_config
-from alex.llm.factory import LLMFactory
 from alex.memory.base import MemoryBase
-from alex.memory.buffer import BufferMemory
 from alex.skill import SkillService
-from alex.skill.repository import SkillStore
-from alex.skill.reflector import Reflector
-from alex.skill.matcher import SkillRetriever
-from alex.skill.evolution import EvolutionEngine
 from alex.tools.permissions import AuditLogger, PermissionPolicy
 from alex.tools.plugin_loader import PluginLoadResult, install_plugins
 
 logger = logging.getLogger(__name__)
-
-
-def _create_default_skill_service() -> SkillService:
-    """Create a SkillService with default lazy-constructed dependencies."""
-    store = SkillStore()
-    reflector = Reflector()
-    retriever = SkillRetriever(store)
-    evolution = EvolutionEngine()
-    return SkillService(store=store, reflector=reflector, retriever=retriever, evolution=evolution)
 
 
 def create_agent(
@@ -74,9 +63,9 @@ def create_agent(
     Returns the agent together with the per-plugin load results so the
     host can surface diagnostics for failures.
     """
-    _llm = llm or (llm_factory() if llm_factory else LLMFactory.create(get_llm_config()))
-    _memory = memory or BufferMemory()
-    _skills = skill_manager or _create_default_skill_service()
+    _llm = llm or (llm_factory() if llm_factory else create_default_llm())
+    _memory = memory or create_default_memory()
+    _skills = skill_manager or create_default_skill_service()
     _system_prompt = system_prompt or "You are a helpful AI assistant."
 
     if audit_logger is None and audit_path is not False:

@@ -283,8 +283,7 @@ alex/
 │   ├── cron_service.py         # scheduler lifecycle
 │   ├── feedback_service.py     # rating, episodes, reflection
 │   ├── skill_admin_service.py  # skill CRUD, merge
-│   ├── orchestrator.py         # TurnOrchestrator
-│   ├── cron_handler.py         # cron-triggered LLM replies
+│   ├── turn_processor.py       # unified user/cron turn FIFO processor
 │   ├── prompt.py               # PromptAssembler
 │   └── ports.py                # AgentFacade Protocol
 ├── bus/                        # Event bus

@@ -1,5 +1,6 @@
 """Regression tests for TUI rendering and session lifecycle."""
 
+import asyncio
 import time
 from unittest.mock import AsyncMock
 
@@ -11,12 +12,14 @@ from textual.widgets import Static
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
+from alex.bus.events import TurnCompleted, TurnStarted
 from alex.tui import (
     AlexApp,
     AlexBubble,
     ChatHistory,
     ChatTurn,
     ToolBubble,
+    UserBubble,
     _messages_to_turns,
 )
 from alex.tui.chat_projector import ChatProjector
@@ -214,6 +217,28 @@ async def test_streaming_read_calls_share_single_bubble_and_path_list():
         full = tool.query_one("#tool-output-full", Static)
         assert _stored_renderable(summary) == "└─ Read 2 files\n   • repo/alex/config.py\n   • repo/main.py [Ctrl+O]"
         assert _stored_renderable(full) == "repo/alex/config.py\nrepo/main.py"
+
+
+@pytest.mark.asyncio
+async def test_streaming_thinking_updates_live_bubble():
+    from alex.tui.stream_renderer import StreamRenderer
+
+    bubble = AlexBubble()
+    async with _BubbleHarness(bubble).run_test() as pilot:
+        renderer = StreamRenderer(bubble)
+        renderer.on_thinking("step 1")
+        renderer.on_thinking(" -> step 2")
+        await pilot.pause()
+
+        collapsed = bubble.query_one(".thinking-collapsed", Static)
+        expanded = bubble.query_one(".thinking-expanded", Static)
+        response = bubble.query_one(".response-text", Static)
+
+        assert _stored_renderable(collapsed) == "💭 Thinking (17 chars) [Ctrl+T]"
+        assert _stored_renderable(expanded) == "step 1 -> step 2"
+        assert "hidden" not in getattr(collapsed, "classes", set())
+        assert "hidden" in getattr(expanded, "classes", set())
+        assert _stored_renderable(response) == ""
 
 
 class _AgentStub:
@@ -602,6 +627,67 @@ async def test_clear_clears_agent_memory():
 
         input_widget = pilot.app.query_one("#input-box", Input)
         assert not input_widget.disabled
+
+
+@pytest.mark.asyncio
+async def test_chat_allows_multiple_submissions_to_enqueue():
+    class _SlowAgent(_AgentStub):
+        def __init__(self) -> None:
+            super().__init__([])
+            self._releases = [asyncio.Event(), asyncio.Event()]
+            self.received: list[str] = []
+            self._lock = asyncio.Lock()
+
+        async def chat_stream(self, user_input: str):
+            async with self._lock:
+                self.received.append(user_input)
+                idx = len(self.received) - 1
+                if self._bus is not None:
+                    self._bus.publish(TurnStarted(session_id="s1", turn_id=f"t{idx}", source="agent", kind="user"))
+                await self._releases[idx].wait()
+                if self._bus is not None:
+                    self._bus.publish(TurnCompleted(
+                        session_id="s1",
+                        turn_id=f"t{idx}",
+                        source="agent",
+                        kind="user",
+                        messages=[],
+                        message_batch=[],
+                        content="",
+                        thinking="",
+                    ))
+                if False:
+                    yield None
+
+    agent = _SlowAgent()
+    app = AlexApp(agent)
+
+    async with app.run_test() as pilot:
+        input_widget = pilot.app.query_one("#input-box", Input)
+        input_widget.value = "hello"
+        app.on_input_submitted(Input.Submitted(input_widget, "hello", validation_result=None))
+        await pilot.pause()
+
+        input_widget.value = "world"
+        app.on_input_submitted(Input.Submitted(input_widget, "world", validation_result=None))
+        await pilot.pause()
+
+        user_bubbles = [child for child in pilot.app.query_one("#chat-view").children if isinstance(child, UserBubble)]
+        assert len(user_bubbles) == 1
+        assert not input_widget.disabled
+
+        agent._releases[0].set()
+        for _ in range(20):
+            await pilot.pause(0.05)
+            if agent.received == ["hello", "world"]:
+                break
+
+        assert agent.received == ["hello", "world"]
+        user_bubbles = [child for child in pilot.app.query_one("#chat-view").children if isinstance(child, UserBubble)]
+        assert len(user_bubbles) == 2
+
+        agent._releases[1].set()
+        await pilot.pause(0.05)
 
 
 # ── ChatHistory message-sequence fidelity ──────────────────────────────────

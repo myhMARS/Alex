@@ -98,6 +98,7 @@ class ToolExecutionCompleted(DomainEvent):
 class TurnCompleted(DomainEvent):
     kind: str = "user"
     messages: list[Any] = field(default_factory=list)
+    message_batch: list[Any] = field(default_factory=list)
     content: str = ""
     thinking: str = ""
 
@@ -238,8 +239,6 @@ class CronJobEvent(DomainEvent):
     prompt: str = ""
     recurring: bool = True
     durable: bool = False
-    action: str = ""
-    params: dict = field(default_factory=dict)
     runs_done: int = 0
     started_at: float | None = None
     finished_at: float | None = None

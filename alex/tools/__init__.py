@@ -1,6 +1,11 @@
 """Tool implementations for the Alex agent."""
 
-from alex.tools.cron import TOOL_HINT as CRON_HINT, create_cron_tool
+from alex.tools.cron import (
+    TOOL_HINT as CRON_HINT,
+    TOOL_HINT_CANCEL as CRON_CANCEL_HINT,
+    create_cron_cancel_tool,
+    create_cron_tool,
+)
 from alex.tools.executor import ToolExecutor
 from alex.tools.fs import (
     TOOL_HINT_EDIT,
@@ -73,6 +78,7 @@ TOOL_HINTS = [
     WEB_SEARCH_HINT,
     WEB_FETCH_HINT,
     CRON_HINT,
+    CRON_CANCEL_HINT,
     TOOL_HINT_READ,
     TOOL_HINT_WRITE,
     TOOL_HINT_EDIT,
@@ -93,6 +99,7 @@ __all__ = [
     # Built-in tool factories
     "create_available_shell_tools",
     "create_bash_tool",
+    "create_cron_cancel_tool",
     "create_cron_tool",
     "create_edit_tool",
     "create_read_tool",

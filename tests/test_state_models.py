@@ -9,8 +9,17 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+pytest.importorskip("langchain_core")
 
 from langchain_core.messages import HumanMessage
+
+
+async def _async_noop(_event) -> None:
+    return None
+
+
+async def _append_notification(notifications: list, event) -> None:
+    notifications.append(event)
 
 
 # ── FeedbackSessionState lifecycle ────────────────────────────────────────────
@@ -26,7 +35,7 @@ class TestFeedbackSessionState:
             memory=MagicMock(),
             skill_manager=MagicMock(),
             llm=MagicMock(),
-            push_notification=lambda e: None,
+            push_notification=_async_noop,
         )
         assert svc.turn_count == 0
         assert svc.is_reflecting is False
@@ -38,7 +47,7 @@ class TestFeedbackSessionState:
             memory=MagicMock(),
             skill_manager=MagicMock(),
             llm=MagicMock(),
-            push_notification=lambda e: None,
+            push_notification=_async_noop,
         )
 
         # Session A: accumulate turns
@@ -60,7 +69,7 @@ class TestFeedbackSessionState:
             memory=MagicMock(),
             skill_manager=MagicMock(),
             llm=MagicMock(),
-            push_notification=lambda e: None,
+            push_notification=_async_noop,
         )
         svc.set_session_id("sid")
         svc._state().turn_count = 5
@@ -76,7 +85,7 @@ class TestFeedbackSessionState:
             memory=MagicMock(),
             skill_manager=MagicMock(),
             llm=MagicMock(),
-            push_notification=lambda e: None,
+            push_notification=_async_noop,
         )
         svc.set_session_id("ep-session")
         svc.record_episode("user query", ["skill1"], ["tool1"], "response")
@@ -104,7 +113,7 @@ class TestFeedbackSessionState:
             memory=memory,
             skill_manager=skills,
             llm=MagicMock(),
-            push_notification=lambda e: notifications.append(e),
+            push_notification=lambda e: _append_notification(notifications, e),
         )
         svc.set_session_id("reflect-session")
         svc._state().turn_count = 4  # so the 5th triggers (4 → 5)

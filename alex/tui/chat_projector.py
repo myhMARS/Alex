@@ -8,6 +8,7 @@ cron history read model assembly.
 from __future__ import annotations
 
 import time
+from collections import deque
 from datetime import datetime
 
 from textual.app import App
@@ -15,19 +16,20 @@ from textual.containers import VerticalScroll
 from textual.widgets import Static
 
 from alex.bus.events import (
-    CronBatch,
     CronDebugEvent,
-    CronDone,
-    CronError,
     CronJobEvent,
     SkillReflectErrorEvent,
     SkillReflectEvent,
+    SkillLoaded,
     ThinkingUpdated,
     TokenEmitted,
     ToolFinished,
     ToolStarted,
+    TurnCompleted,
+    TurnFailed,
+    TurnStarted,
 )
-from alex.tui.presenter import AlexBubble, SystemBubble
+from alex.tui.presenter import AlexBubble, SystemBubble, UserBubble
 from alex.tui.stream_renderer import StreamRenderer
 
 
@@ -41,13 +43,15 @@ class ChatProjector:
 
     def __init__(self, app: App) -> None:
         self._app = app
-        self._cron_renderers: dict[str, StreamRenderer] = {}
+        self._active_renderers: dict[str, StreamRenderer] = {}
+        self._user_inputs: dict[str, str] = {}
+        self._pending_user_inputs: deque[str] = deque()
 
     # ── helpers ─────────────────────────────────────────────────────────
 
     @property
     def cron_renderers(self) -> dict[str, StreamRenderer]:
-        return self._cron_renderers
+        return self._active_renderers
 
     @property
     def _history(self):
@@ -65,8 +69,25 @@ class ChatProjector:
     def _current_session_id(self) -> str:
         return self._history.session_id
 
-    def _is_cron(self, stream_id: str) -> bool:
-        return stream_id in self._cron_renderers
+    def note_user_submission(self, user_input: str) -> None:
+        self._pending_user_inputs.append(str(user_input))
+
+    def _renderer(self, turn_id: str) -> StreamRenderer | None:
+        return self._active_renderers.get(turn_id)
+
+    def _start_renderer(self, *, turn_id: str, kind: str, user_input: str = "") -> StreamRenderer:
+        chat_view = self._app.query_one("#chat-view", VerticalScroll)
+        if kind == "user":
+            chat_view.mount(UserBubble(user_input))
+        bubble = AlexBubble(tool_output_expanded=self._app._tool_output_expanded)
+        chat_view.mount(bubble)
+        self.trim_chat_view(chat_view)
+        chat_view.scroll_end()
+        renderer = StreamRenderer(bubble)
+        self._active_renderers[turn_id] = renderer
+        if kind == "user":
+            self._user_inputs[turn_id] = user_input
+        return renderer
 
     @staticmethod
     def fmt_ts(ts: float | None) -> str:
@@ -87,7 +108,7 @@ class ChatProjector:
             result = str(rec.get("result") or rec.get("error") or "")
             if len(result) > 120:
                 result = result[:120] + "..."
-            prompt = str(rec.get("prompt") or rec.get("params", {}).get("prompt", ""))
+            prompt = str(rec.get("prompt") or "")
             if len(prompt) > 120:
                 prompt = prompt[:120] + "..."
             lines.extend([
@@ -156,95 +177,98 @@ class ChatProjector:
     async def on_skill_reflect_error_event(self, event: SkillReflectErrorEvent) -> None:
         self._notif.show_toast(f"反思失败：{event.error}", duration=4)
 
-    # ── cron stream typed-event handlers ────────────────────────────────
+    # ── unified turn stream typed-event handlers ────────────────────────
 
-    async def on_cron_tool_started(self, event: ToolStarted) -> None:
-        if not event.is_cron or not event.stream_id:
-            return
+    async def on_turn_started(self, event: TurnStarted) -> None:
         if event.session_id and event.session_id != self._current_session_id:
             return
-        sid = event.stream_id
-        if sid in self._cron_renderers:
+        if not event.turn_id or self._renderer(event.turn_id) is not None:
             return
-        chat_view = self._app.query_one("#chat-view", VerticalScroll)
-        bubble = AlexBubble(tool_output_expanded=self._app._tool_output_expanded)
-        chat_view.mount(bubble)
-        chat_view.scroll_end()
-        renderer = StreamRenderer(bubble)
-        self._cron_renderers[sid] = renderer
-        tid = event.tool_id or sid
-        renderer.on_tool_started(tid, event.tool_name, event.tool_input)
+        user_input = ""
+        if event.kind == "user" and self._pending_user_inputs:
+            user_input = self._pending_user_inputs.popleft()
+        self._start_renderer(turn_id=event.turn_id, kind=event.kind, user_input=user_input)
 
-    async def on_cron_tool_finished(self, event: ToolFinished) -> None:
+    async def on_skill_loaded(self, event: SkillLoaded) -> None:
         if event.session_id and event.session_id != self._current_session_id:
             return
-        if not event.stream_id or not self._is_cron(event.stream_id):
-            return
-        renderer = self._cron_renderers.get(event.stream_id)
+        renderer = self._renderer(event.turn_id)
         if renderer:
-            renderer.on_tool_finished(event.tool_id or "", str(event.output or ""))
+            renderer.on_skill_loaded(event.skill_name, event.skill_pattern)
 
-    async def on_cron_thinking(self, event: ThinkingUpdated) -> None:
+    async def on_thinking(self, event: ThinkingUpdated) -> None:
         if event.session_id and event.session_id != self._current_session_id:
             return
-        if not event.stream_id or not self._is_cron(event.stream_id):
-            return
-        renderer = self._cron_renderers.get(event.stream_id)
+        renderer = self._renderer(event.turn_id)
         if renderer:
             renderer.on_thinking(str(event.delta or ""))
 
-    async def on_cron_token(self, event: TokenEmitted) -> None:
+    async def on_token(self, event: TokenEmitted) -> None:
         if event.session_id and event.session_id != self._current_session_id:
             return
-        if not event.stream_id or not self._is_cron(event.stream_id):
-            return
-        renderer = self._cron_renderers.get(event.stream_id)
+        renderer = self._renderer(event.turn_id)
         if renderer:
             renderer.on_token(str(event.delta or ""))
 
-    async def on_cron_batch(self, event: CronBatch) -> None:
+    async def on_tool_started(self, event: ToolStarted) -> None:
         if event.session_id and event.session_id != self._current_session_id:
             return
-        if not event.stream_id or not self._is_cron(event.stream_id):
-            return
-        renderer = self._cron_renderers.get(event.stream_id)
-        if renderer and isinstance(event.messages, list):
-            renderer.on_batch(event.messages)
+        renderer = self._renderer(event.turn_id)
+        if renderer:
+            tid = event.tool_id or f"{event.tool_name}:{time.monotonic_ns()}"
+            renderer.on_tool_started(tid, event.tool_name, event.tool_input)
 
-    async def on_cron_done(self, event: CronDone) -> None:
+    async def on_tool_finished(self, event: ToolFinished) -> None:
         if event.session_id and event.session_id != self._current_session_id:
             return
-        if not event.stream_id:
-            return
-        renderer = self._cron_renderers.pop(event.stream_id, None)
+        renderer = self._renderer(event.turn_id)
         if not renderer:
             return
-        turn = renderer.build_turn(kind="cron")
-        if event.content:
-            turn.response = event.content
-        if event.thinking:
-            turn.thinking = event.thinking
-        renderer.finalize(turn)
-        self._history.add(turn, messages_delta=renderer.message_batch)
+        renderer.on_tool_finished(event.tool_id or "", str(event.output or ""))
+
+    async def on_turn_completed(self, event: TurnCompleted) -> None:
+        if event.session_id and event.session_id != self._current_session_id:
+            return
+        renderer = self._active_renderers.pop(event.turn_id, None)
+        if renderer:
+            turn = renderer.build_turn(
+                user_input=self._user_inputs.pop(event.turn_id, ""),
+                kind=event.kind,
+            )
+            if event.content:
+                turn.response = event.content
+            if event.thinking:
+                turn.thinking = event.thinking
+            renderer.on_batch(list(event.message_batch or []))
+            renderer.finalize(turn)
+            self._history.add(turn, messages_delta=list(event.message_batch or []))
+            if event.kind == "user":
+                self._app._view_state.pending_feedback_turn_id = event.turn_id
+                if renderer.skills:
+                    self._notif.show_feedback_prompt()
+        else:
+            self._user_inputs.pop(event.turn_id, None)
         chat_view = self._app.query_one("#chat-view", VerticalScroll)
         self.trim_chat_view(chat_view)
         chat_view.scroll_end()
         self.refresh_status_bar()
 
-    async def on_cron_error(self, event: CronError) -> None:
+    async def on_turn_failed(self, event: TurnFailed) -> None:
         if event.session_id and event.session_id != self._current_session_id:
             return
-        if not event.stream_id:
-            return
-        renderer = self._cron_renderers.pop(event.stream_id, None)
+        renderer = self._active_renderers.pop(event.turn_id, None)
         err = str(event.error or "")
         if renderer:
-            turn = renderer.build_turn(kind="cron")
+            turn = renderer.build_turn(
+                user_input=self._user_inputs.pop(event.turn_id, ""),
+                kind="cron" if event.source == "cron" else "user",
+            )
             turn.response = f"Error: {err}"
             renderer.finalize(turn)
         else:
+            self._user_inputs.pop(event.turn_id, None)
             chat_view = self._app.query_one("#chat-view", VerticalScroll)
-            chat_view.mount(SystemBubble(f"cron error: {err}"))
+            chat_view.mount(SystemBubble(f"turn error: {err}"))
         chat_view = self._app.query_one("#chat-view", VerticalScroll)
         self.trim_chat_view(chat_view)
         chat_view.scroll_end()
@@ -269,8 +293,6 @@ class ChatProjector:
             "prompt": event.prompt,
             "durable": event.durable,
             "recurring": event.recurring,
-            "action": event.action,
-            "params": dict(event.params or {}),
             "runs_done": event.runs_done,
             "started_at": event.started_at,
             "finished_at": event.finished_at,

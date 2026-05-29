@@ -24,6 +24,8 @@ from pathlib import Path
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, ConfigDict, Field
 
+from alex.tools._binary import looks_like_binary
+from alex.tools._path import resolve_path_in_allowed_roots
 from alex.tools.permissions import (
     PERMISSION_READ,
     PreviewBlock,
@@ -95,29 +97,13 @@ _TYPE_TO_EXTS: dict[str, tuple[str, ...]] = {
 
 def _resolve_safe_path(raw: str | None, allowed_roots: list[Path]) -> Path:
     """Resolve *raw* against *allowed_roots*, defaulting to the first root."""
-    if not raw:
-        return allowed_roots[0].resolve(strict=False)
-    candidate = Path(raw).expanduser()
-    if not candidate.is_absolute():
-        candidate = Path.cwd() / candidate
-    resolved = candidate.resolve(strict=False)
-    for root in allowed_roots:
-        try:
-            resolved.relative_to(root.resolve(strict=False))
-            return resolved
-        except ValueError:
-            continue
-    raise ValueError(f"path '{raw}' is outside the allowed roots")
+    return resolve_path_in_allowed_roots(
+        raw, allowed_roots, default_to_first_root=True, label="path",
+    )
 
 
 def _looks_binary(probe: bytes) -> bool:
-    if b"\x00" in probe:
-        return True
-    if not probe:
-        return False
-    text_chars = bytes(range(0x20, 0x7f)) + b"\n\r\t\b\f"
-    nontext = sum(1 for b in probe if b not in text_chars)
-    return nontext / len(probe) > 0.3
+    return looks_like_binary(probe)
 
 
 # ── grep ──────────────────────────────────────────────────────────────

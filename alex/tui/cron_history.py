@@ -55,7 +55,6 @@ def _record_matches(rec: dict, q: str) -> bool:
         str(rec.get("job_id", "")),
         str(rec.get("name", "")),
         str(rec.get("status", "")),
-        str(rec.get("action", "")),
         str(rec.get("prompt", "")),
     ]
     return any(q in item.lower() for item in haystacks if item)

@@ -119,8 +119,7 @@ AlexApp._run_chat()
 
 ```
 CronManager fire
-  -> CronJobEvent
-  -> CronTurnHandler.handle()
+  -> TurnProcessor.run_cron_turn()
   -> bus.publish(ToolStarted) -> ChatProjector.on_cron_tool_started() -> StreamRenderer
   -> bus.publish(TokenEmitted) -> ChatProjector.on_cron_token() -> StreamRenderer
   -> bus.publish(CronDone) -> ChatProjector.on_cron_done() -> StreamRenderer -> finalize()

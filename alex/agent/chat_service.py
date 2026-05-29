@@ -6,7 +6,6 @@ tool execution, graph management, and prompt refresh.
 
 from __future__ import annotations
 
-import asyncio
 import json
 from collections.abc import AsyncIterator
 from datetime import datetime
@@ -17,11 +16,10 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool as LCBaseTool, StructuredTool
 from pydantic import BaseModel, Field
 
-from alex.agent.cron_handler import CronTurnHandler
-from alex.agent.orchestrator import TurnOrchestrator
 from alex.agent.prompt import PromptAssembler
+from alex.agent.turn_processor import TurnProcessor
 from alex.bus import AsyncEventBus
-from alex.bus.events import CronJobEvent, UserTurnRequested
+from alex.bus.events import UserTurnRequested
 from alex.memory.base import MemoryBase
 from alex.skill import SkillService
 from alex.tools.executor import ToolExecutor
@@ -45,9 +43,10 @@ class CronJobsInput(BaseModel):
 class ChatAppService:
     """Application service for user-turn chat streaming and tool execution.
 
-    Owns the graph, orchestrator, cron handler, and tool registry.
-    Depends on PromptAssembler for system prompt and FeedbackRecorder
-    for post-turn episode recording.
+    Owns the graph, unified turn processor, and tool registry.
+    Depends on PromptAssembler for system prompt composition and exposes
+    the turn result consumed by the feedback service for post-turn
+    episode recording.
     """
 
     def __init__(
@@ -70,22 +69,20 @@ class ChatAppService:
         self._session_id: str = ""
         self._cron_history: list[dict] = []
         self._bus = event_bus
-        self._turn_lock = asyncio.Lock()
-
         self._tool_registry = ToolRegistry()
         self._permissions = permissions or PermissionPolicy.from_env()
         self._tool_executor = ToolExecutor(self._tool_registry, permissions=self._permissions)
         self._prompt = PromptAssembler(system_prompt, skill_manager)
 
-        self._orchestrator = TurnOrchestrator(
-            llm, memory, skill_manager,
-            self.push_notification, self._turn_lock,
-            max_iterations, callbacks,
-        )
-        self._cron_handler = CronTurnHandler(
-            llm, memory, self._tool_executor,
-            self.push_notification, self._turn_lock,
-            max_iterations, callbacks,
+        self._turn_processor = TurnProcessor(
+            llm=llm,
+            memory=memory,
+            skill_manager=skill_manager,
+            push_notification=self.push_notification,
+            get_bus=lambda: self._bus,
+            graph_getter=lambda: self._graph,
+            max_iterations=max_iterations,
+            callbacks=callbacks,
         )
 
         self._graph = self._build_graph()
@@ -174,8 +171,7 @@ class ChatAppService:
     def set_session_context(self, session_id: str, cron_history: list[dict] | None = None) -> None:
         self._session_id = session_id
         self._cron_history = list(cron_history or [])
-        self._orchestrator.set_session_id(session_id)
-        self._cron_handler.set_session_id(session_id)
+        self._turn_processor.set_session_id(session_id)
 
     @property
     def session_id(self) -> str:
@@ -186,17 +182,13 @@ class ChatAppService:
     def set_event_bus(self, bus: AsyncEventBus | None) -> None:
         self._bus = bus
 
-    def push_notification(self, event) -> None:
+    async def push_notification(self, event) -> None:
         """Publish *event* to the bus — the single publishing path."""
         if self._bus is not None:
             self._bus.publish(event)
 
-    def dispatch_cron_reply(self, event: CronJobEvent) -> None:
-        """Kick off an async cron reply turn for a subscribed CronJobEvent."""
-        try:
-            asyncio.create_task(self._cron_handler.handle(event, self._graph))
-        except RuntimeError:
-            pass
+    async def shutdown(self) -> None:
+        await self._turn_processor.shutdown()
 
     async def _ensure_session_loaded(self, session_id: str) -> None:
         if not session_id:
@@ -234,40 +226,40 @@ class ChatAppService:
         name: str,
         prompt: str,
         stream_id: str,
+        wait_until_done: bool = True,
     ) -> str:
         await self._ensure_session_loaded(session_id)
-        return await self._cron_handler.run_prompt(
+        return await self._turn_processor.run_cron_turn(
             session_id=session_id,
             job_id=job_id,
             name=name,
             prompt=prompt,
             stream_id=stream_id,
-            graph=self._graph,
+            wait_until_done=wait_until_done,
         )
 
     # ── chat stream ───────────────────────────────────────────────────────
 
     @property
     def last_turn_result(self):
-        return self._orchestrator.last_result
-
-    @property
-    def orchestrator(self) -> TurnOrchestrator:
-        return self._orchestrator
+        return self._turn_processor.last_result
 
     @property
     def prompt(self) -> PromptAssembler:
         return self._prompt
 
     async def chat_stream(self, user_message: str) -> AsyncIterator:
-        self.push_notification(UserTurnRequested(
+        await self.push_notification(UserTurnRequested(
             session_id=self._session_id, user_text=user_message,
         ))
 
         if self._prompt.ensure_skills_prompt(user_message):
             self._graph = self._build_graph()
 
-        async for event in self._orchestrator.run(user_message, self._graph):
+        async for event in self._turn_processor.stream_user_turn(
+            user_message,
+            session_id=self._session_id,
+        ):
             yield event
 
     # ── cron history ──────────────────────────────────────────────────────
@@ -291,7 +283,7 @@ class ChatAppService:
             started_s = datetime.fromtimestamp(started_at).isoformat(sep=" ", timespec="seconds") if started_at else "-"
             finished_s = datetime.fromtimestamp(finished_at).isoformat(sep=" ", timespec="seconds") if finished_at else "-"
             result = rec.get("result") or rec.get("error") or ""
-            prompt = rec.get("prompt") or rec.get("params", {}).get("prompt", "")
+            prompt = rec.get("prompt") or ""
             blocks.append(
                 "\n".join([
                     f"[{rec.get('execution_id', '')}] {rec.get('name', '')} ({rec.get('status', '')})",
@@ -317,7 +309,6 @@ def _cron_record_matches(rec: dict, q: str) -> bool:
         str(rec.get("job_id", "")),
         str(rec.get("name", "")),
         str(rec.get("status", "")),
-        str(rec.get("action", "")),
         str(rec.get("prompt", "")),
     ]
     return any(q in item.lower() for item in haystacks if item)

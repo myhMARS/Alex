@@ -46,7 +46,7 @@ Event (event_id, session_id, turn_id, source, ts)
 | `SkillLoaded` | Agent 加载技能详情 | `skill_name`, `skill_pattern` |
 | `SkillReflectEvent` | 技能反思完成后 | `new`, `updated`, `deprecated`, `names` |
 | `SkillReflectErrorEvent` | 技能反思失败时 | `error` |
-| `CronJobEvent` | Cron 任务状态变更 | `job_id`, `name`, `status`, `subscribe`, `result`, `error` |
+| `CronJobEvent` | Cron 任务状态变更 | `job_id`, `name`, `status`, `prompt`, `result`, `error` |
 | `CronBatch` | cron turn 消息批次 | `stream_id`, `messages` |
 | `CronDone` | cron turn 流完成 | `stream_id`, `content`, `thinking` |
 | `CronError` | cron turn 流出错 | `stream_id`, `error` |
@@ -70,7 +70,7 @@ Event (event_id, session_id, turn_id, source, ts)
 # Agent.chat_stream() 发布
 self.push_notification(UserTurnRequested(session_id=sid, user_text=msg))
 
-# TurnOrchestrator.run() 发布
+# TurnProcessor.stream_user_turn() 发布
 self._push_notification(TurnStarted(session_id=sid, turn_id=tid, ...))
 self._push_notification(TurnCompleted(session_id=sid, turn_id=tid, ...))
 # 异常时发布 TurnFailed
@@ -81,9 +81,9 @@ self._push_notification(TurnFailed(session_id=sid, turn_id=tid, ...))
 
 ```python
 # CronManager 运行时 emit
-self._emit(CronJobEvent(job_id=..., name=..., status=..., subscribe=..., ...))
+self._emit(CronJobEvent(job_id=..., name=..., status=..., prompt=..., ...))
 
-# CronTurnHandler 流式事件
+# TurnProcessor.run_cron_turn() 流式事件
 push_notification(ThinkingUpdated(stream_id=sid, delta=...))
 push_notification(TokenEmitted(stream_id=sid, delta=...))
 push_notification(CronBatch(stream_id=sid, messages=...))

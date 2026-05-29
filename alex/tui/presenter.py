@@ -206,6 +206,8 @@ class AlexBubble(Vertical):
         self.border_title = "Alex"
         self._finalized = turn is not None
         self._current_response: Static | None = None
+        self._current_thinking_expanded: Static | None = None
+        self._current_thinking_collapsed: Static | None = None
 
     def compose(self) -> ComposeResult:
         if self._finalized:
@@ -264,6 +266,31 @@ class AlexBubble(Vertical):
         self._turn.response = text
         if self._current_response:
             self._current_response.update(text)
+
+    def set_thinking(self, text: str) -> None:
+        """Stream thinking text into live widgets before finalization."""
+        self._turn.thinking = text
+        if not text:
+            return
+        if self._current_thinking_expanded is None or self._current_thinking_collapsed is None:
+            if self._current_response is not None:
+                self._current_response.remove()
+                self._current_response = None
+            expanded_cls = "thinking-expanded" if self._thinking_expanded else "thinking-expanded hidden"
+            collapsed_cls = "thinking-collapsed" if not self._thinking_expanded else "thinking-collapsed hidden"
+            self._current_thinking_expanded = Static(text, classes=expanded_cls)
+            self._current_thinking_expanded.border_title = "\U0001f4ad Thinking"
+            self._current_thinking_collapsed = Static(
+                f"\U0001f4ad Thinking ({len(text)} chars) [Ctrl+T]",
+                classes=collapsed_cls,
+            )
+            self.mount(self._current_thinking_expanded)
+            self.mount(self._current_thinking_collapsed)
+            self._current_response = Static(self._turn.response, classes="response-text")
+            self.mount(self._current_response)
+            return
+        self._current_thinking_expanded.update(text)
+        self._current_thinking_collapsed.update(f"\U0001f4ad Thinking ({len(text)} chars) [Ctrl+T]")
 
     def insert_tool(self, name: str, args: dict) -> ToolBubble:
         """Insert a ToolBubble and keep assistant text below active tool output."""

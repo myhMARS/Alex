@@ -20,33 +20,21 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool as LCBaseTool
 
 from alex.agent.chat_service import ChatAppService
+from alex.agent.composition import (
+    create_default_llm,
+    create_default_memory,
+    create_default_skill_service,
+)
 from alex.agent.cron_service import CronService
 from alex.agent.feedback_service import FeedbackAppService
 from alex.agent.session_service import SessionService
 from alex.agent.skill_admin_service import SkillAdminAppService
 from alex.bus import AsyncEventBus
-from alex.bus.events import CronJobEvent
-from alex.config import get_llm_config
-from alex.llm.factory import LLMFactory
 from alex.memory.base import MemoryBase
-from alex.memory.buffer import BufferMemory
 from alex.skill import SkillService
-from alex.skill.repository import SkillStore
-from alex.skill.reflector import Reflector
-from alex.skill.matcher import SkillRetriever
-from alex.skill.evolution import EvolutionEngine
 from alex.tools.permissions import PermissionPolicy
 
 logger = logging.getLogger(__name__)
-
-
-def _create_default_skill_service() -> SkillService:
-    """Create a SkillService with default lazy-constructed dependencies."""
-    store = SkillStore()
-    reflector = Reflector()
-    retriever = SkillRetriever(store)
-    evolution = EvolutionEngine()
-    return SkillService(store=store, reflector=reflector, retriever=retriever, evolution=evolution)
 
 
 class Agent:
@@ -68,12 +56,12 @@ class Agent:
         event_bus: AsyncEventBus | None = None,
         permissions: PermissionPolicy | None = None,
     ) -> None:
-        self._llm = llm or LLMFactory.create(get_llm_config())
+        self._llm = llm or create_default_llm()
         self._system_prompt = system_prompt or "You are a helpful AI assistant."
         self._max_iterations = max_iterations
         self._callbacks = callbacks or []
-        self._memory = memory or BufferMemory()
-        self._skills = skill_manager or _create_default_skill_service()
+        self._memory = memory or create_default_memory()
+        self._skills = skill_manager or create_default_skill_service()
         self._session_id: str = ""
         self._bus = event_bus
         self._turn_skill_ids: dict[str, list[str]] = {}
@@ -111,7 +99,7 @@ class Agent:
         if tools:
             self._chat.register_tools_batch(tools)
 
-        self._cron = CronService(self.push_notification)
+        self._cron = CronService(self._push_notification_from_scheduler)
 
     # ── built-in tool factories ──────────────────────────────────────────
 
@@ -245,20 +233,17 @@ class Agent:
         self._bus = bus
         self._chat.set_event_bus(bus)
 
-    def push_notification(self, event) -> None:
-        """Publish *event* to the bus and, for subscribed cron jobs,
-        trigger the cron reply handler.
-
-        This is the single entry point for all event publishing —
-        there is no separate code path hiding behind chat_service.
-        """
-        # 1. Always publish to the event bus for observers (TUI, store, etc.)
+    def _publish_bus_event(self, event) -> None:
         if self._bus is not None:
             self._bus.publish(event)
 
-        # 2. Subscribed cron jobs additionally kick off an LLM reply turn
-        if isinstance(event, CronJobEvent) and event.subscribe:
-            self._chat.dispatch_cron_reply(event)
+    def _push_notification_from_scheduler(self, event) -> None:
+        """Bridge sync scheduler callbacks to the shared bus publisher."""
+        self._publish_bus_event(event)
+
+    async def push_notification(self, event) -> None:
+        """Publish *event* to the bus — the single event publishing path."""
+        self._publish_bus_event(event)
 
     async def execute_tool_action(self, session_id: str, action: str, params: dict) -> str:
         return await self._chat.execute_tool_action(session_id, action, params)
@@ -270,6 +255,7 @@ class Agent:
         name: str,
         prompt: str,
         stream_id: str,
+        wait_until_done: bool = True,
     ) -> str:
         return await self._chat.execute_cron_prompt(
             session_id=session_id,
@@ -277,6 +263,7 @@ class Agent:
             name=name,
             prompt=prompt,
             stream_id=stream_id,
+            wait_until_done=wait_until_done,
         )
 
     async def schedule_cron_job(
@@ -304,6 +291,7 @@ class Agent:
 
     async def shutdown(self) -> None:
         await self._cron.shutdown()
+        await self._chat.shutdown()
 
     @property
     def is_reflecting(self) -> bool:

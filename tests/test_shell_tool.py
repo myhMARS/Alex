@@ -12,13 +12,17 @@ import shutil
 from pathlib import Path
 
 import pytest
+pytest.importorskip("langchain_core")
 
+import alex.tools.shell as shell_mod
 from alex.tools.permissions import PERMISSION_SHELL, required_permission
 from alex.tools.shell import (
     _bash_denylist_violation,
+    _format_shell_result,
     _pwsh_denylist_violation,
     _resolve_bash,
     _resolve_pwsh,
+    _truncate,
     create_available_shell_tools,
     create_bash_tool,
     create_pwsh_tool,
@@ -48,6 +52,26 @@ class TestMetadata:
         tool = create_pwsh_tool()
         assert tool.name == "pwsh"
         assert required_permission(tool) == PERMISSION_SHELL
+
+
+class TestShellFormattingHelpers:
+    def test_format_shell_result_returns_empty_for_success_with_no_output(self):
+        result = _format_shell_result(stdout=b"", stderr=b"", exit_code=0)
+        assert result == ""
+
+    def test_format_shell_result_prefers_stderr_for_failures(self):
+        result = _format_shell_result(stdout=b"partial", stderr=b"boom", exit_code=2)
+        assert result == "Error: command exited with code 2\nboom"
+
+    def test_format_shell_result_includes_stdout_and_stderr_on_success(self):
+        result = _format_shell_result(stdout=b"hello\n", stderr=b"warning\n", exit_code=0)
+        assert result == "hello\nwarning"
+
+    def test_truncate_drops_partial_utf8_tail_before_decoding(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(shell_mod, "MAX_OUTPUT_BYTES", 4)
+        result = _truncate("你好".encode("utf-8"))
+        assert result == "你\n\n[Output truncated...]"
+        assert "\ufffd" not in result
 
 
 # ── bash ──────────────────────────────────────────────────────────────

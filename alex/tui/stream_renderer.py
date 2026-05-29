@@ -36,6 +36,7 @@ class StreamRenderer:
 
     def on_thinking(self, delta: str) -> None:
         self.thinking += delta
+        self.bubble.set_thinking(self.thinking)
 
     def on_token(self, delta: str) -> None:
         self.collected += delta
