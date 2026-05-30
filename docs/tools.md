@@ -432,4 +432,4 @@ alex/tools/
 | `tests/test_crontab.py` | 5 字段 crontab 表达式解析与校验 |
 | `tests/test_tui.py` | TUI 渲染 / session 生命周期 / 工具气泡顺序 / 消息序列保真 |
 
-总计：258 / 258 通过。
+总计：319 测试。
