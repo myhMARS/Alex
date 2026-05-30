@@ -343,7 +343,7 @@ alex/
 │   └── json_client.py          # JSON-mode client with digest-based caching
 ├── prompts/                    # Jinja2 templates
 ├── config.py
-└── py.typed                    # PEP 561 marker — inline type hints
+└── prompts/                    # Jinja2 prompt templates (system, skills, reflection)
 ```
 
 ## Documentation

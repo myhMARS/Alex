@@ -1,10 +1,10 @@
 # Alex 未来演进路线图
 
-> **文档定位**：本文档是基于 Alex 当前模块化单体 v2.3 架构（Phase 4 完成）和 `design.md` 中"个人智能工作系统"业务终局，整理出的演进功能点建议。
+> **文档定位**：本文档是基于 Alex 当前模块化单体 v2.7 架构（Phase 6 完成）和 `design.md` 中"个人智能工作系统"业务终局，整理出的演进功能点建议。
 >
 > 每条建议都对照现有代码定位衔接点，避免脱离实现空谈。
 >
-> **基线版本**：2026-05-28 (Phase 4 完成后)
+> **基线版本**：2026-05-30 (Phase 6 完成后)
 > **对应业务阶段**：从「终端原生 AI 助手」 → 「可订阅的后台代理」 → 「会成长的个人智能体」 → 「个人智能工作系统」
 
 ---
@@ -19,7 +19,7 @@
 | 可观测性 | TUI bubble + AuditLogger 审计日志 | 无 token/成本统计、无 trace、无 replay |
 | 多入口 | 仅 TUI | 无 API、无 headless、无 daemon |
 | 安全 | shell deny list + PermissionPolicy + AuditLogger | 无 secret 扫描、明文落盘、shell 无沙箱 |
-| 稳定性 | 258/258 回归测试 | `SkillStore`/`SessionRepository` truncate-then-write，无原子写 |
+| 稳定性 | 319 回归测试 | `SkillStore`/`SessionRepository` 已实现原子写（Phase 5），无 secret 扫描 |
 
 ---
 
@@ -181,19 +181,19 @@
 
 ---
 
-## 八、稳定性与基础设施（v2.3 紧接的事）
+## 八、稳定性与基础设施（Phase 5 已完成大部分，剩余为进阶项）
 
-> 这部分对齐 [refactor-modular-architecture.md](./refactor-modular-architecture.md) 的 Phase 5，建议立即做。
+> 8.1–8.4 已在 Phase 5 (2026-05-29) 完成：`SkillStore` 原子写、`SessionRepository` 原子写、contract/state/event 语义测试补齐。以下为剩余进阶项。
 
 ### 演进项
 
 | # | 项目 | 衔接点 | 说明 |
 |---|------|--------|------|
-| 8.1 | `SkillStore` 原子写 | `SkillStore._save()` | 当前 truncate-then-write，进程崩溃会破坏 skills.json。改 `tempfile + os.replace` |
-| 8.2 | `SessionRepository` 原子写 + JSON schema 校验 | `store/session.py` | 同上 |
-| 8.3 | Skill JSON 损坏隔离 | `SkillStore._load()` | 当前整文件 `try/except pass`，单条坏数据清空所有技能。改按条加载，坏的进 `skills.corrupt.json` |
-| 8.4 | Contract tests | Phase 5 已列入 | `SessionRepository`、`SkillServicePort` |
-| 8.5 | CronManager 时区健壮性 | `CronManager._build_cron_trigger` | 当前 `astimezone()` 没显式时区，分布式部署/容器会出诡异行为 |
+| 8.1 | ~~`SkillStore` 原子写~~ ✅ | `SkillStore._save()` | Phase 5 已完成：`tempfile + os.replace` |
+| 8.2 | ~~`SessionRepository` 原子写~~ ✅ | `store/session.py` | Phase 5 已完成 |
+| 8.3 | ~~Contract tests~~ ✅ | Phase 5 已列入 | Phase 5-6 已完成：port/state/event/bus 语义测试 |
+| 8.4 | CronManager 时区健壮性 | `CronManager._build_cron_trigger` | 当前 `astimezone()` 没显式时区，分布式部署/容器会出诡异行为 |
+| 8.5 | Skill JSON 损坏隔离 | `SkillStore._load()` | 按条加载，坏数据隔离到 `skills.corrupt.json` 而非整文件丢弃 |
 
 ---
 
@@ -210,8 +210,7 @@
 | 2.1 | 技能 embedding 检索 | 技能 |
 | 3.1 | Cron 任务持久化 | Cron |
 | 4.1 | Token / 成本看板 | 可观测性 |
-| 8.1 | `SkillStore` 原子写 | 稳定性 |
-| 8.2 | `SessionRepository` 原子写 | 稳定性 |
+| 8.4 | CronManager 时区健壮性 | 稳定性 |
 
 ### P1（紧接其后）
 
@@ -270,4 +269,4 @@
 
 ## 一句话总结
 
-> Phase 4 完成后，Alex 的架构底盘已经稳固。下一阶段的重心要从"内部清理"转向"业务能力扩张"——通过 **MCP / 技能 embedding / Cron 持久化 / 可观测性** 四条主线，把 v2.3 推向「会成长的个人智能体」阶段。
+> Phase 6 完成后，Alex 的架构底盘已经稳固。下一阶段的重心要从"内部重构"转向"业务能力扩张"——通过 **MCP / 技能 embedding / Cron 持久化 / 可观测性** 四条主线，把 v2.7 推向「会成长的个人智能体」阶段。

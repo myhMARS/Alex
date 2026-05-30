@@ -21,7 +21,7 @@ Alex 已经从早期的"`Agent + TUI + 工具集合`"单体，演进成模块化
 - Application Layer 已拆分为 5 个独立 service（Phase 2，2026-05-26）
 - Port/adapter 已全对齐：`SessionRepository`、`SkillServicePort`、`AgentFacade`
 - TUI 已拆分为 ChatProjector / SessionViewState / NotificationController（Phase 3，2026-05-27）
-- controller.py 从 608 行降至 282 行（-54%）
+- controller.py 从 608 行降至 339 行（-44%，含 Phase 5-6 新功能）
 - `ToolExecutionContext` is first-class runtime context（Phase 4，2026-05-28）
 - `CronHistoryReadModel` 从 ChatHistory 独立（Phase 4，2026-05-28）
 - `create_agent()` factory 替代手工 wiring（Phase 4，2026-05-28）
@@ -189,7 +189,9 @@ alex/
 ├── scheduler/
 │   └── manager.py               # CronManager — APScheduler wrapper（~558 行）
 ├── tui/
+│   ├── alex.tcss                # CSS stylesheet (external, loaded via CSS_PATH)
 │   ├── app.py                   # AlexApp — Textual App, wiring center
+│   ├── ports.py                 # _ControllerHost Protocol — TUI structural subtyping
 │   ├── controller.py            # ChatControllerMixin — commands, session, toggles
 │   ├── chat_projector.py        # ChatProjector — bus→widget projection, cron renderers
 │   ├── notification_controller.py # NotificationController — toast, feedback
@@ -198,6 +200,7 @@ alex/
 │   ├── view_models.py           # ChatHistory, ChatTurn
 │   ├── cron_history.py          # CronHistoryReadModel — standalone read model
 │   ├── confirm_screen.py        # PermissionConfirmScreen — permission confirmation modal
+│   ├── tool_display.py          # Tool output rendering helper
 │   ├── markdown.py              # render_response — Rich Markdown rendering
 │   └── stream_renderer.py       # StreamRenderer — shared user/cron rendering
 └── prompts/
@@ -235,6 +238,7 @@ TUI
 | Phase 4 | runtime 边界收口：`ToolExecutionContext` 一等化、`SessionSerializer` 抽离、`CronHistoryReadModel` 独立、factory wiring 建立 |
 | Phase 5 | adapter 与测试治理增强：`SkillManager` 移除、`SkillStore` 原子写、contract/state/event 语义测试补齐；wiring 收口到 `composition.py`；CSS 外置；`CronManager` cross-thread 辅助提取 |
 | Phase 6 | TUI 类型安全：`_ControllerHost` Protocol 约束 `ChatControllerMixin` duck typing；`tui/ports.py` 统一 TUI 层 structural subtyping 契约 |
+| Phase 7 | 文档同步与清理：修复 AgentFacade Protocol 表格、版本号、测试数、目录树、py.typed 等 15+ 处不一致 |
 
 保留这个摘要的目的，是让后文聚焦"还没解决的结构问题"，而不是重复记录已经完成的重构履历。
 
@@ -432,34 +436,38 @@ create_default_skill_service() # SkillService
 
 ### 已完成阶段（归档摘要）
 
-- Phase 1-5 已完成，覆盖 port 对齐、application/service 拆分、TUI 薄化、runtime 收口、adapter 强化与测试治理
+- Phase 1-6 已完成，覆盖 port 对齐、application/service 拆分、TUI 薄化、runtime 收口、adapter 强化与测试治理、TUI 类型安全
 - 这些阶段的细节不再作为主文档主体；如需追溯变更履历，应查看对应阶段报告
 
-### Phase 6：TUI type safety（2026-05-30 — 已完成）
+### Phase 7：文档同步 + 清理（2026-05-31 — 已完成）
 
 完成内容：
 
-- 创建 `alex/tui/ports.py`，定义 `_ControllerHost` Protocol，声明 `ChatControllerMixin` 对 host App 的所有属性依赖（`_agent`、`_history`、`_view_state`、`_projector`、`_notif`、`_thinking_expanded` 等）
-- `ChatControllerMixin` 所有方法签名添加 `self: _ControllerHost` 类型约束
-- `AlexApp` 隐式满足 Protocol（structural subtyping），无需显式继承
-- 0 运行时开销，298 测试全部通过
+- **docs/agent.md**: AgentFacade Protocol 表格对齐实际 Protocol 定义，按生命周期/总线/会话/对话/记忆/反馈/技能/Cron 分组，移除不在 Protocol 中的内部装配方法
+- **docs/roadmap-future-evolution.md**: 版本基线 v2.3→v2.7，Phase 4→Phase 6，测试数 258→319，稳定性章节更新（原子写/contract test 已完成标记）
+- **docs/tools.md**: 测试数 258→319
+- **docs/display.md**: controller 行数 343→339
+- **docs/design.md**: controller 行数同步 + 注释
+- **docs/refactor-modular-architecture.md**: controller 行数更新（282→339），TUI 目录树补全（ports.py / tool_display.py / alex.tcss）
+- **README.md**: 移除不存在的 `py.typed` 引用，更新为 `prompts/` 目录描述
+- 298 测试通过，无回归
 
-### Phase 7：文档同步 + 清理（下一阶段）
+### Phase 8：CronManager 职责细分（下一阶段）
 
 目标：
 
-- 审查 `docs/` 下所有文档，确保与当前实现一致
-- 清理已过时的描述、移除不再存在的模块引用
-- 在 `design.md` 中更新项目结构图以反映当前的 directory layout
-- 验证 `README.md` 中的架构描述与代码同步
+- 将 `CronManager`（~558 行）按 scheduler / executor / store 三个维度拆分
+- 不改变 ownership 链路（Agent → CronService → CronManager → APScheduler）
+- 提升 CronManager 的可测试性
 
 工作项：
 
-1. 审查并更新 `docs/agent.md`、`docs/display.md`、`docs/tools.md` 等模块文档
-2. 清理 `docs/design.md` 中过时的架构图引用
-3. 同步 `README.md` 与当前功能集
-4. 验证所有文档中引用的文件路径真实存在
-5. 保持 cron / read model / DI 现状，不过度拆分
+1. 从 `CronManager` 提取 `CronStore`（管理 `~/.alex/cron/jobs.json` 的 durable 任务读写）
+2. 从 `CronManager` 提取 `CronExecutor`（封装 runner 注入 + `execute_cron_prompt` 调用）
+3. `CronScheduler` 保留 APScheduler 生命周期管理 + schedule/cancel API
+4. 更新 `CronService`（薄 facade）委托三个新组件
+5. 补充 CronManager 单元测试（mock APScheduler）
+6. 保持现有 cron 行为不变（启动恢复、durable 重绑、状态栏刷新）
 
 ---
 
@@ -478,9 +486,9 @@ create_default_skill_service() # SkillService
 
 ## 一句话总结
 
-当前 Alex 已经是模块化单体 v2.7：主路径的 application service、event bus、TUI projector、tool runtime、session/store 边界、wiring 收口、TUI 类型安全（_ControllerHost Protocol）和测试语义都已稳定。真正剩余的问题，不再是"大规模拆层"，而是文档同步与清理。
+当前 Alex 已经是模块化单体 v2.7：主路径的 application service、event bus、TUI projector、tool runtime、session/store 边界、wiring 收口、TUI 类型安全（_ControllerHost Protocol）和测试语义都已稳定。文档已与实现对齐。
 
 下一阶段的重点：
-1. 审查并更新 `docs/` 下所有文档与当前实现对齐
-2. 清理 `design.md` 和 `README.md` 中过时的描述
-3. 保持 cron / read model / DI 的现状，不过度拆分
+1. CronManager 职责细分（scheduler / executor / store）
+2. 提升 CronManager 可测试性
+3. 保持 ownership 链路不变

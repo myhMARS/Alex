@@ -34,7 +34,7 @@
 | 组件 | 文件 | 职责 |
 |------|------|------|
 | `AlexApp` | `app.py` | Textual App 主类，wiring center — 装配 projector/notifications/view_state |
-| `ChatControllerMixin` | `controller.py` | 命令分发、page 管理、session 生命周期、toggles（343 行）；通过 `_ControllerHost` Protocol 约束对宿主 App 的依赖 |
+| `ChatControllerMixin` | `controller.py` | 命令分发、page 管理、session 生命周期、toggles（339 行）；通过 `_ControllerHost` Protocol 约束对宿主 App 的依赖 |
 | `ChatProjector` | `chat_projector.py` | bus→widget 事件投影、cron renderer 管理、status bar、cron history；通过 `_ProjectorHost` Protocol 约束对宿主 App 的依赖 |
 | `_ControllerHost` | `ports.py` | TUI structural subtyping Protocol，约束 `ChatControllerMixin` duck typing |
 | `NotificationController` | `notification_controller.py` | toast 通知、feedback prompt、rating 提交 |
@@ -173,7 +173,7 @@ alex/tui/
 ├── alex.tcss                   # CSS 样式表（156 行，从 app.py CSS_PATH 加载）
 ├── ports.py                    # _ControllerHost Protocol — TUI structural subtyping
 ├── app.py                      # AlexApp — Textual TUI 主类，wiring center
-├── controller.py               # ChatControllerMixin — 命令、会话、toggles（343 行）
+├── controller.py               # ChatControllerMixin — 命令、会话、toggles（339 行）
 ├── chat_projector.py           # ChatProjector — bus→widget 投影，cron renderers（含 _ProjectorHost Protocol）
 ├── notification_controller.py  # NotificationController — toast、feedback
 ├── view_state.py               # SessionViewState — UI 可变状态 dataclass

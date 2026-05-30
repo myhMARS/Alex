@@ -209,7 +209,7 @@ alex/
 ├── tui/                        # TUI 界面
 │   ├── app.py / alex.tcss      # AlexApp 主类 + CSS 样式表（CSS_PATH 外部加载）
 │   ├── ports.py                # _ControllerHost Protocol — TUI structural subtyping
-│   ├── controller.py           # 命令分发、session、toggles
+│   ├── controller.py           # 命令分发、session、toggles（339 行）
 │   ├── chat_projector.py       # bus → widget（含 _ProjectorHost Protocol）
 │   ├── notification_controller.py # toast / feedback / 权限确认
 │   ├── confirm_screen.py       # PermissionConfirmScreen modal

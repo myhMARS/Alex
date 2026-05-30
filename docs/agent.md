@@ -23,28 +23,41 @@ Agent 自身**不**直接依赖 `CronManager`、`SessionPersistence`、`deserial
 
 ## 对外接口 (AgentFacade Protocol)
 
+仅列出 Protocol 中定义的公开契约。`register_tool`、`permissions`、`schedule_cron_job` 等内部装配方法存在于 Agent 具体类上，但不在面向 TUI 的 Protocol 合约中。
+
 | 方法 | 说明 |
 |------|------|
-| `chat_stream(message) → AsyncIterator` | 流式对话，yield ThinkingUpdated / TokenEmitted / ToolStarted / ToolFinished / SkillLoaded |
-| `register_tool(tool)` / `unregister_tool(name)` | 动态工具管理；注册时自动按权限元数据 gate，重建 LangGraph |
-| `permissions` (property) / `set_permissions(policy)` | 读取或替换权限策略（运行时可注入 TUI 的 confirm hook） |
-| `clear_history()` | 清空对话记忆 |
-| `restore_history(messages)` | 从消息列表恢复对话历史（委托 SessionService） |
-| `history` (property) | 同步获取当前对话历史 |
-| `provide_feedback(positive, turn_id)` | 用户反馈（驱动技能进化 & 负反馈触发反思） |
-| `is_reflecting` (property) | 是否正在执行反思 |
+| **生命周期** | |
 | `bind_event_loop(loop)` | 绑定事件循环（委托 CronService） |
 | `start_services()` | 启动后台服务（委托 CronService） |
 | `shutdown()` | 关闭后台服务（委托 CronService） |
-| `list_cron_jobs()` / `cancel_cron_job(job_id)` | cron 任务管理（委托 CronService） |
-| `schedule_cron_job(**kwargs)` | 创建定时任务（委托 CronService） |
-| `list_session_cron_history(query, limit)` | 当前 session 的 cron 执行历史 |
-| `format_cron_jobs(query, limit)` | 格式化当前 cron 任务列表 |
-| `execute_tool_action(session_id, action, params)` | 按名称执行工具（cron runner 入口；构造 `ToolExecutionContext`，受权限策略约束） |
+| **事件总线** | |
+| `bus` (property) | 当前 EventBus 实例 |
+| `bind_event_bus(bus)` | 绑定事件总线 |
+| **会话上下文** | |
+| `set_session_context(session_id, cron_history)` | 设置当前 session 上下文 |
+| `session_id` (property) | 当前 session ID |
+| **对话** | |
+| `chat_stream(message) → AsyncIterator` | 流式对话，yield ThinkingUpdated / TokenEmitted / ToolStarted / ToolFinished / SkillLoaded |
+| `last_turn_result` (property) | 最后一轮的流式执行结果 |
+| **记忆** | |
+| `restore_history(messages)` | 从消息列表恢复对话历史 |
+| `clear_history()` | 清空对话记忆 |
+| **反馈** | |
+| `provide_feedback(positive, turn_id)` | 用户反馈（驱动技能进化 & 负反馈触发反思） |
+| **技能** | |
 | `reflect() → dict` | 强制触发技能反思 |
-| `list_skills()` / `delete_skill(target)` / `deprecate_skill(target)` | 技能 CRUD |
+| `list_skills() → list[dict]` | 列出所有技能 |
+| `delete_skill(target) → str | None` | 按名称或 ID 前缀删除技能 |
+| `deprecate_skill(target) → str | None` | 按名称或 ID 前缀废弃技能 |
 | `merge_skills() → dict` | LLM 驱动的技能去重合并 |
-| `list_sessions()` / `load_session(id)` / `subscribe_store(bus)` | 会话持久化（委托 SessionService） |
+| **会话持久化** | |
+| `list_sessions() → list[dict]` | 列出所有历史会话 |
+| `load_session(session_id) → dict | None` | 加载指定会话的数据 |
+| `subscribe_store(bus)` | 订阅 Store 的持久化事件 |
+| **Cron** | |
+| `list_cron_jobs() → list[dict]` | 列出当前 cron 任务 |
+| `list_session_cron_history(query, limit) → list[dict]` | 当前 session 的 cron 执行历史 |
 
 ## 事件发布
 
