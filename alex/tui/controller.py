@@ -16,32 +16,29 @@ from textual.widgets import Input, Static
 from alex.tui.chat_projector import ChatProjector
 from alex.tui.view_models import ChatHistory
 from alex.tui.presenter import AlexBubble, render_turn
+from alex.tui.ports import _ControllerHost
 
 
 class ChatControllerMixin:
     """Command dispatch, session lifecycle, and UI toggles for AlexApp.
 
-    Designed as a mixin for textual.app.App subclasses.  Assumes the
-    following attributes are set by the concrete App:
+    Designed as a mixin for textual.app.App subclasses.  The concrete App
+    must satisfy the :class:`_ControllerHost` Protocol, which declares the
+    attributes the mixin accesses (``_agent``, ``_history``, ``_view_state``,
+    ``_projector``, ``_notif``, ``_thinking_expanded``, etc.).
 
-      _agent: AgentFacade
-      _history: ChatHistory
-      _view_state: SessionViewState
-      _projector: ChatProjector
-      _notif: NotificationController
-      _thinking_expanded: bool
-      _skills_expanded: bool
-      _tool_output_expanded: bool
+    Type annotations on ``self`` use ``_ControllerHost`` so that static
+    checkers can verify host compatibility without importing AlexApp.
     """
 
     # ── page / overlay management ───────────────────────────────────────
 
-    def _dismiss_overlay(self) -> None:
+    def _dismiss_overlay(self: _ControllerHost) -> None:
         """Remove overlay blocks (help, skills list, session list) and toast."""
         self._dismiss_panels()
         self._notif.dismiss_toast()
 
-    def _dismiss_panels(self) -> None:
+    def _dismiss_panels(self: _ControllerHost) -> None:
         """Remove overlay blocks (help, skills list, session list)."""
         vs = self._view_state
         chat_view = self.query_one("#chat-view", VerticalScroll)
@@ -54,7 +51,7 @@ class ChatControllerMixin:
         vs.page_mode = None
         chat_view.scroll_end()
 
-    def _show_page(self, title: str, content: str, *, mode: str) -> None:
+    def _show_page(self: _ControllerHost, title: str, content: str, *, mode: str) -> None:
         self._view_state.page_mode = mode
         chat_view = self.query_one("#chat-view", VerticalScroll)
         page_view = self.query_one("#page-view", VerticalScroll)
@@ -66,7 +63,7 @@ class ChatControllerMixin:
 
     # ── help ────────────────────────────────────────────────────────────
 
-    def _show_help(self) -> None:
+    def _show_help(self: _ControllerHost) -> None:
         help_text = """  \U0001f4d6 Commands:
     /help             Show this help
     /skills           List all skills
@@ -92,17 +89,17 @@ class ChatControllerMixin:
 
     # ── toggles ─────────────────────────────────────────────────────────
 
-    def action_toggle_thinking(self) -> None:
+    def action_toggle_thinking(self: _ControllerHost) -> None:
         self._thinking_expanded = not self._thinking_expanded
         for bubble in self.query(AlexBubble):
             bubble.set_thinking_expanded(self._thinking_expanded)
 
-    def action_toggle_skills(self) -> None:
+    def action_toggle_skills(self: _ControllerHost) -> None:
         self._skills_expanded = not self._skills_expanded
         for bubble in self.query(AlexBubble):
             bubble.set_skills_expanded(self._skills_expanded)
 
-    def action_toggle_tool_output(self) -> None:
+    def action_toggle_tool_output(self: _ControllerHost) -> None:
         self._tool_output_expanded = not self._tool_output_expanded
         for bubble in self.query(AlexBubble):
             bubble.set_tool_output_expanded(self._tool_output_expanded)
@@ -112,7 +109,7 @@ class ChatControllerMixin:
     # ── commands ────────────────────────────────────────────────────────
 
     @work(exclusive=True)
-    async def _run_force_reflection(self) -> None:
+    async def _run_force_reflection(self: _ControllerHost) -> None:
         self._notif.show_toast("正在反思…", duration=2)
         await self._agent.reflect()
         self._projector.refresh_status_bar()
@@ -120,7 +117,7 @@ class ChatControllerMixin:
         self._projector.trim_chat_view(chat_view)
         chat_view.scroll_end()
 
-    def _handle_skills_cmd(self, args: str) -> None:
+    def _handle_skills_cmd(self: _ControllerHost, args: str) -> None:
         """Handle /skills [del|dep] [id]"""
         if not args:
             all_skills = self._agent.list_skills()
@@ -158,7 +155,7 @@ class ChatControllerMixin:
         else:
             self._notif.show_toast(f"未知命令: /skills {args}", duration=2)
 
-    def _handle_cron_cmd(self, args: str) -> None:
+    def _handle_cron_cmd(self: _ControllerHost, args: str) -> None:
         """Show current cron jobs."""
         jobs = self._agent.list_cron_jobs()
         q = (args or "").strip().lower()
@@ -174,7 +171,7 @@ class ChatControllerMixin:
         content = ChatProjector.format_cron_jobs_page(jobs[:50], query=args)
         self._show_page("Cron 任务", content, mode="cron")
 
-    def _handle_mcp_cmd(self) -> None:
+    def _handle_mcp_cmd(self: _ControllerHost) -> None:
         """Show current MCP runtime status."""
         lines = ["  🔌 MCP 状态", ""]
         status = str(getattr(self, "_mcp_status_message", "") or "未开始加载")
@@ -213,7 +210,7 @@ class ChatControllerMixin:
 
     # ── session management ──────────────────────────────────────────────
 
-    def _show_session_list(self) -> None:
+    def _show_session_list(self: _ControllerHost) -> None:
         """Show a list of saved sessions for the user to pick from."""
         sessions = self._agent.list_sessions()
 
@@ -237,7 +234,7 @@ class ChatControllerMixin:
 
         self._show_page("会话列表", "\n".join(lines), mode="resume")
 
-    def _handle_session_selection(self, user_input: str) -> None:
+    def _handle_session_selection(self: _ControllerHost, user_input: str) -> None:
         """Handle user's session selection."""
         vs = self._view_state
         vs.showing_session_list = False
@@ -255,7 +252,7 @@ class ChatControllerMixin:
         self._notif.show_toast("已取消恢复会话", duration=2)
 
     @work(exclusive=True)
-    async def _resume_session(self, session_id: str) -> None:
+    async def _resume_session(self: _ControllerHost, session_id: str) -> None:
         """Resume a saved session — restore memory first, then render UI.
 
         Uses @work(exclusive=True) to serialize with other lifecycle ops
@@ -291,7 +288,7 @@ class ChatControllerMixin:
             input_widget.disabled = False
 
     @work(exclusive=True)
-    async def _clear_chat(self) -> None:
+    async def _clear_chat(self: _ControllerHost) -> None:
         """Clear chat history and view — memory first, then UI.
 
         Serialized via @work(exclusive=True); input is disabled during the
@@ -313,7 +310,7 @@ class ChatControllerMixin:
             input_widget.disabled = False
 
     @work(exclusive=True)
-    async def _run_merge_skills(self) -> None:
+    async def _run_merge_skills(self: _ControllerHost) -> None:
         """Run LLM-based skill merging."""
         chat_view = self.query_one("#chat-view", VerticalScroll)
 

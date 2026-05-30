@@ -13,7 +13,7 @@
 
 ## 结论摘要
 
-Alex 已经从早期的"`Agent + TUI + 工具集合`"单体，演进成模块化单体 v2.6：
+Alex 已经从早期的"`Agent + TUI + 工具集合`"单体，演进成模块化单体 v2.7：
 
 - 目录结构已经按模块拆分
 - typed event 已统一，event bus 角色明确（event-only）
@@ -32,17 +32,18 @@ Alex 已经从早期的"`Agent + TUI + 工具集合`"单体，演进成模块化
 - `json_client.py` client 缓存，按 config digest 复用连接池（Phase 5，2026-05-29）
 - CSS 外置到 `alex.tcss`，`_ProjectorHost` Protocol 约束 TUI 类型安全（Phase 5，2026-05-29）
 - `CronManager` cross-thread 辅助提取 + `NormalizedCronRunner` 定义（Phase 5，2026-05-29）
+- `_ControllerHost` Protocol 约束 `ChatControllerMixin` duck typing 访问（Phase 6，2026-05-30）
+- `tui/ports.py` 统一 TUI 层 structural subtyping 契约（Phase 6，2026-05-30）
 
 当前剩余差距集中在：
 
-1. `CronManager` 仍承担多职责（~558 行），可进一步拆分为 scheduler / executor / store，但当前 ownership 链路（Agent → CronService → CronManager → APScheduler）已清晰
-2. Read model 仍主要靠 `ChatHistory` 与即时渲染状态，尚未按"真实共享派生状态"增量拆分
-3. `ChatControllerMixin` duck typing 可进一步用 Protocol 约束
+1. Read model 仍主要靠 `ChatHistory` 与即时渲染状态，尚未按"真实共享派生状态"增量拆分
+2. 文档同步：`docs/` 下部分文档仍反映旧版本结构，需与当前实现对齐
 
 因此，当前最准确的判断是：
 
-- 当前架构：模块化单体 v2.6（主路径稳定，依赖注入链路完整，wiring 已收口到 composition.py）
-- 下一阶段：CronManager 职责细分（可选）、Read model 增量抽取、TUI controller type safety
+- 当前架构：模块化单体 v2.7（主路径稳定，依赖注入链路完整，TUI 类型安全已通过 Protocol 约束）
+- 下一阶段：文档同步与清理 + 按需优化
 
 ---
 
@@ -233,6 +234,7 @@ TUI
 | Phase 3 | TUI 薄化完成：`ChatProjector`、`SessionViewState`、`NotificationController` 分离；`controller.py` 明显收缩 |
 | Phase 4 | runtime 边界收口：`ToolExecutionContext` 一等化、`SessionSerializer` 抽离、`CronHistoryReadModel` 独立、factory wiring 建立 |
 | Phase 5 | adapter 与测试治理增强：`SkillManager` 移除、`SkillStore` 原子写、contract/state/event 语义测试补齐；wiring 收口到 `composition.py`；CSS 外置；`CronManager` cross-thread 辅助提取 |
+| Phase 6 | TUI 类型安全：`_ControllerHost` Protocol 约束 `ChatControllerMixin` duck typing；`tui/ports.py` 统一 TUI 层 structural subtyping 契约 |
 
 保留这个摘要的目的，是让后文聚焦"还没解决的结构问题"，而不是重复记录已经完成的重构履历。
 
@@ -240,7 +242,7 @@ TUI
 
 1. `CronManager` 体量偏大（~558 行），混合了调度、执行、持久化三种职责。ownership 链路（Agent → CronService → CronManager → APScheduler）已清晰，进一步拆分属于优化而非补漏
 2. Read model 仍以 `ChatHistory` 为中心；虽然 cron history 已独立，但 session list、feedback 等读状态尚未形成稳定抽象。当前没有第二个消费者，暂不急于拆分
-3. `ChatControllerMixin` 通过 duck typing 与 `AlexApp` 交互，可进一步用 Protocol 约束类型安全
+3. `docs/` 下部分文档描述与当前实现有偏差，需要在 Phase 7 统一同步
 
 ---
 
@@ -259,7 +261,7 @@ TUI
 | Cron / Scheduler | ✅ 链路清晰：Agent → CronService(57行) → CronManager → APScheduler；TurnProcessor 统一执行 | CronManager 可按 scheduler/executor/store 进一步拆分（可选） | 低 |
 | Feedback / Reflection | ✅ `FeedbackAppService` + `FeedbackSessionState` per-session 字典 | episodes 持久化为独立日志（可选） | 低 |
 | Read Models | 主要靠 `ChatHistory` 与即时渲染状态 | 明确 projector + read model 边界，按需增量抽取 | 低 |
-| TUI Controller Types | `ChatControllerMixin` 依赖 duck typing | Protocol 约束 `_ProjectorHost` 类型安全 | 低 |
+| TUI Controller Types | ✅ `_ControllerHost` Protocol 约束 `ChatControllerMixin` 类型安全 | - | 已解决 |
 | Tests / Governance | ✅ contract / state / event 语义测试已补齐 | 持续让关键架构约束有对应测试映射 | 低 |
 
 ---
@@ -433,26 +435,31 @@ create_default_skill_service() # SkillService
 - Phase 1-5 已完成，覆盖 port 对齐、application/service 拆分、TUI 薄化、runtime 收口、adapter 强化与测试治理
 - 这些阶段的细节不再作为主文档主体；如需追溯变更履历，应查看对应阶段报告
 
-### Phase 6：TUI type safety + 文档同步 + 按需优化 (下一阶段)
+### Phase 6：TUI type safety（2026-05-30 — 已完成）
+
+完成内容：
+
+- 创建 `alex/tui/ports.py`，定义 `_ControllerHost` Protocol，声明 `ChatControllerMixin` 对 host App 的所有属性依赖（`_agent`、`_history`、`_view_state`、`_projector`、`_notif`、`_thinking_expanded` 等）
+- `ChatControllerMixin` 所有方法签名添加 `self: _ControllerHost` 类型约束
+- `AlexApp` 隐式满足 Protocol（structural subtyping），无需显式继承
+- 0 运行时开销，298 测试全部通过
+
+### Phase 7：文档同步 + 清理（下一阶段）
 
 目标：
 
-- 为 `ChatControllerMixin` 引入 Protocol 约束，提升 TUI 类型安全
-- 保持 cron / read model / DI 现状，不做过度拆分
-- 在出现真实需求前，不引入新的抽象层
+- 审查 `docs/` 下所有文档，确保与当前实现一致
+- 清理已过时的描述、移除不再存在的模块引用
+- 在 `design.md` 中更新项目结构图以反映当前的 directory layout
+- 验证 `README.md` 中的架构描述与代码同步
 
 工作项：
 
-1. 定义 `ProjectorHost` Protocol，约束 `ChatControllerMixin` 对 `AlexApp` 的 duck typing 访问
-2. 保持 `CronManager` 现状（~558 行），ownership 链路已清晰，暂不拆分
-3. 保持 `ChatHistory` + `CronHistoryReadModel` 现状，等出现第二个消费者再增量抽取
-4. 保持 `composition.py` 为 wiring 唯一来源，不引入外部 DI container
-
-完成标志：
-
-- `ChatControllerMixin` 的类型访问有 Protocol 约束
-- 文档与实现一致，不保留已解决的"重复 wiring"等历史叙事
-- 无新抽象层引入，架构纯度与复杂度之间保持平衡
+1. 审查并更新 `docs/agent.md`、`docs/display.md`、`docs/tools.md` 等模块文档
+2. 清理 `docs/design.md` 中过时的架构图引用
+3. 同步 `README.md` 与当前功能集
+4. 验证所有文档中引用的文件路径真实存在
+5. 保持 cron / read model / DI 现状，不过度拆分
 
 ---
 
@@ -471,9 +478,9 @@ create_default_skill_service() # SkillService
 
 ## 一句话总结
 
-当前 Alex 已经是模块化单体 v2.6：主路径的 application service、event bus、TUI projector、tool runtime、session/store 边界、wiring 收口和测试语义都已基本稳定。真正剩余的问题，不再是"大规模拆层"，而是少数类型安全细节和文档同步。
+当前 Alex 已经是模块化单体 v2.7：主路径的 application service、event bus、TUI projector、tool runtime、session/store 边界、wiring 收口、TUI 类型安全（_ControllerHost Protocol）和测试语义都已稳定。真正剩余的问题，不再是"大规模拆层"，而是文档同步与清理。
 
 下一阶段的重点：
-1. TUI controller 的 Protocol 类型约束
-2. 保持 cron / read model / DI 的现状，不过度拆分
-3. 文档持续与实现对齐
+1. 审查并更新 `docs/` 下所有文档与当前实现对齐
+2. 清理 `design.md` 和 `README.md` 中过时的描述
+3. 保持 cron / read model / DI 的现状，不过度拆分
