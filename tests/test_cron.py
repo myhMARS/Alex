@@ -149,7 +149,7 @@ async def test_cron_manager_persists_durable_jobs_atomically(tmp_path, monkeypat
         await asyncio.sleep(0)
         return prompt
 
-    monkeypatch.setattr("alex.scheduler.manager.os.replace", _replace)
+    monkeypatch.setattr("alex.scheduler.cron_store.os.replace", _replace)
     mgr = CronManager(lambda n: notes.append(n), storage_dir=tmp_path)
     job_id = await mgr.schedule(
         session_id="atomic-session",

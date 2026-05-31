@@ -34,16 +34,18 @@ Alex 已经从早期的"`Agent + TUI + 工具集合`"单体，演进成模块化
 - `CronManager` cross-thread 辅助提取 + `NormalizedCronRunner` 定义（Phase 5，2026-05-29）
 - `_ControllerHost` Protocol 约束 `ChatControllerMixin` duck typing 访问（Phase 6，2026-05-30）
 - `tui/ports.py` 统一 TUI 层 structural subtyping 契约（Phase 6，2026-05-30）
+- `CronManager` 拆分为 CronManager(调度) / CronExecutor(执行) / CronStore(持久化)（Phase 8，2026-06-01）
+- `CronExecutor.finalised` 守卫防止 `runs_done` 在外层 safety net 中重复计数（Phase 8 增强）
 
 当前剩余差距集中在：
 
 1. Read model 仍主要靠 `ChatHistory` 与即时渲染状态，尚未按"真实共享派生状态"增量拆分
-2. 文档同步：`docs/` 下部分文档仍反映旧版本结构，需与当前实现对齐
+2. `CronManager` 中 APScheduler 集成缺少 mock-based 单元测试覆盖
 
 因此，当前最准确的判断是：
 
-- 当前架构：模块化单体 v2.7（主路径稳定，依赖注入链路完整，TUI 类型安全已通过 Protocol 约束）
-- 下一阶段：文档同步与清理 + 按需优化
+- 当前架构：模块化单体 v2.8（CronManager 三件套拆分完成，持久化/执行/调度职责独立；主路径稳定）
+- 下一阶段：CronManager 单元测试补充（mock APScheduler）+ 按需优化
 
 ---
 
@@ -187,7 +189,9 @@ alex/
 │   ├── web_search.py            # Web search tool
 │   └── ports.py                 # ToolExecutionContext / CronScheduler Protocols
 ├── scheduler/
-│   └── manager.py               # CronManager — APScheduler wrapper（~558 行）
+│   ├── manager.py               # CronManager — APScheduler 生命周期 + schedule/cancel API（~435 行）
+│   ├── cron_executor.py         # CronExecutor — runner 标准化 + execute-once 生命周期
+│   ├── cron_store.py            # CronStore — durable job 原子读写
 ├── tui/
 │   ├── alex.tcss                # CSS stylesheet (external, loaded via CSS_PATH)
 │   ├── app.py                   # AlexApp — Textual App, wiring center
@@ -239,14 +243,15 @@ TUI
 | Phase 5 | adapter 与测试治理增强：`SkillManager` 移除、`SkillStore` 原子写、contract/state/event 语义测试补齐；wiring 收口到 `composition.py`；CSS 外置；`CronManager` cross-thread 辅助提取 |
 | Phase 6 | TUI 类型安全：`_ControllerHost` Protocol 约束 `ChatControllerMixin` duck typing；`tui/ports.py` 统一 TUI 层 structural subtyping 契约 |
 | Phase 7 | 文档同步与清理：修复 AgentFacade Protocol 表格、版本号、测试数、目录树、py.typed 等 15+ 处不一致 |
+| Phase 8 | CronManager 三件套拆分：`CronStore`（原子文件持久化）、`CronExecutor`（runner 标准化 + execute-once 生命周期）、CronManager（APScheduler 调度）；CronExecutor 增加 `finalised` 守卫防重复计数 |
 
 保留这个摘要的目的，是让后文聚焦"还没解决的结构问题"，而不是重复记录已经完成的重构履历。
 
 ### 当前架构仍存在的核心问题
 
-1. `CronManager` 体量偏大（~558 行），混合了调度、执行、持久化三种职责。ownership 链路（Agent → CronService → CronManager → APScheduler）已清晰，进一步拆分属于优化而非补漏
-2. Read model 仍以 `ChatHistory` 为中心；虽然 cron history 已独立，但 session list、feedback 等读状态尚未形成稳定抽象。当前没有第二个消费者，暂不急于拆分
-3. `docs/` 下部分文档描述与当前实现有偏差，需要在 Phase 7 统一同步
+1. Read model 仍以 `ChatHistory` 为中心；虽然 cron history 已独立，但 session list、feedback 等读状态尚未形成稳定抽象。当前没有第二个消费者，暂不急于拆分
+2. `CronManager` 中 APScheduler 集成（`_schedule_aps`、`_ensure_scheduler_inner`）缺少 mock-based 单元测试，当前依赖集成测试验证
+3. `CronExecutor._session_locks` 字典仅增长不缩减（session ID 单调增加时可能存在内存泄漏），当前实际 session 数量有限，影响可控
 
 ---
 
@@ -297,9 +302,9 @@ TUI
 
 ### 2. Cron / Scheduler
 
-#### 当前问题
+#### 当前状态（Phase 8 已完成）
 
-cron 功能已经稳定，ownership 链路清晰：
+cron 功能已稳定，ownership 链路清晰且三件套拆分完成：
 
 ```
 tools/cron.py               # cron 工具的 LangChain 接口（schedule/cancel/list）
@@ -308,7 +313,16 @@ tools/cron.py               # cron 工具的 LangChain 接口（schedule/cancel/
 agent/turn_processor.py     # user/cron 共用的 FIFO 执行器
     │
     ▼
-scheduler/manager.py        # CronManager — APScheduler 适配 + job 生命周期 + 持久化
+agent/cron_service.py       # CronService — 薄 facade（57 行，委托三件套）
+    │
+    ├── CronManager (scheduler/manager.py, ~435 行)
+    │       APScheduler 生命周期 + schedule/cancel API + job registry
+    │
+    ├── CronExecutor (scheduler/cron_executor.py, ~205 行)
+    │       runner 标准化 + execute-once 生命周期 + session locks + task registry
+    │
+    └── CronStore (scheduler/cron_store.py, ~90 行)
+            durable job 原子读写到 ~/.alex/cron/jobs.json
     │
     ▼
 bus/events.py               # CronJobEvent — 异步结果通过 EventBus 发布
@@ -317,32 +331,23 @@ bus/events.py               # CronJobEvent — 异步结果通过 EventBus 发�
     └── tui/chat_projector.py    # TUI 渲染（事件驱动）
 ```
 
-`CronService`（57 行）是纯代理层，逐方法委托 `CronManager`。唯一可改进的是 `CronManager` 自身 ~558 行混合了调度、执行、持久化三种职责，可以按需进一步拆分。
+`CronService`（57 行）是纯代理层，逐方法委托 `CronManager`。
 
-#### 目标设计
+#### 当前状态总结
 
-1. 保持当前 ownership 链路不变
-2. `CronManager` 可选拆分为 `CronScheduler` / `CronExecutor` / `CronStore`，但当前没有多实现需求，拆分收益有限
-3. 出现多宿主（TUI / headless / daemon）场景时再评估
+1. 调度、执行、持久化三种职责已分离到独立类，可独立测试
+2. CronStore 已有 12 个单元测试（原子写、恢复、失败清理、Unicode）
+3. CronExecutor 已有 10 个单元测试（标准化、成功/失败/取消/安全网路径）
+4. CronManager 集成测试（7 个）保持不变，行为无回归
+5. `CronExecutor.execute()` 增加 `finalised` 守卫，防止外层 safety net 重复递增 `runs_done`
 
-#### 重构路线
+#### 后续可选优化
 
-Phase A（当前状态 — 已稳定）:
+Phase B（按需触发）:
 
-1. `CronService` 保持薄 facade，只负责 lifecycle / restore / facade API
-2. `CronManager` 继续暴露 schedule / cancel / list_jobs
-3. `TurnProcessor` 为唯一 turn 执行入口
-
-Phase B（可选，按需触发）:
-
-1. 若 `CronManager` 持续增长或出现第二个 scheduler 实现，再拆 scheduler / executor / store
-2. 若出现多宿主场景，再重新评估 `CronService` 的定位
-
-#### 验收标准
-
-1. cron 工具注册路径与其他工具一致（`ToolRegistry.register`）
-2. TUI 只消费 `CronJobEvent` 投影，store 只消费持久化事件
-3. 启动恢复、durable 任务重绑、状态栏刷新均由单一路径保障
+1. 若出现多宿主（TUI / headless / daemon）场景，再评估 `CronService` 的定位
+2. `CronExecutor._session_locks` 字典当前只增不减，在超长运行 session 数量巨大的场景下可考虑 LRU 淘汰
+3. `CronManager` 中 APScheduler mock-based 单元测试（当前依赖集成测试覆盖）
 
 ### 3. Read Models / Projection
 
@@ -452,22 +457,41 @@ create_default_skill_service() # SkillService
 - **README.md**: 移除不存在的 `py.typed` 引用，更新为 `prompts/` 目录描述
 - 298 测试通过，无回归
 
-### Phase 8：CronManager 职责细分（下一阶段）
+### Phase 8：CronManager 职责细分（2026-06-01 — 已完成）
+
+完成内容：
+
+- **CronStore** (`alex/scheduler/cron_store.py`, ~90 行): 从 CronManager 提取 durable job 持久化，原子写（tmpfile + os.replace），支持增删查恢复
+- **CronExecutor** (`alex/scheduler/cron_executor.py`, ~205 行): 从 CronManager 提取 runner 标准化 + execute-once 生命周期，独立管理 `_session_locks` 和 `_running_tasks`
+- **CronManager** (`alex/scheduler/manager.py`, ~435 行，-22%): 保留 APScheduler 生命周期 + schedule/cancel API，委托 CronStore 和 CronExecutor
+- **CronManager 重构**:
+  - `_schedule_aps` 通过 `_on_job_complete` 回调处理 APScheduler 清理
+  - `_cancel_inner` 通过 `CronExecutor.cancel_task()` 处理任务取消
+  - `restore_durable_jobs` 委托 `CronStore.restore_all()` + `CronExecutor.normalize_runner()`
+- **CronExecutor 增强**:
+  - `finalised` 守卫防止外层 safety net 重复递增 `runs_done`（修复原实现 corner case）
+  - 外层 `emit_job_event` 包裹 try/except 防止 safety net 自身抛出导致任务泄漏
+  - `debug` 参数实际调用（`executor_start` log）
+- **测试**: `test_cron_store.py`（12 个） + `test_cron_executor.py`（10 个）= 22 新测试
+- **向后兼容**: `alex.scheduler.__init__` 新增 CronStore/CronExecutor 导出；`CronService` / `Agent` 无改动
+- 325 测试通过（+22），0 回归，5 跳过
+
+### Phase 9：CronManager Mock-Based 单元测试 + 增量文档同步（下一阶段，2026-06-02）
 
 目标：
 
-- 将 `CronManager`（~558 行）按 scheduler / executor / store 三个维度拆分
-- 不改变 ownership 链路（Agent → CronService → CronManager → APScheduler）
-- 提升 CronManager 的可测试性
+- 补充 `CronManager` 的 mock-based 单元测试（mock APScheduler `AsyncIOScheduler`），覆盖 schedule/cancel/list/restore 路径
+- 同步 `docs/` 下各文档的测试数、行数、目录结构描述，反映 Phase 8 变化
+- 检查 README.md 测试数并更新
 
 工作项：
 
-1. 从 `CronManager` 提取 `CronStore`（管理 `~/.alex/cron/jobs.json` 的 durable 任务读写）
-2. 从 `CronManager` 提取 `CronExecutor`（封装 runner 注入 + `execute_cron_prompt` 调用）
-3. `CronScheduler` 保留 APScheduler 生命周期管理 + schedule/cancel API
-4. 更新 `CronService`（薄 facade）委托三个新组件
-5. 补充 CronManager 单元测试（mock APScheduler）
-6. 保持现有 cron 行为不变（启动恢复、durable 重绑、状态栏刷新）
+1. 添加 `tests/test_cron_manager.py`：mock APScheduler，测试 schedule/cancel/list_jobs/restore_durable_jobs/shutdown 路径
+2. 更新 `docs/design.md`：scheduler 目录结构反映 cron_executor.py + cron_store.py
+3. 更新 `docs/tools.md`：测试数 319 → 325+
+4. 更新 `docs/display.md`：CronManager 行数 558 → 435
+5. 更新 `README.md`：测试数同步
+6. 审查 `docs/roadmap-future-evolution.md`：版本基线 v2.7 → v2.8
 
 ---
 
@@ -486,9 +510,9 @@ create_default_skill_service() # SkillService
 
 ## 一句话总结
 
-当前 Alex 已经是模块化单体 v2.7：主路径的 application service、event bus、TUI projector、tool runtime、session/store 边界、wiring 收口、TUI 类型安全（_ControllerHost Protocol）和测试语义都已稳定。文档已与实现对齐。
+当前 Alex 已经是模块化单体 v2.8：CronManager 三件套拆分完成（CronStore 持久化 / CronExecutor 执行 / CronManager 调度），CronExecutor 增加 `finalised` 守卫和 safety net 增强。主路径的 application service、event bus、TUI projector、tool runtime、session/store 边界、wiring 收口、TUI 类型安全和测试语义都已稳定。
 
 下一阶段的重点：
-1. CronManager 职责细分（scheduler / executor / store）
-2. 提升 CronManager 可测试性
-3. 保持 ownership 链路不变
+1. CronManager mock-based 单元测试（mock APScheduler），覆盖 schedule/cancel/list/restore 路径
+2. 增量文档同步：更新各 docs/ 文件的测试数、行数、目录结构
+3. README.md 测试数同步

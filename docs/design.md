@@ -194,7 +194,9 @@ alex/
 │   ├── session_serializer.py   # BaseMessage <-> dict
 │   └── session_adapter.py      # SessionPersistence 事件驱动
 ├── scheduler/
-│   └── manager.py              # CronManager APScheduler
+│   ├── manager.py              # CronManager APScheduler 生命周期 + schedule/cancel
+│   ├── cron_executor.py        # CronExecutor runner 标准化 + execute-once
+│   ├── cron_store.py           # CronStore durable job 原子持久化
 ├── tools/                      # 工具层
 │   ├── registry.py / executor.py / ports.py
 │   ├── _path.py / _binary.py   # 共享路径校验 + 二进制检测
