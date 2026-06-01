@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from langchain_core.language_models import BaseChatModel
-
 from alex.config import get_llm_config
 from alex.llm.base import LLMConfig
-from alex.llm.factory import LLMFactory
+from alex.llm.client import ChatClient
 from alex.memory.base import MemoryBase
 from alex.memory.buffer import BufferMemory
 from alex.skill import SkillService
@@ -17,14 +15,13 @@ from alex.skill.repository import SkillStore
 
 
 def create_default_config() -> LLMConfig:
-    """Resolve the LLM configuration once, to be injected wherever JSON
-    completions are needed (reflection, skill merging, etc.)."""
+    """Resolve the LLM configuration once."""
     return get_llm_config()
 
 
-def create_default_llm() -> BaseChatModel:
-    """Build the default chat model from the central config."""
-    return LLMFactory.create(get_llm_config())
+def create_default_llm() -> ChatClient:
+    """Build the default chat client from the central config."""
+    return ChatClient(get_llm_config())
 
 
 def create_default_memory() -> MemoryBase:

@@ -1,7 +1,7 @@
 """Agent facade — thin composition root that wires application services.
 
-The Agent is now a thin facade.  Business logic lives in:
-  - ChatAppService      (chat_stream, tool execution, graph)
+The Agent is a thin facade.  Business logic lives in:
+  - ChatAppService      (chat_stream, tool execution, agent loop)
   - SessionService      (session persistence boundary)
   - CronService         (cron scheduling / cancellation)
   - FeedbackAppService  (feedback recording, reflection)
@@ -14,10 +14,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from datetime import datetime
-
-from langchain_core.callbacks import BaseCallbackHandler
-from langchain_core.language_models import BaseChatModel
-from langchain_core.tools import BaseTool as LCBaseTool
+from typing import Any
 
 from alex.agent.chat_service import ChatAppService
 from alex.agent.composition import (
@@ -32,8 +29,10 @@ from alex.agent.session_service import SessionService
 from alex.agent.skill_admin_service import SkillAdminAppService
 from alex.bus import AsyncEventBus
 from alex.llm.base import LLMConfig
+from alex.llm.client import ChatClient
 from alex.memory.base import MemoryBase
 from alex.skill import SkillService
+from alex.tools.models import AlexTool
 from alex.tools.permissions import PermissionPolicy
 
 logger = logging.getLogger(__name__)
@@ -50,16 +49,16 @@ class Agent:
         self,
         system_prompt: str | None = None,
         max_iterations: int = 5,
-        tools: list[LCBaseTool] | None = None,
-        callbacks: list[BaseCallbackHandler] | None = None,
+        tools: list[AlexTool] | None = None,
+        callbacks: list | None = None,
         memory: MemoryBase | None = None,
         skill_manager: SkillService | None = None,
-        llm: BaseChatModel | None = None,
+        llm: ChatClient | None = None,
         config: LLMConfig | None = None,
         event_bus: AsyncEventBus | None = None,
         permissions: PermissionPolicy | None = None,
     ) -> None:
-        self._llm = llm or create_default_llm()
+        self._llm: ChatClient | None = llm
         self._config = config or create_default_config()
         self._system_prompt = system_prompt or "You are a helpful AI assistant."
         self._max_iterations = max_iterations
@@ -70,7 +69,7 @@ class Agent:
         self._bus = event_bus
         self._turn_skill_ids: dict[str, list[str]] = {}
 
-        # ── Application services (order matters: _skill_admin before _chat) ─
+        # ── Application services ──────────────────────────────────────────
 
         self._session = SessionService()
 
@@ -86,6 +85,9 @@ class Agent:
             push_notification=self.push_notification,
         )
 
+        # ChatAppService is created with llm=None — it's initialised
+        # asynchronously in start_services() so the 1s+ AsyncOpenAI
+        # overhead doesn't block the TUI from appearing.
         self._chat = ChatAppService(
             llm=self._llm,
             memory=self._memory,
@@ -169,10 +171,10 @@ class Agent:
     # ── public API ───────────────────────────────────────────────────────
 
     @property
-    def tools(self) -> list[LCBaseTool]:
+    def tools(self) -> list[AlexTool]:
         return self._chat.tools
 
-    def register_tool(self, tool: LCBaseTool) -> None:
+    def register_tool(self, tool: AlexTool) -> None:
         self._chat.register_tool(tool)
 
     @property
@@ -210,15 +212,26 @@ class Agent:
         return self._chat.format_cron_history(query=query, limit=limit)
 
     async def start_services(self) -> None:
+        self._ensure_llm()
         await self._cron.start_services(
             runner=self.execute_cron_prompt,
             session_id=self.session_id,
         )
 
+    def _ensure_llm(self) -> None:
+        """Create the ChatClient lazily — defers the ~1s AsyncOpenAI init.
+
+        Called from ``start_services()`` which runs in a background worker
+        so the TUI appears before the LLM client is ready.
+        """
+        if self._llm is None:
+            self._llm = create_default_llm()
+            self._chat.set_llm(self._llm)
+
     def unregister_tool(self, name: str) -> None:
         self._chat.unregister_tool(name)
 
-    def get_tool(self, name: str) -> LCBaseTool | None:
+    def get_tool(self, name: str) -> AlexTool | None:
         return self._chat.get_tool(name)
 
     async def clear_history(self) -> None:
@@ -242,48 +255,32 @@ class Agent:
             self._bus.publish(event)
 
     def _push_notification_from_scheduler(self, event) -> None:
-        """Bridge sync scheduler callbacks to the shared bus publisher."""
         self._publish_bus_event(event)
 
     async def push_notification(self, event) -> None:
-        """Publish *event* to the bus — the single event publishing path."""
         self._publish_bus_event(event)
 
     async def execute_tool_action(self, session_id: str, action: str, params: dict) -> str:
         return await self._chat.execute_tool_action(session_id, action, params)
 
     async def execute_cron_prompt(
-        self,
-        session_id: str,
-        job_id: str,
-        name: str,
-        prompt: str,
-        stream_id: str,
-        wait_until_done: bool = True,
+        self, session_id: str, job_id: str, name: str,
+        prompt: str, stream_id: str, wait_until_done: bool = True,
     ) -> str:
         return await self._chat.execute_cron_prompt(
-            session_id=session_id,
-            job_id=job_id,
-            name=name,
-            prompt=prompt,
-            stream_id=stream_id,
+            session_id=session_id, job_id=job_id, name=name,
+            prompt=prompt, stream_id=stream_id,
             wait_until_done=wait_until_done,
         )
 
     async def schedule_cron_job(
-        self,
-        *,
-        cron: str,
-        prompt: str,
-        recurring: bool = True,
-        durable: bool = False,
+        self, *, cron: str, prompt: str,
+        recurring: bool = True, durable: bool = False,
     ) -> str:
         return await self._cron.schedule(
             session_id=self.session_id,
-            cron=cron,
-            prompt=prompt,
-            recurring=recurring,
-            durable=durable,
+            cron=cron, prompt=prompt,
+            recurring=recurring, durable=durable,
             runner=self.execute_cron_prompt,
         )
 
@@ -314,7 +311,7 @@ class Agent:
             except RuntimeError:
                 pass
 
-    # ── reflection / skills (public) ──────────────────────────────────────
+    # ── reflection / skills ──────────────────────────────────────────────
 
     async def reflect(self) -> dict:
         return await self._feedback.reflect()
@@ -331,7 +328,7 @@ class Agent:
     async def merge_skills(self) -> dict:
         return await self._skill_admin.merge_skills()
 
-    # ── history restore (public) ──────────────────────────────────────────
+    # ── history restore ──────────────────────────────────────────────────
 
     async def restore_history(self, messages: list) -> None:
         await self._session.restore_history(messages, self._memory, self._session_id)

@@ -13,10 +13,10 @@ import shutil
 from pathlib import Path
 from typing import Literal
 
-from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from alex.tools._path import resolve_path_in_allowed_roots
+from alex.tools.models import AlexTool
 from alex.tools.permissions import PERMISSION_READ
 
 
@@ -123,9 +123,9 @@ def _make_git_inspect(allowed_roots: list[Path]):
     return _git_inspect
 
 
-def create_git_inspect_tool(*, allowed_roots: list[Path] | None = None) -> StructuredTool:
+def create_git_inspect_tool(*, allowed_roots: list[Path] | None = None) -> AlexTool:
     roots = allowed_roots or [Path.cwd()]
-    return StructuredTool.from_function(
+    return AlexTool.from_function(
         coroutine=_make_git_inspect(roots),
         name="git_inspect",
         description=(

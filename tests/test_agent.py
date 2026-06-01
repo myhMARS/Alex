@@ -4,14 +4,13 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-pytest.importorskip("langchain_core")
-from langchain_core.messages import AIMessage, HumanMessage
-from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from alex.agent import Agent
 from alex.bus import AsyncEventBus
 from alex.bus.events import CronJobEvent, TokenEmitted
+from alex.llm.client import ContentDelta, StreamEnd
+from alex.tools.models import AlexTool
 
 
 class _TestInput(BaseModel):
@@ -22,11 +21,11 @@ async def _test_echo(text: str) -> str:
     return f"ECHO: {text}"
 
 
-def _make_test_tool() -> StructuredTool:
-    return StructuredTool.from_function(
-        coroutine=_test_echo,
+def _make_test_tool() -> AlexTool:
+    return AlexTool.from_function(
         name="echo",
         description="Echo text back",
+        coroutine=_test_echo,
         args_schema=_TestInput,
     )
 
@@ -42,9 +41,17 @@ async def _consume_stream(agent, message: str) -> list:
     return events
 
 
+def _make_stream_events(content: str):
+    """Create a mock async generator that yields ContentDelta + StreamEnd."""
+    async def _events():
+        yield ContentDelta(content=content)
+        yield StreamEnd(content=content)
+    return _events()
+
+
 class TestAgentInit:
     def test_creates_without_tools(self):
-        agent = Agent()
+        agent = Agent(llm=MagicMock())
         assert len(agent.tools) == _BASE_TOOL_COUNT
         assert agent.history == []
         assert agent.get_tool("nonexistent") is None
@@ -58,14 +65,14 @@ class TestAgentInit:
 
 class TestToolRegistry:
     def test_register(self):
-        agent = Agent()
+        agent = Agent(llm=MagicMock())
         tool = _make_test_tool()
         agent.register_tool(tool)
         assert len(agent.tools) == _BASE_TOOL_COUNT + 1
         assert agent.get_tool("echo") is tool
 
     def test_unregister(self):
-        agent = Agent()
+        agent = Agent(llm=MagicMock())
         tool = _make_test_tool()
         agent.register_tool(tool)
         agent.unregister_tool("echo")
@@ -73,12 +80,12 @@ class TestToolRegistry:
         assert agent.get_tool("echo") is None
 
     def test_unregister_nonexistent_does_not_raise(self):
-        agent = Agent()
+        agent = Agent(llm=MagicMock())
         agent.unregister_tool("nonexistent")
 
     @pytest.mark.asyncio
     async def test_push_notification_accepts_cron_job_event_without_subscribe_field(self):
-        agent = Agent()
+        agent = Agent(llm=MagicMock())
         bus = MagicMock()
         agent.bind_event_bus(bus)
 
@@ -91,16 +98,11 @@ class TestToolRegistry:
 class TestHistory:
     @pytest.mark.asyncio
     async def test_clear_history(self):
-        agent = Agent()
+        agent = Agent(llm=MagicMock())
         with patch.object(agent._chat._prompt, "ensure_skills_prompt", return_value=False):
             with patch.object(agent._feedback, "maybe_reflect", new_callable=AsyncMock):
-                with patch.object(agent._chat, "_graph") as mock_graph:
-                    mock_stream = mock_graph.astream_events
-                    async def _events():
-                        yield {"event": "on_chat_model_stream", "data": {"chunk": AIMessage(content="Hello!")}}
-                        yield {"event": "on_chat_model_end", "data": {"output": AIMessage(content="Hello!")}}
-
-                    mock_stream.return_value = _events()
+                with patch.object(agent._chat._llm, "stream_chat") as mock_stream:
+                    mock_stream.return_value = _make_stream_events("Hello!")
                     await _consume_stream(agent, "Hi")
                     assert len(agent.history) >= 1
                     await agent.clear_history()
@@ -110,16 +112,11 @@ class TestHistory:
 class TestChatStream:
     @pytest.mark.asyncio
     async def test_returns_response(self):
-        agent = Agent()
+        agent = Agent(llm=MagicMock())
         with patch.object(agent._chat._prompt, "ensure_skills_prompt", return_value=False):
             with patch.object(agent._feedback, "maybe_reflect", new_callable=AsyncMock):
-                with patch.object(agent._chat, "_graph") as mock_graph:
-                    mock_stream = mock_graph.astream_events
-                    async def _events():
-                        yield {"event": "on_chat_model_stream", "data": {"chunk": AIMessage(content="Hello, I'm Alex.")}}
-                        yield {"event": "on_chat_model_end", "data": {"output": AIMessage(content="Hello, I'm Alex.")}}
-
-                    mock_stream.return_value = _events()
+                with patch.object(agent._chat._llm, "stream_chat") as mock_stream:
+                    mock_stream.return_value = _make_stream_events("Hello, I'm Alex.")
                     collected = []
                     async for event in agent.chat_stream("Hi"):
                         if isinstance(event, TokenEmitted):
@@ -128,38 +125,37 @@ class TestChatStream:
                     assert response == "Hello, I'm Alex."
                     hist = agent.history
                     assert len(hist) >= 1
-                    assert hist[-1].content == "Hello, I'm Alex."
+                    assert hist[-1]["content"] == "Hello, I'm Alex."
 
     @pytest.mark.asyncio
     async def test_passes_chat_history(self):
-        agent = Agent()
+        agent = Agent(llm=MagicMock())
         with patch.object(agent._chat._prompt, "ensure_skills_prompt", return_value=False):
             with patch.object(agent._feedback, "maybe_reflect", new_callable=AsyncMock):
-                with patch.object(agent._chat, "_graph") as mock_graph:
-                    mock_stream = mock_graph.astream_events
+                with patch.object(agent._chat._llm, "stream_chat") as mock_stream:
                     async def _events1():
-                        yield {"event": "on_chat_model_stream", "data": {"chunk": AIMessage(content="Replying")}}
-                        yield {"event": "on_chat_model_end", "data": {"output": AIMessage(content="Replying")}}
+                        yield ContentDelta(content="Replying")
+                        yield StreamEnd(content="Replying")
 
                     mock_stream.return_value = _events1()
                     await _consume_stream(agent, "First")
 
                     async def _events2():
-                        yield {"event": "on_chat_model_stream", "data": {"chunk": AIMessage(content="Second reply")}}
-                        yield {"event": "on_chat_model_end", "data": {"output": AIMessage(content="Second reply")}}
+                        yield ContentDelta(content="Second reply")
+                        yield StreamEnd(content="Second reply")
 
                     mock_stream.return_value = _events2()
                     await _consume_stream(agent, "Second")
 
                     assert mock_stream.call_count == 2
                     second_call = mock_stream.call_args_list[1][0][0]
-                    msgs = second_call["messages"]
-                    assert len(msgs) >= 2  # includes previous messages + new HumanMessage
-                    assert msgs[-1].content == "Second"
+                    msgs = second_call
+                    assert len(msgs) >= 2
+                    assert msgs[-1]["content"] == "Second reply"
 
     @pytest.mark.asyncio
     async def test_user_turn_streams_via_bus_when_bus_is_bound(self):
-        agent = Agent()
+        agent = Agent(llm=MagicMock())
         bus = AsyncEventBus()
         await bus.start()
         agent.bind_event_bus(bus)
@@ -173,14 +169,8 @@ class TestChatStream:
         try:
             with patch.object(agent._chat._prompt, "ensure_skills_prompt", return_value=False):
                 with patch.object(agent._feedback, "maybe_reflect", new_callable=AsyncMock):
-                    with patch.object(agent._chat, "_graph") as mock_graph:
-                        mock_stream = mock_graph.astream_events
-
-                        async def _events():
-                            yield {"event": "on_chat_model_stream", "data": {"chunk": AIMessage(content="bus-path")}}
-                            yield {"event": "on_chat_model_end", "data": {"output": AIMessage(content="bus-path")}}
-
-                        mock_stream.return_value = _events()
+                    with patch.object(agent._chat._llm, "stream_chat") as mock_stream:
+                        mock_stream.return_value = _make_stream_events("bus-path")
                         collected = []
                         async for event in agent.chat_stream("Hi"):
                             if isinstance(event, TokenEmitted):
@@ -193,26 +183,24 @@ class TestChatStream:
 
     @pytest.mark.asyncio
     async def test_user_and_cron_turns_share_single_fifo_queue(self):
-        agent = Agent()
+        agent = Agent(llm=MagicMock())
 
         order: list[str] = []
         started_second_user = asyncio.Event()
 
-        async def _stream(input_data, config, version):
-            message = input_data["messages"][-1].content
-            order.append(message)
-            if message == "first":
+        async def _stream(messages, **kwargs):
+            last_msg = messages[-1]["content"] if messages else ""
+            order.append(last_msg)
+            if last_msg == "first":
                 await asyncio.sleep(0.05)
-            if message == "second":
+            if last_msg == "second":
                 started_second_user.set()
-            yield {"event": "on_chat_model_stream", "data": {"chunk": AIMessage(content=f"reply:{message}")}}
-            yield {"event": "on_chat_model_end", "data": {"output": AIMessage(content=f"reply:{message}")}}
+            yield ContentDelta(content=f"reply:{last_msg}")
+            yield StreamEnd(content=f"reply:{last_msg}")
 
         with patch.object(agent._chat._prompt, "ensure_skills_prompt", return_value=False):
             with patch.object(agent._feedback, "maybe_reflect", new_callable=AsyncMock):
-                graph = MagicMock()
-                graph.astream_events = _stream
-                agent._chat._graph = graph
+                agent._chat._llm.stream_chat = _stream
 
                 first_task = asyncio.create_task(_consume_stream(agent, "first"))
                 await asyncio.sleep(0.01)

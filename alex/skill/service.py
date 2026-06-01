@@ -123,7 +123,7 @@ class SkillService:
     # ── LLM-based merge ──────────────────────────────────────────────────
 
     async def merge_skills(self, config: LLMConfig | None = None) -> dict:
-        from alex.llm.json_client import create_json_completion
+        from alex.llm import create_json_completion
 
         active_skills = [s for s in self._store.list_all() if s.status != "DEPRECATED"]
         if len(active_skills) < 2:

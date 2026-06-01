@@ -1,28 +1,25 @@
 """ChatAppService — owns the user-turn chat lifecycle.
 
-Extracted from Agent so the facade stays thin.  Handles chat_stream,
-tool execution, graph management, and prompt refresh.
+Uses :class:`ChatClient` for LLM calls and a custom agent loop
+(replacing LangGraph's ``create_agent`` / ``astream_events``).
 """
 
 from __future__ import annotations
 
-import json
 from collections.abc import AsyncIterator
 from datetime import datetime
 
-from langchain.agents import create_agent
-from langchain_core.callbacks import BaseCallbackHandler
-from langchain_core.language_models import BaseChatModel
-from langchain_core.tools import BaseTool as LCBaseTool, StructuredTool
 from pydantic import BaseModel, Field
 
 from alex.agent.prompt import PromptAssembler
 from alex.agent.turn_processor import TurnProcessor
 from alex.bus import AsyncEventBus
 from alex.bus.events import UserTurnRequested
+from alex.llm.client import ChatClient
 from alex.memory.base import MemoryBase
 from alex.skill import SkillService
 from alex.tools.executor import ToolExecutor
+from alex.tools.models import AlexTool
 from alex.tools.permissions import (
     PermissionPolicy,
     gate_tool_with_policy,
@@ -43,24 +40,22 @@ class CronJobsInput(BaseModel):
 class ChatAppService:
     """Application service for user-turn chat streaming and tool execution.
 
-    Owns the graph, unified turn processor, and tool registry.
-    Depends on PromptAssembler for system prompt composition and exposes
-    the turn result consumed by the feedback service for post-turn
-    episode recording.
+    Owns the custom agent loop, unified turn processor, and tool registry.
+    Uses ``ChatClient`` (OpenAI SDK) instead of LangGraph for LLM calls.
     """
 
     def __init__(
         self,
-        llm: BaseChatModel,
+        llm: ChatClient | None,
         memory: MemoryBase,
         skill_manager: SkillService,
         system_prompt: str,
         max_iterations: int = 5,
-        callbacks: list[BaseCallbackHandler] | None = None,
+        callbacks: list | None = None,
         event_bus: AsyncEventBus | None = None,
         permissions: PermissionPolicy | None = None,
     ) -> None:
-        self._llm = llm
+        self._llm: ChatClient | None = llm
         self._memory = memory
         self._skills = skill_manager
         self._system_prompt = system_prompt
@@ -78,44 +73,29 @@ class ChatAppService:
             llm=llm,
             memory=memory,
             skill_manager=skill_manager,
+            tool_registry=self._tool_registry,
+            tool_executor=self._tool_executor,
             push_notification=self.push_notification,
             get_bus=lambda: self._bus,
-            graph_getter=lambda: self._graph,
+            get_system_prompt=lambda: self._prompt.augmented_prompt,
             max_iterations=max_iterations,
-            callbacks=callbacks,
+            callbacks=self._callbacks,
         )
-
-        self._graph = self._build_graph()
-
-    # ── graph management ──────────────────────────────────────────────────
-
-    def _build_graph(self):
-        tools = self._tool_registry.list() or None
-        return create_agent(
-            model=self._llm,
-            tools=tools,
-            system_prompt=self._prompt.augmented_prompt,
-        )
-
-    def rebuild_graph(self) -> None:
-        self._graph = self._build_graph()
 
     # ── tools ─────────────────────────────────────────────────────────────
 
     @property
-    def tools(self) -> list[LCBaseTool]:
+    def tools(self) -> list[AlexTool]:
         return self._tool_registry.list()
 
-    def register_tool(self, tool: LCBaseTool) -> None:
+    def register_tool(self, tool: AlexTool) -> None:
         gate_tool_with_policy(tool, self._permissions)
         self._tool_registry.register(tool)
-        self._graph = self._build_graph()
 
-    def register_tools_batch(self, tools: list[LCBaseTool]) -> None:
+    def register_tools_batch(self, tools: list[AlexTool]) -> None:
         gate_tools_with_policy(tools, self._permissions)
         for t in tools:
             self._tool_registry.register(t)
-        self._graph = self._build_graph()
 
     def register_builtin_tools(
         self,
@@ -123,31 +103,30 @@ class ChatAppService:
         cron_jobs_fn: callable,
     ) -> None:
         """Register the built-in load_skill and cron_jobs tools."""
-        self._tool_registry.register(StructuredTool.from_function(
-            coroutine=load_skill_fn,
+        self._tool_registry.register(AlexTool.from_function(
             name="load_skill",
             description=(
                 "Load the full execution methodology for a skill from the skill directory. "
                 "Use this when a skill's pattern matches the user's request and you need "
                 "the step-by-step execution guide to properly handle this type of task."
             ),
+            coroutine=load_skill_fn,
             args_schema=LoadSkillInput,
         ))
-        self._tool_registry.register(StructuredTool.from_function(
-            coroutine=cron_jobs_fn,
+        self._tool_registry.register(AlexTool.from_function(
             name="cron_jobs",
             description=(
                 "List current cron jobs, including durable jobs restored from disk. "
                 "Returns job id, schedule, status, prompt, and next run time."
             ),
+            coroutine=cron_jobs_fn,
             args_schema=CronJobsInput,
         ))
 
     def unregister_tool(self, name: str) -> None:
         self._tool_registry.unregister(name)
-        self._graph = self._build_graph()
 
-    def get_tool(self, name: str) -> LCBaseTool | None:
+    def get_tool(self, name: str) -> AlexTool | None:
         return self._tool_registry.get(name)
 
     @property
@@ -155,12 +134,6 @@ class ChatAppService:
         return self._permissions
 
     def set_permissions(self, policy: PermissionPolicy) -> None:
-        """Replace the permission policy and propagate it to the executor.
-
-        Already-registered tools have their gating wrappers updated in
-        place so the new policy applies to subsequent invocations
-        without rebuilding the graph.
-        """
         self._permissions = policy
         self._tool_executor.set_permissions(policy)
         for tool in self._tool_registry.list():
@@ -179,11 +152,15 @@ class ChatAppService:
 
     # ── bus ────────────────────────────────────────────────────────────────
 
+    def set_llm(self, llm: ChatClient) -> None:
+        """Inject the LLM client after construction (deferred init)."""
+        self._llm = llm
+        self._turn_processor.set_llm(llm)
+
     def set_event_bus(self, bus: AsyncEventBus | None) -> None:
         self._bus = bus
 
     async def push_notification(self, event) -> None:
-        """Publish *event* to the bus — the single publishing path."""
         if self._bus is not None:
             self._bus.publish(event)
 
@@ -196,7 +173,6 @@ class ChatAppService:
         if await self._memory.get_context(session_id=session_id):
             return
         from alex.store.session import load_session
-
         saved = load_session(session_id)
         if saved:
             await self._memory.replace(session_id, saved)
@@ -206,12 +182,9 @@ class ChatAppService:
     async def execute_tool_action(self, session_id: str, action: str, params: dict) -> str:
         action = (action or "").strip()
         params = params or {}
-
         if action == "notify":
             return str(params.get("message", ""))
-
         from alex.tools.ports import ToolExecutionContext
-
         ctx = ToolExecutionContext(session_id=session_id, source="cron")
         result = await self._tool_executor.execute(ctx, action, params)
         if result.startswith("Error:"):
@@ -252,9 +225,8 @@ class ChatAppService:
         await self.push_notification(UserTurnRequested(
             session_id=self._session_id, user_text=user_message,
         ))
-
         if self._prompt.ensure_skills_prompt(user_message):
-            self._graph = self._build_graph()
+            pass  # prompt is rebuilt on each turn by PromptAssembler.augmented_prompt()
 
         async for event in self._turn_processor.stream_user_turn(
             user_message,

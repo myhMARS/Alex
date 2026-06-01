@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
-from langchain_core.tools import StructuredTool
 
+from alex.tools.models import AlexTool
 from alex.tools.ports import CronScheduler
 
 
@@ -31,7 +31,7 @@ class CronCancelInput(BaseModel):
     job_id: str = Field(description="Cron job id to cancel and delete")
 
 
-def create_cron_tool(scheduler: CronScheduler) -> StructuredTool:
+def create_cron_tool(scheduler: CronScheduler) -> AlexTool:
     async def _cron(
         cron: str = "",
         prompt: str = "",
@@ -53,7 +53,7 @@ def create_cron_tool(scheduler: CronScheduler) -> StructuredTool:
         )
         return f"Scheduled: {job_id}"
 
-    return StructuredTool.from_function(
+    return AlexTool.from_function(
         coroutine=_cron,
         name="cron",
         description=(
@@ -67,7 +67,7 @@ def create_cron_tool(scheduler: CronScheduler) -> StructuredTool:
     )
 
 
-def create_cron_cancel_tool(scheduler: CronScheduler) -> StructuredTool:
+def create_cron_cancel_tool(scheduler: CronScheduler) -> AlexTool:
     async def _cron_cancel(job_id: str = "") -> str:
         target = str(job_id or "").strip()
         if not target:
@@ -78,7 +78,7 @@ def create_cron_cancel_tool(scheduler: CronScheduler) -> StructuredTool:
             return f"Error: cron job not found: {target}"
         return f"Cancelled: {target}"
 
-    return StructuredTool.from_function(
+    return AlexTool.from_function(
         coroutine=_cron_cancel,
         name="cron_cancel",
         description=(

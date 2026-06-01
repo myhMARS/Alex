@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol
-
-from langchain_core.messages import BaseMessage
+from typing import Any, Protocol
 
 
 class MemoryService(Protocol):
@@ -15,10 +13,10 @@ class MemoryService(Protocol):
     the store module.
     """
 
-    async def append(self, session_id: str, messages: list[BaseMessage]) -> None: ...
+    async def append(self, session_id: str, messages: list[dict[str, Any]]) -> None: ...
 
-    async def get_context(self, session_id: str) -> list[BaseMessage]: ...
+    async def get_context(self, session_id: str) -> list[dict[str, Any]]: ...
 
-    async def replace(self, session_id: str, messages: list[BaseMessage]) -> None: ...
+    async def replace(self, session_id: str, messages: list[dict[str, Any]]) -> None: ...
 
     async def clear(self, session_id: str) -> None: ...

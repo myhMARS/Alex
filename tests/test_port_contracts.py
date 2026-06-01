@@ -8,14 +8,13 @@ from pathlib import Path
 
 import pytest
 
-from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
+from alex import messages as msg
 
 
 # ── SessionRepository contract ────────────────────────────────────────────────
 
 class TestSessionRepositoryContract:
-    """Contract tests for SessionRepository — verifies that SessionPersistence
-    satisfies the port's behavioural guarantees."""
+    """Contract tests for SessionRepository."""
 
     @pytest.fixture
     def tmp_sessions_dir(self, monkeypatch):
@@ -24,13 +23,12 @@ class TestSessionRepositoryContract:
             yield Path(td)
 
     def test_save_and_load_roundtrip(self, tmp_sessions_dir):
-        """A saved bundle must be reloaded with identical messages and metadata."""
         from alex.store.session_adapter import SessionPersistence
 
         sid = "test-session-1"
-        msgs: list[BaseMessage] = [
-            HumanMessage(content="Hello"),
-            AIMessage(content="Hi there", additional_kwargs={"reasoning_content": "thinking..."}),
+        msgs = [
+            msg.user_message("Hello"),
+            msg.assistant_message("Hi there", reasoning_content="thinking..."),
         ]
         SessionPersistence.save(sid, msgs)
 
@@ -38,9 +36,9 @@ class TestSessionRepositoryContract:
         assert loaded is not None
         assert loaded["session_id"] == sid
         assert len(loaded["messages"]) == 2
-        assert loaded["messages"][0].content == "Hello"
-        assert loaded["messages"][1].content == "Hi there"
-        assert loaded["messages"][1].additional_kwargs.get("reasoning_content") == "thinking..."
+        assert loaded["messages"][0]["content"] == "Hello"
+        assert loaded["messages"][1]["content"] == "Hi there"
+        assert loaded["messages"][1].get("reasoning_content") == "thinking..."
 
     def test_load_nonexistent_returns_none(self, tmp_sessions_dir):
         from alex.store.session_adapter import SessionPersistence
@@ -49,8 +47,8 @@ class TestSessionRepositoryContract:
     def test_list_sessions_returns_metadata(self, tmp_sessions_dir):
         from alex.store.session_adapter import SessionPersistence
 
-        SessionPersistence.save("s1", [HumanMessage(content="First")])
-        SessionPersistence.save("s2", [HumanMessage(content="Second")])
+        SessionPersistence.save("s1", [msg.user_message("First")])
+        SessionPersistence.save("s2", [msg.user_message("Second")])
 
         sessions = SessionPersistence.list_sessions()
         assert len(sessions) >= 2
@@ -62,7 +60,7 @@ class TestSessionRepositoryContract:
         from alex.store.session_adapter import SessionPersistence
 
         sid = "cron-session"
-        SessionPersistence.save(sid, [HumanMessage(content="Hi")])
+        SessionPersistence.save(sid, [msg.user_message("Hi")])
 
         record = {
             "execution_id": "exec-1",
@@ -88,7 +86,7 @@ class TestSessionRepositoryContract:
         from alex.store.session_adapter import SessionPersistence
 
         sid = "to-delete"
-        SessionPersistence.save(sid, [HumanMessage(content="Temp")])
+        SessionPersistence.save(sid, [msg.user_message("Temp")])
         assert SessionPersistence.load(sid) is not None
 
         assert SessionPersistence.delete(sid) is True
@@ -109,7 +107,6 @@ class TestSkillServicePortContract:
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
         monkeypatch.setattr("alex.skill.repository.SKILLS_DIR", skills_dir)
-        # Also set the prompts SKILLS_DIR (used by save_skill_template etc.)
         monkeypatch.setattr("alex.prompts.SKILLS_DIR", skills_dir)
         return skills_dir
 
@@ -216,24 +213,20 @@ class TestSkillStoreAtomicWrite:
     """Contract tests for atomic write and corrupt-data resilience."""
 
     def test_atomic_write_does_not_corrupt_on_crash_simulation(self, monkeypatch, tmp_path):
-        """If the write is interrupted mid-stream, the original file is intact."""
         from alex.skill.repository import SkillStore
         from alex.skill.models import Skill
 
         monkeypatch.setattr("alex.skill.repository.SKILLS_DIR", tmp_path)
         store_path = tmp_path / "skills.json"
 
-        # Write initial data
         store = SkillStore(path=str(store_path))
         s1 = Skill(name="survivor", pattern="p", instruction="i")
         store.add(s1)
 
-        # Verify original data
         raw = json.loads(store_path.read_text())
         assert len(raw) == 1
 
     def test_corrupt_json_loads_empty(self, monkeypatch, tmp_path):
-        """A corrupt JSON file must not crash; store starts empty."""
         from alex.skill.repository import SkillStore
 
         monkeypatch.setattr("alex.skill.repository.SKILLS_DIR", tmp_path)

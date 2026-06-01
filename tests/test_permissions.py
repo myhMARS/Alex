@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import pytest
-from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+from alex.tools.models import AlexTool
 from alex.tools.permissions import (
     DEFAULT_ALLOWED,
     PERMISSION_NETWORK,
@@ -30,10 +30,11 @@ async def _noop(text: str = "ok") -> str:
     return text
 
 
-def _make_tool(name: str, permission: str | None) -> StructuredTool:
+def _make_tool(name: str, permission: str | None) -> AlexTool:
     metadata = {"required_permission": permission} if permission else None
-    return StructuredTool.from_function(
-        coroutine=_noop, name=name, description=name, args_schema=_NoopInput,
+    return AlexTool.from_function(
+        name=name, description=name,
+        coroutine=_noop, args_schema=_NoopInput,
         metadata=metadata,
     )
 
@@ -73,11 +74,9 @@ class TestPermissionPolicy:
             return True
 
         policy = PermissionPolicy(confirm_hook=_hook)
-        # First call must consult the hook.
         granted, _ = await policy.check("t", PERMISSION_WRITE)
         assert granted is True
         assert calls == [("t", PERMISSION_WRITE)]
-        # Second call should use the cached grant.
         granted, _ = await policy.check("t", PERMISSION_WRITE)
         assert granted is True
         assert calls == [("t", PERMISSION_WRITE)]
@@ -98,12 +97,11 @@ class TestPermissionPolicy:
 
         async def _hook(req):
             calls.append((req.tool_name, req.permission))
-            return (True, False)  # allow once, do not remember
+            return (True, False)
 
         policy = PermissionPolicy(confirm_hook=_hook)
         assert (await policy.check("t", PERMISSION_WRITE))[0]
         assert (await policy.check("t", PERMISSION_WRITE))[0]
-        # The hook is consulted both times because remember=False.
         assert len(calls) == 2
         assert PERMISSION_WRITE not in policy.allowed
 
@@ -113,12 +111,11 @@ class TestPermissionPolicy:
 
         async def _hook(req):
             calls.append((req.tool_name, req.permission))
-            return (True, True)  # allow always
+            return (True, True)
 
         policy = PermissionPolicy(confirm_hook=_hook)
         assert (await policy.check("t", PERMISSION_WRITE))[0]
         assert (await policy.check("t", PERMISSION_WRITE))[0]
-        # Cached after the first grant.
         assert len(calls) == 1
         assert PERMISSION_WRITE in policy.allowed
 
@@ -183,30 +180,29 @@ class TestExecutorEnforcesPolicy:
 
 
 class TestToolGating:
-    """Tools invoked directly via ainvoke (LangGraph path) must also be gated."""
+    """Tools invoked directly via invoke must also be gated."""
 
     @pytest.mark.asyncio
     async def test_unwrapped_no_permission_passes_through(self):
         tool = _make_tool("safe", None)
         gated = gate_tool_with_policy(tool, PermissionPolicy())
         assert gated is tool
-        # No metadata wrapper applied.
         assert getattr(tool, "_alex_permission_gated", None) is None
-        result = await tool.ainvoke({"text": "ok"})
+        result = await tool.invoke({"text": "ok"})
         assert result == "ok"
 
     @pytest.mark.asyncio
     async def test_blocks_when_permission_missing(self):
         tool = _make_tool("write_thing", PERMISSION_WRITE)
         gate_tool_with_policy(tool, PermissionPolicy())
-        result = await tool.ainvoke({"text": "no"})
+        result = await tool.invoke({"text": "no"})
         assert "blocked" in result
 
     @pytest.mark.asyncio
     async def test_allows_when_permission_granted(self):
         tool = _make_tool("write_thing", PERMISSION_WRITE)
         gate_tool_with_policy(tool, PermissionPolicy(allowed={PERMISSION_WRITE}))
-        result = await tool.ainvoke({"text": "yes"})
+        result = await tool.invoke({"text": "yes"})
         assert result == "yes"
 
     @pytest.mark.asyncio
@@ -216,7 +212,6 @@ class TestToolGating:
         wrapped_once = tool.coroutine
         gate_tool_with_policy(tool, PermissionPolicy())
         wrapped_twice = tool.coroutine
-        # The second wrap reuses the existing wrapper.
         assert wrapped_once is wrapped_twice
 
     @pytest.mark.asyncio
@@ -225,9 +220,9 @@ class TestToolGating:
         deny = PermissionPolicy()
         allow = PermissionPolicy(allowed={PERMISSION_WRITE})
         gate_tool_with_policy(tool, deny)
-        result_blocked = await tool.ainvoke({"text": "x"})
-        gate_tool_with_policy(tool, allow)  # update policy in place
-        result_ok = await tool.ainvoke({"text": "y"})
+        result_blocked = await tool.invoke({"text": "x"})
+        gate_tool_with_policy(tool, allow)
+        result_ok = await tool.invoke({"text": "y"})
         assert "blocked" in result_blocked
         assert result_ok == "y"
 
@@ -254,7 +249,6 @@ class TestToolGating:
             prompt_calls.append(req.tool_name)
             return True
 
-        # Same policy instance backs both the wrapper and the executor.
         policy = PermissionPolicy(confirm_hook=_hook)
         gate_tool_with_policy(tool, policy)
         executor = ToolExecutor(registry, permissions=policy)
@@ -262,6 +256,4 @@ class TestToolGating:
             ToolExecutionContext(session_id="s1"), "write_thing", {"text": "hi"},
         )
         assert result == "hi"
-        # Exactly one confirm prompt — the wrapper handled it; the
-        # executor saw is_gated() and skipped its own check.
         assert prompt_calls == ["write_thing"]

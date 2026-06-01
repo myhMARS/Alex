@@ -1,15 +1,12 @@
 """SessionService — owns the store-to-agent boundary.
 
-Wraps SessionPersistence and deserialize_message so the Agent layer
-doesn't reach into store internals.
+Wraps SessionPersistence so the Agent layer doesn't reach into store internals.
 """
 
 from __future__ import annotations
 
 import logging
 from typing import Any
-
-from langchain_core.messages import BaseMessage
 
 from alex.memory.base import MemoryBase
 from alex.store.session_adapter import SessionPersistence
@@ -33,14 +30,13 @@ class SessionService:
         self, messages: list, memory: MemoryBase, session_id: str,
     ) -> None:
         """Clear memory and replay a serialized message sequence."""
-        from alex.store.session_serializer import deserialize_message
-
         await memory.clear(session_id=session_id)
         for item in messages:
-            if isinstance(item, BaseMessage):
-                msg = item
+            if isinstance(item, dict) and "role" in item:
+                msg_dict = item
             elif isinstance(item, dict):
-                msg = deserialize_message(item)
+                # May be from old langchain format — skip unknown shapes
+                continue
             else:
                 continue
-            await memory.add_message(msg, session_id=session_id)
+            await memory.add_message(msg_dict, session_id=session_id)

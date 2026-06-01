@@ -1,7 +1,7 @@
 """Tool permission policy — fail-closed, environment-driven.
 
 Every tool that can have side effects declares a required permission via
-``StructuredTool.metadata["required_permission"]``.  The :class:`ToolExecutor`
+``AlexTool.metadata["required_permission"]``.  The :class:`ToolExecutor`
 consults the active :class:`PermissionPolicy` before invoking a tool.
 
 Permission levels (ordered by escalation):
@@ -46,9 +46,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from langchain_core.tools import BaseTool
-
 from alex.config import get_allowed_permissions, get_denied_permissions
+from alex.tools.models import AlexTool
 
 # A confirm hook returns ``True``/``False`` or ``(granted, remember)``.
 ConfirmResult = bool | tuple[bool, bool]
@@ -116,13 +115,13 @@ ConfirmHook = Callable[[ToolApprovalRequest], Awaitable[ConfirmResult]]
 _SUMMARISER_ATTR = "_alex_summariser"
 
 
-def attach_approval_summariser(tool: BaseTool, summariser: ApprovalSummariser) -> BaseTool:
+def attach_approval_summariser(tool: AlexTool, summariser: ApprovalSummariser) -> AlexTool:
     """Bind *summariser* to *tool* so the gating layer can call it."""
     object.__setattr__(tool, _SUMMARISER_ATTR, summariser)
     return tool
 
 
-def get_approval_summariser(tool: BaseTool) -> ApprovalSummariser | None:
+def get_approval_summariser(tool: AlexTool) -> ApprovalSummariser | None:
     return getattr(tool, _SUMMARISER_ATTR, None)
 
 
@@ -328,8 +327,8 @@ def _default_args_digest(args: dict[str, Any]) -> str:
     return ", ".join(parts)
 
 
-def required_permission(tool: BaseTool) -> str | None:
-    """Helper for callers — read the required permission off a LangChain tool."""
+def required_permission(tool: AlexTool) -> str | None:
+    """Helper — read the required permission off an AlexTool."""
     metadata = getattr(tool, "metadata", None) or {}
     perm = metadata.get("required_permission")
     if perm is None:
@@ -337,14 +336,14 @@ def required_permission(tool: BaseTool) -> str | None:
     return str(perm).strip().lower() or None
 
 
-# ── permission gating for tools invoked via LangGraph directly ────────
+# ── permission gating for tools ────────────────────────────────────────
 
 
 _GATED_MARKER = "_alex_permission_gated"
 
 
 async def build_approval_request(
-    tool: BaseTool, permission: str, args: dict[str, Any],
+    tool: AlexTool, permission: str, args: dict[str, Any],
 ) -> ToolApprovalRequest:
     """Build a :class:`ToolApprovalRequest` for *tool* with the active *args*.
 
@@ -398,15 +397,8 @@ async def build_approval_request(
     )
 
 
-def gate_tool_with_policy(tool: BaseTool, policy: PermissionPolicy) -> BaseTool:
-    """Wrap *tool*'s underlying coroutine so it consults *policy* before running.
-
-    LangGraph drives tool invocation through ``BaseTool.ainvoke`` — it does
-    not go through our :class:`ToolExecutor` — so the policy must be
-    enforced at the tool level for user-turn tools.  We wrap the
-    ``coroutine`` field on ``StructuredTool`` (the only kind of tool the
-    registry actually accepts today) using :func:`object.__setattr__` to
-    bypass pydantic's assignment validation.
+def gate_tool_with_policy(tool: AlexTool, policy: PermissionPolicy) -> AlexTool:
+    """Wrap *tool*'s coroutine so it consults *policy* before running.
 
     This helper is idempotent: repeated calls with the same tool reuse
     the existing wrapper and only swap the bound policy, so callers can
@@ -421,10 +413,7 @@ def gate_tool_with_policy(tool: BaseTool, policy: PermissionPolicy) -> BaseTool:
         state["policy"] = policy
         return tool
 
-    original_coroutine = getattr(tool, "coroutine", None)
-    if original_coroutine is None:
-        return tool
-
+    original_coroutine = tool.coroutine
     state = {"policy": policy}
 
     async def _gated_coroutine(*args: Any, **kwargs: Any) -> Any:
@@ -440,13 +429,13 @@ def gate_tool_with_policy(tool: BaseTool, policy: PermissionPolicy) -> BaseTool:
     return tool
 
 
-def gate_tools_with_policy(tools: list[BaseTool], policy: PermissionPolicy) -> list[BaseTool]:
+def gate_tools_with_policy(tools: list[AlexTool], policy: PermissionPolicy) -> list[AlexTool]:
     """Bulk-wrap each tool in *tools* via :func:`gate_tool_with_policy`."""
     for tool in tools:
         gate_tool_with_policy(tool, policy)
     return tools
 
 
-def is_gated(tool: BaseTool) -> bool:
+def is_gated(tool: AlexTool) -> bool:
     """Return ``True`` when *tool* has already been wrapped by gate_tool_with_policy."""
     return getattr(tool, _GATED_MARKER, None) is not None

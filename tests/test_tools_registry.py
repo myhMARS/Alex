@@ -1,10 +1,10 @@
 """Tests for ToolRegistry and ToolExecutor."""
 
 import pytest
-from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from alex.tools.ports import ToolExecutionContext
+from alex.tools.models import AlexTool
 from alex.tools.registry import ToolRegistry
 from alex.tools.executor import ToolExecutor
 
@@ -17,11 +17,11 @@ async def _echo(text: str) -> str:
     return f"ECHO: {text}"
 
 
-def _make_tool(name: str = "echo") -> StructuredTool:
-    return StructuredTool.from_function(
-        coroutine=_echo,
+def _make_tool(name: str = "echo") -> AlexTool:
+    return AlexTool.from_function(
         name=name,
         description="Echo tool",
+        coroutine=_echo,
         args_schema=_EchoInput,
     )
 
@@ -88,15 +88,14 @@ class TestToolExecutor:
     @pytest.mark.asyncio
     async def test_execute_passes_session_id(self):
         reg = ToolRegistry()
-        seen_session: list = []
 
         async def _capture(text: str) -> str:
             return text
 
-        tool = StructuredTool.from_function(
-            coroutine=_capture,
+        tool = AlexTool.from_function(
             name="capture",
             description="capture",
+            coroutine=_capture,
         )
         reg.register(tool)
         executor = ToolExecutor(reg)

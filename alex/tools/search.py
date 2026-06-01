@@ -21,11 +21,11 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
-from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, ConfigDict, Field
 
 from alex.tools._binary import looks_like_binary
 from alex.tools._path import resolve_path_in_allowed_roots
+from alex.tools.models import AlexTool
 from alex.tools.permissions import (
     PERMISSION_READ,
     PreviewBlock,
@@ -628,9 +628,9 @@ async def _summarise_grep(args: dict) -> tuple[str, list[PreviewBlock]]:
     return summary, [PreviewBlock(title="grep options", body="\n".join(body_lines), kind="code")]
 
 
-def create_grep_tool(*, allowed_roots: list[Path] | None = None) -> StructuredTool:
+def create_grep_tool(*, allowed_roots: list[Path] | None = None) -> AlexTool:
     roots = allowed_roots or [Path.cwd()]
-    tool = StructuredTool.from_function(
+    tool = AlexTool.from_function(
         coroutine=_make_grep(roots),
         name="grep",
         description=(
@@ -713,9 +713,9 @@ async def _summarise_glob(args: dict) -> tuple[str, list[PreviewBlock]]:
     return summary, [PreviewBlock(title="glob", body=body, kind="code")]
 
 
-def create_glob_tool(*, allowed_roots: list[Path] | None = None) -> StructuredTool:
+def create_glob_tool(*, allowed_roots: list[Path] | None = None) -> AlexTool:
     roots = allowed_roots or [Path.cwd()]
-    tool = StructuredTool.from_function(
+    tool = AlexTool.from_function(
         coroutine=_make_glob(roots),
         name="glob",
         description=(

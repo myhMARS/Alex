@@ -26,11 +26,11 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from alex.tools._binary import looks_like_binary
 from alex.tools._path import resolve_path_in_allowed_roots
+from alex.tools.models import AlexTool
 from alex.tools.permissions import (
     PERMISSION_READ,
     PERMISSION_WRITE,
@@ -517,9 +517,9 @@ def create_read_tool(
     *,
     allowed_roots: list[Path] | None = None,
     tracker: FileReadTracker | None = None,
-) -> StructuredTool:
+) -> AlexTool:
     roots = allowed_roots or [Path.cwd()]
-    return StructuredTool.from_function(
+    return AlexTool.from_function(
         coroutine=_make_read(roots, tracker),
         name="read",
         description=(
@@ -537,9 +537,9 @@ def create_write_tool(
     allowed_roots: list[Path] | None = None,
     max_write_bytes: int = DEFAULT_MAX_WRITE_BYTES,
     tracker: FileReadTracker | None = None,
-) -> StructuredTool:
+) -> AlexTool:
     roots = allowed_roots or [Path.cwd()]
-    tool = StructuredTool.from_function(
+    tool = AlexTool.from_function(
         coroutine=_make_write(roots, max_write_bytes, tracker),
         name="write",
         description=(
@@ -561,7 +561,7 @@ def create_edit_tool(
     allowed_roots: list[Path] | None = None,
     max_payload_bytes: int = DEFAULT_MAX_EDIT_PAYLOAD,
     tracker: FileReadTracker | None = None,
-) -> StructuredTool:
+) -> AlexTool:
     """Create the precise-string-replacement ``edit`` tool.
 
     *tracker* enforces the read-before-edit invariant.  Pass
@@ -569,7 +569,7 @@ def create_edit_tool(
     headless scripts where the agent owns the file lifecycle).
     """
     roots = allowed_roots or [Path.cwd()]
-    tool = StructuredTool.from_function(
+    tool = AlexTool.from_function(
         coroutine=_make_edit(roots, max_payload_bytes, tracker),
         name="edit",
         description=(

@@ -337,10 +337,9 @@ alex/
 │   ├── markdown.py             # Rich Markdown rendering layer
 │   └── alex.tcss               # externalized TUI stylesheet
 ├── llm/                        # Multi-provider LLM layer
-│   ├── factory.py              # LLMFactory — provider dispatch
+│   ├── factory.py              # LLMFactory — ChatClient construction
 │   ├── base.py                 # LLMConfig
-│   ├── openai.py / deepseek.py / anthropic.py
-│   └── json_client.py          # JSON-mode client with digest-based caching
+│   └── client.py               # ChatClient (streaming + JSON-mode)
 ├── prompts/                    # Jinja2 templates
 ├── config.py
 └── prompts/                    # Jinja2 prompt templates (system, skills, reflection)

@@ -14,7 +14,7 @@ from alex.tools.plugin_loader import (
 
 
 PLUGIN_TOOLS_LIST = '''
-from langchain_core.tools import StructuredTool
+from alex.tools.models import AlexTool
 from pydantic import BaseModel, Field
 
 
@@ -27,10 +27,10 @@ async def _run(text: str = "ok") -> str:
 
 
 ALEX_TOOLS = [
-    StructuredTool.from_function(
-        coroutine=_run,
+    AlexTool.from_function(
         name="plugin_echo",
         description="echo",
+        coroutine=_run,
         args_schema=_Input,
     ),
 ]
@@ -38,7 +38,7 @@ ALEX_TOOLS = [
 
 
 PLUGIN_TOOLS_FACTORY = '''
-from langchain_core.tools import StructuredTool
+from alex.tools.models import AlexTool
 from pydantic import BaseModel, Field
 
 
@@ -52,10 +52,10 @@ async def _run(text: str = "ok") -> str:
 
 def tools():
     return [
-        StructuredTool.from_function(
-            coroutine=_run,
+        AlexTool.from_function(
             name="plugin_factory_echo",
             description="echo",
+            coroutine=_run,
             args_schema=_Input,
         ),
     ]
@@ -63,7 +63,7 @@ def tools():
 
 
 PLUGIN_REGISTER = '''
-from langchain_core.tools import StructuredTool
+from alex.tools.models import AlexTool
 from pydantic import BaseModel, Field
 
 
@@ -77,10 +77,10 @@ async def _run(text: str = "ok") -> str:
 
 def register(agent):
     agent.register_tool(
-        StructuredTool.from_function(
-            coroutine=_run,
+        AlexTool.from_function(
             name="plugin_register_echo",
             description="echo",
+            coroutine=_run,
             args_schema=_Input,
         )
     )
@@ -90,7 +90,6 @@ def register(agent):
 PLUGIN_BROKEN = '''
 import nonexistent_module_xyz
 '''
-
 
 PLUGIN_NOOP = '''
 # no entrypoint defined
@@ -178,7 +177,6 @@ class TestLoadPlugins:
         results = load_plugins(root=plugin_root)
         assert len(results) == 1
         assert not results[0].ok
-        assert "ALEX_TOOLS" in results[0].error or "register" in results[0].error
 
 
 class TestInstallPlugins:

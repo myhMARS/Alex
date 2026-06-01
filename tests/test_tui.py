@@ -11,8 +11,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Input
 from textual.widgets import Static
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
-
+from alex import messages as msg
 from alex.bus.events import TurnCompleted, TurnStarted
 from alex.tui import (
     AlexApp,
@@ -27,6 +26,19 @@ from alex.tui.chat_projector import ChatProjector
 from alex.store import session as session_store
 from alex.store.session_adapter import SessionPersistence
 from alex.tools.mcp_client import MCPConnection, MCPServerConfig
+
+
+def _tc(name: str, args: dict | None = None, tc_id: str = "") -> dict:
+    """Build an OpenAI-format tool call dict."""
+    import json
+    return {
+        "id": tc_id or f"call_{name}",
+        "type": "function",
+        "function": {
+            "name": name,
+            "arguments": json.dumps(args or {}),
+        },
+    }
 
 
 class _BubbleHarness(App[None]):
@@ -82,8 +94,6 @@ async def test_insert_tool_removes_pre_tool_response_from_top():
         await pilot.pause()
 
         children = list(bubble.children)
-
-        # Pre-tool text is preserved as a prefix widget before the ToolBubble
         assert "response-prefix" in getattr(children[0], "classes", set())
         assert isinstance(children[1], ToolBubble)
         assert "response-text" in getattr(children[-1], "classes", set())
@@ -245,7 +255,7 @@ async def test_streaming_thinking_updates_live_bubble():
 class _AgentStub:
     def __init__(self, notes: list | None = None) -> None:
         self._notes = list(notes or [])
-        self._history: list[BaseMessage] = []
+        self._history: list[dict] = []
         self._cron_history: list[dict] = []
         self._session_id: str = ""
         self._bus = None
@@ -427,11 +437,9 @@ async def test_input_widget_id_correct():
     app = AlexApp(_AgentStub([]))
 
     async with app.run_test() as pilot:
-        # Verify the correct ID works
         input_widget = pilot.app.query_one("#input-box", Input)
         assert input_widget is not None
 
-        # Verify the wrong ID raises (would have caused the crash)
         from textual.css.query import NoMatches
         with pytest.raises(NoMatches):
             pilot.app.query_one("#user-input", Input)
@@ -559,18 +567,18 @@ async def test_mcp_command_shows_global_failure_without_pool():
 
         content = str(getattr(pilot.app.query_one("#page-content"), "_Static__content"))
         assert "加载失败：ValueError: bad config" in content
-        assert "暂无可用 MCP 连接信息" in content
+        assert "暂无 MCP server 配置" in content
 
 
 @pytest.mark.asyncio
 async def test_resume_restores_agent_memory():
     """Session resume restores agent memory with exact message sequence."""
     session_id = "test_resume_memory"
-    messages: list[BaseMessage] = [
-        HumanMessage(content="Hello"),
-        AIMessage(content="", tool_calls=[{"name": "time", "args": {}, "id": "c1"}]),
-        ToolMessage(content="10:00 UTC", tool_call_id="c1"),
-        AIMessage(content="It is 10 AM.", additional_kwargs={"reasoning_content": "got time"}),
+    messages: list[dict] = [
+        msg.user_message("Hello"),
+        msg.assistant_message("", tool_calls=[_tc("time", tc_id="c1")]),
+        msg.tool_message("10:00 UTC", tool_call_id="c1"),
+        msg.assistant_message("It is 10 AM.", reasoning_content="got time"),
     ]
     session_store.save_session(session_id, messages)
 
@@ -578,9 +586,7 @@ async def test_resume_restores_agent_memory():
     app = AlexApp(agent)
 
     async with app.run_test() as pilot:
-        # Use the worker API: schedule work, wait for it via pilot.pause polling
         worker = app._resume_session(session_id)
-        # Poll until worker completes
         for _ in range(50):
             await pilot.pause(0.05)
             if worker.is_finished:
@@ -588,10 +594,9 @@ async def test_resume_restores_agent_memory():
 
         assert worker.is_finished
         assert len(agent.history) == len(messages)
-        assert agent.history[0].content == "Hello"
-        assert agent.history[3].content == "It is 10 AM."
+        assert agent.history[0]["content"] == "Hello"
+        assert agent.history[3]["content"] == "It is 10 AM."
 
-        # Verify input is re-enabled after resume
         input_widget = pilot.app.query_one("#input-box", Input)
         assert not input_widget.disabled
 
@@ -601,15 +606,14 @@ async def test_clear_clears_agent_memory():
     """Session clear removes agent memory and leaves input enabled."""
     session_id = "test_clear_memory"
     session_store.save_session(session_id, [
-        HumanMessage(content="Hi"),
-        AIMessage(content="Hey!"),
+        msg.user_message("Hi"),
+        msg.assistant_message("Hey!"),
     ])
 
     agent = _AgentStub([])
     app = AlexApp(agent)
 
     async with app.run_test() as pilot:
-        # Load session first
         w_load = app._resume_session(session_id)
         for _ in range(50):
             await pilot.pause(0.05)
@@ -617,7 +621,6 @@ async def test_clear_clears_agent_memory():
                 break
         assert len(agent.history) > 0
 
-        # Clear
         w_clear = app._clear_chat()
         for _ in range(50):
             await pilot.pause(0.05)
@@ -666,7 +669,6 @@ async def test_chat_allows_multiple_submissions_to_enqueue():
     app = AlexApp(agent)
 
     async with app.run_test() as pilot:
-        # Wait for the bus worker (_start_services_with_bus) to complete
         for _ in range(50):
             await pilot.pause(0.05)
             if pilot.app._bus._running:
@@ -704,28 +706,25 @@ async def test_chat_allows_multiple_submissions_to_enqueue():
 def test_chat_history_preserves_loaded_messages():
     """Loaded messages survive save/load round-trip without degradation."""
     session_id = "test_fidelity"
-    original: list[BaseMessage] = [
-        HumanMessage(content="What time is it?"),
-        AIMessage(content="", tool_calls=[{"name": "time", "args": {"tz": "UTC"}, "id": "call_1"}]),
-        ToolMessage(content="2026-05-20 10:00:00", tool_call_id="call_1"),
-        AIMessage(content="It is 10 AM UTC.", additional_kwargs={"reasoning_content": "check"}),
+    original: list[dict] = [
+        msg.user_message("What time is it?"),
+        msg.assistant_message("", tool_calls=[_tc("time", {"tz": "UTC"}, tc_id="call_1")]),
+        msg.tool_message("2026-05-20 10:00:00", tool_call_id="call_1"),
+        msg.assistant_message("It is 10 AM UTC.", reasoning_content="check"),
     ]
     session_store.save_session(session_id, original)
 
-    # Load → add a new turn with its exact message delta → save → reload
     h1 = ChatHistory(session_id=session_id)
     bundle = SessionPersistence.load(session_id)
     assert bundle is not None
     h1.restore_from_bundle(bundle)
-    new_delta: list[BaseMessage] = [
-        HumanMessage(content="Thanks"),
-        AIMessage(content="You're welcome!"),
+    new_delta: list[dict] = [
+        msg.user_message("Thanks"),
+        msg.assistant_message("You're welcome!"),
     ]
     h1.add(ChatTurn(user_input="Thanks", response="You're welcome!"), messages_delta=new_delta)
-    # Persistence is event-driven; explicitly save for this unit test
     SessionPersistence.save(session_id, h1.loaded_messages)
 
-    # Reload
     h2 = ChatHistory(session_id=session_id)
     bundle2 = SessionPersistence.load(session_id)
     assert bundle2 is not None
@@ -738,13 +737,12 @@ def test_chat_history_preserves_loaded_messages():
     assert len(h2.turns[0].tool_calls) == 1
     assert h2.turns[0].tool_calls[0]["name"] == "time"
 
-    # The loaded messages must match the original + new delta exactly
     msgs = h2.loaded_messages
     assert len(msgs) == len(original) + len(new_delta)
-    assert msgs[0].content == "What time is it?"
-    assert msgs[3].content == "It is 10 AM UTC."
-    assert msgs[4].content == "Thanks"
-    assert msgs[5].content == "You're welcome!"
+    assert msgs[0]["content"] == "What time is it?"
+    assert msgs[3]["content"] == "It is 10 AM UTC."
+    assert msgs[4]["content"] == "Thanks"
+    assert msgs[5]["content"] == "You're welcome!"
 
 
 def test_chat_history_empty_session_is_valid():
@@ -788,15 +786,15 @@ def test_chat_history_persists_cron_records():
 
 def test_messages_to_turns_multi_tool():
     """A single AIMessage with multiple tool_calls must pair correctly."""
-    messages: list[BaseMessage] = [
-        HumanMessage(content="Search and fetch"),
-        AIMessage(content="", tool_calls=[
-            {"name": "search", "args": {"q": "X"}, "id": "t1"},
-            {"name": "fetch", "args": {"url": "Y"}, "id": "t2"},
+    messages: list[dict] = [
+        msg.user_message("Search and fetch"),
+        msg.assistant_message("", tool_calls=[
+            _tc("search", {"q": "X"}, tc_id="t1"),
+            _tc("fetch", {"url": "Y"}, tc_id="t2"),
         ]),
-        ToolMessage(content="search results", tool_call_id="t1"),
-        ToolMessage(content="fetch result", tool_call_id="t2"),
-        AIMessage(content="Done."),
+        msg.tool_message("search results", tool_call_id="t1"),
+        msg.tool_message("fetch result", tool_call_id="t2"),
+        msg.assistant_message("Done."),
     ]
 
     turns, msgs = _messages_to_turns(messages)
@@ -806,29 +804,26 @@ def test_messages_to_turns_multi_tool():
     assert turn.response == "Done."
     assert len(turn.tool_calls) == 2
 
-    # t1 → "search" with its output
     t1 = turn.tool_calls[0]
     assert t1["name"] == "search"
     assert t1["output"] == "search results"
 
-    # t2 → "fetch" with its output (not lost to single-pointer bug)
     t2 = turn.tool_calls[1]
     assert t2["name"] == "fetch"
     assert t2["output"] == "fetch result"
 
-    # Messages pass through unchanged
     assert msgs is messages
 
 
 def test_messages_to_turns_multi_tool_interleaved():
     """Multi-tool with interleaved response — tool → tool → response."""
-    messages: list[BaseMessage] = [
-        HumanMessage(content="A then B"),
-        AIMessage(content="", tool_calls=[{"name": "A", "args": {}, "id": "a1"}]),
-        ToolMessage(content="A done", tool_call_id="a1"),
-        AIMessage(content="", tool_calls=[{"name": "B", "args": {}, "id": "b1"}]),
-        ToolMessage(content="B done", tool_call_id="b1"),
-        AIMessage(content="All done."),
+    messages: list[dict] = [
+        msg.user_message("A then B"),
+        msg.assistant_message("", tool_calls=[_tc("A", tc_id="a1")]),
+        msg.tool_message("A done", tool_call_id="a1"),
+        msg.assistant_message("", tool_calls=[_tc("B", tc_id="b1")]),
+        msg.tool_message("B done", tool_call_id="b1"),
+        msg.assistant_message("All done."),
     ]
 
     turns, _ = _messages_to_turns(messages)
@@ -842,21 +837,16 @@ def test_messages_to_turns_multi_tool_interleaved():
 
 def test_messages_to_turns_preserves_cron_turn_boundary():
     """Persisted cron batches keep a separate restored turn after a user turn."""
-    messages: list[BaseMessage] = [
-        HumanMessage(content="5s后提醒我吃饭"),
-        AIMessage(
-            content="",
-            tool_calls=[{"name": "cron", "args": {"cron": "*/5 * * * *", "prompt": "提醒我吃饭"}, "id": "u1"}],
-        ),
-        ToolMessage(content="Scheduled: 123", tool_call_id="u1"),
-        AIMessage(content="好的，已设置5秒后提醒你吃饭。"),
-        AIMessage(
-            content="",
-            additional_kwargs={"alex_turn_start": True, "alex_turn_kind": "cron"},
-            tool_calls=[{"name": "cron", "args": {"job_id": "123"}, "id": "c1"}],
-        ),
-        ToolMessage(content="该吃饭啦！", tool_call_id="c1"),
-        AIMessage(content="到点了，该吃饭啦！"),
+    messages: list[dict] = [
+        msg.user_message("5s后提醒我吃饭"),
+        msg.assistant_message("", tool_calls=[_tc("cron", {"cron": "*/5 * * * *", "prompt": "提醒我吃饭"}, tc_id="u1")]),
+        msg.tool_message("Scheduled: 123", tool_call_id="u1"),
+        msg.assistant_message("好的，已设置5秒后提醒你吃饭。"),
+        # Cron turn — marked with alex_turn_start
+        {**msg.assistant_message("", tool_calls=[_tc("cron", {"job_id": "123"}, tc_id="c1")]),
+         "alex_turn_start": True, "alex_turn_kind": "cron"},
+        msg.tool_message("该吃饭啦！", tool_call_id="c1"),
+        msg.assistant_message("到点了，该吃饭啦！"),
     ]
 
     turns, _ = _messages_to_turns(messages)

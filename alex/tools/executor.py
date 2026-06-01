@@ -17,16 +17,15 @@ from alex.tools.registry import ToolRegistry
 class ToolExecutor:
     """Executes tools from a ToolRegistry, returning string results.
 
-    Tools must be registered before execution.  The executor is a thin
-    wrapper around LangChain BaseTool.ainvoke() — it adds standardised
-    error handling and consults a :class:`PermissionPolicy` for tools
-    that declare a required permission via ``metadata["required_permission"]``.
+    Tools must be registered before execution.  The executor consults a
+    :class:`PermissionPolicy` for tools that declare a required permission
+    via ``metadata["required_permission"]``.
 
     When a tool has already been wrapped via
     :func:`alex.tools.permissions.gate_tool_with_policy` the executor
     skips the redundant policy check; the wrapped coroutine performs the
     same check itself.  This avoids double-prompting when the same tool
-    is invoked from both the user-turn graph and the cron path.
+    is invoked from both the user-turn loop and the cron path.
     """
 
     def __init__(
@@ -63,7 +62,7 @@ class ToolExecutor:
                     return f"Error: tool '{name}' blocked: {reason}"
 
         try:
-            result = await tool.ainvoke(args)
+            result = await tool.invoke(args)
             return str(result)
         except Exception as e:
             return f"Error executing {name}: {type(e).__name__}: {e}"

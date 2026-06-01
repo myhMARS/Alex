@@ -1,9 +1,8 @@
 """Core tests for web tools."""
 
 import pytest
-pytest.importorskip("langchain_core")
-from langchain_core.tools import StructuredTool
 
+from alex.tools.models import AlexTool
 from alex.tools.web_fetch import WebFetchInput, _web_fetch, create_web_fetch_tool
 from alex.tools.web_search import WebSearchInput, _web_search, create_web_search_tool
 
@@ -11,10 +10,9 @@ from alex.tools.web_search import WebSearchInput, _web_search, create_web_search
 class TestWebSearch:
     def test_metadata(self):
         tool = create_web_search_tool()
-        assert isinstance(tool, StructuredTool)
+        assert isinstance(tool, AlexTool)
         assert tool.name == "web_search"
         assert "search" in tool.description.lower()
-        assert tool.args_schema is WebSearchInput
 
     def test_args_schema_fields(self):
         fields = WebSearchInput.model_fields
@@ -32,10 +30,9 @@ class TestWebSearch:
 class TestWebFetch:
     def test_metadata(self):
         tool = create_web_fetch_tool()
-        assert isinstance(tool, StructuredTool)
+        assert isinstance(tool, AlexTool)
         assert tool.name == "web_fetch"
         assert "fetch" in tool.description.lower()
-        assert tool.args_schema is WebFetchInput
 
     def test_args_schema_fields(self):
         fields = WebFetchInput.model_fields

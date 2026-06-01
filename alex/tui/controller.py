@@ -179,14 +179,36 @@ class ChatControllerMixin:
 
         pool = getattr(self, "_mcp_pool", None)
         connections = list(getattr(pool, "connections", []) or [])
+
+        # ── pool not yet available → show config list with LOADING state ──
         if not connections:
-            lines.extend([
-                "",
-                "  [暂无可用 MCP 连接信息]",
-            ])
+            configs = list(getattr(self, "_mcp_configs", []) or [])
+            if configs:
+                lines.append("")
+                for cfg in configs:
+                    name = cfg.name if hasattr(cfg, "name") else str(cfg)
+                    transport = cfg.transport if hasattr(cfg, "transport") else "?"
+                    enabled = cfg.enabled if hasattr(cfg, "enabled") else True
+                    state = "LOADING" if enabled else "DISABLED"
+                    target = ""
+                    if hasattr(cfg, "command") and cfg.command:
+                        target = f"\n    target: {cfg.command}"
+                    if hasattr(cfg, "url") and cfg.url:
+                        target = f"\n    target: {cfg.url}"
+                    lines.append(
+                        f"  - {name} [{transport}] {state}  tools:?"
+                    )
+                    if target:
+                        lines.append(target)
+            else:
+                lines.extend([
+                    "",
+                    "  [暂无 MCP server 配置]",
+                ])
             self._show_page("MCP 状态", "\n".join(lines), mode="mcp")
             return
 
+        # ── pool available → show live connection status ──────────────────
         lines.append("")
         for conn in connections:
             cfg = conn.config

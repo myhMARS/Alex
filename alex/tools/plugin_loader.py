@@ -2,8 +2,8 @@
 
 A plugin is a Python file that exposes one of the following:
 
-- ``ALEX_TOOLS`` — module-level list of LangChain ``BaseTool`` instances
-- ``tools()`` — callable returning a list of ``BaseTool`` instances
+- ``ALEX_TOOLS`` — module-level list of ``AlexTool`` instances
+- ``tools()`` — callable returning a list of ``AlexTool`` instances
 - ``register(agent)`` — callable that receives the :class:`Agent` and is
   free to call ``agent.register_tool(...)`` itself
 
@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from langchain_core.tools import BaseTool
+from alex.tools.models import AlexTool
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ class PluginLoadResult:
 
     path: Path
     module_name: str
-    tools: list[BaseTool]
+    tools: list[AlexTool]
     registered_via: str  # "ALEX_TOOLS" | "tools()" | "register()" | "none"
     error: str | None = None
 
@@ -74,18 +74,18 @@ def _import_plugin(path: Path) -> Any:
     return module
 
 
-def _coerce_tools(value: Any) -> list[BaseTool]:
-    """Validate that *value* is an iterable of ``BaseTool`` instances."""
+def _coerce_tools(value: Any) -> list[AlexTool]:
+    """Validate that *value* is an iterable of ``AlexTool`` instances."""
     if value is None:
         return []
-    if isinstance(value, BaseTool):
+    if isinstance(value, AlexTool):
         return [value]
     if not isinstance(value, Iterable):
-        raise TypeError(f"expected Iterable[BaseTool], got {type(value).__name__}")
-    out: list[BaseTool] = []
+        raise TypeError(f"expected Iterable[AlexTool], got {type(value).__name__}")
+    out: list[AlexTool] = []
     for item in value:
-        if not isinstance(item, BaseTool):
-            raise TypeError(f"plugin yielded non-BaseTool: {type(item).__name__}")
+        if not isinstance(item, AlexTool):
+            raise TypeError(f"plugin yielded non-AlexTool: {type(item).__name__}")
         out.append(item)
     return out
 

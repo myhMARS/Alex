@@ -1,8 +1,7 @@
 """Agent module public interfaces — the sole boundary TUI / frontends depend on.
 
-AgentFacade is the main contract.  Narrow protocols (LLMGateway,
-MemoryPort, ToolExecutorPort) are referenced by orchestrator and
-sub-components.
+AgentFacade is the main contract.  Narrow protocols are referenced by
+orchestrator and sub-components.
 """
 
 from __future__ import annotations
@@ -11,9 +10,6 @@ import asyncio
 from collections.abc import AsyncIterator
 from typing import Any, Protocol
 
-from langchain_core.messages import BaseMessage
-
-from alex.skill.ports import SkillServicePort
 from alex.tools.ports import ToolExecutionContext
 
 
@@ -89,22 +85,23 @@ class AgentFacade(Protocol):
     def list_session_cron_history(self, query: str = "", limit: int = 20) -> list[dict]: ...
 
 
-# ── Narrow internal protocols (referenced by orchestrator / sub-components) ──
+# ── Narrow internal protocols ────────────────────────────────────────────
+
 
 class LLMGateway(Protocol):
     """Streaming LLM — the orchestrator calls this to get token/tool events."""
 
     async def stream(
-        self, messages: list[BaseMessage], system_prompt: str
+        self, messages: list[dict[str, Any]], system_prompt: str
     ) -> AsyncIterator[dict[str, Any]]: ...
 
 
 class MemoryPort(Protocol):
     """Runtime message storage — read/write the conversation history."""
 
-    async def get_context(self, session_id: str) -> list[BaseMessage]: ...
+    async def get_context(self, session_id: str) -> list[dict[str, Any]]: ...
 
-    async def append(self, session_id: str, messages: list[BaseMessage]) -> None: ...
+    async def append(self, session_id: str, messages: list[dict[str, Any]]) -> None: ...
 
     async def clear(self, session_id: str) -> None: ...
 
@@ -115,11 +112,9 @@ class ToolExecutorPort(Protocol):
     async def execute(self, ctx: ToolExecutionContext, name: str, args: dict[str, Any]) -> str: ...
 
 
-# Re-export for convenience
 __all__ = [
     "AgentFacade",
     "LLMGateway",
     "MemoryPort",
-    "SkillServicePort",
     "ToolExecutorPort",
 ]

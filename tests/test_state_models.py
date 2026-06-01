@@ -9,9 +9,8 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-pytest.importorskip("langchain_core")
 
-from langchain_core.messages import HumanMessage
+from alex import messages as msg
 
 
 async def _async_noop(_event) -> None:
@@ -50,16 +49,12 @@ class TestFeedbackSessionState:
             push_notification=_async_noop,
         )
 
-        # Session A: accumulate turns
         svc.set_session_id("session-a")
         svc._state().turn_count = 10
         assert svc.turn_count == 10
 
-        # Session B: fresh state
         svc.set_session_id("session-b")
         assert svc.turn_count == 0
-
-        # Session A still has its counts
         assert svc._sessions["session-a"].turn_count == 10
 
     def test_reset_session_state_clears_specific_session(self):
@@ -100,7 +95,7 @@ class TestFeedbackSessionState:
         from alex.agent.feedback_service import FeedbackAppService
 
         memory = MagicMock()
-        memory.get_context = AsyncMock(return_value=[HumanMessage(content="hi")])
+        memory.get_context = AsyncMock(return_value=[msg.user_message("hi")])
 
         skills = MagicMock()
         skills.reflect = AsyncMock(return_value={
@@ -116,7 +111,7 @@ class TestFeedbackSessionState:
             push_notification=lambda e: _append_notification(notifications, e),
         )
         svc.set_session_id("reflect-session")
-        svc._state().turn_count = 4  # so the 5th triggers (4 → 5)
+        svc._state().turn_count = 4
 
         await svc.maybe_reflect(True)
         assert svc.turn_count == 5
@@ -126,15 +121,13 @@ class TestFeedbackSessionState:
 # ── Cron cancel semantics ──────────────────────────────────────────────────────
 
 class TestCronCancel:
-    """Cron jobs must cancel cleanly — stopping the APScheduler job and
-    any running task."""
+    """Cron jobs must cancel cleanly."""
 
     @pytest.mark.asyncio
     async def test_cancel_nonexistent_returns_false(self):
         from alex.agent.cron_service import CronService
 
         svc = CronService(notify_callback=lambda e: None)
-        # Cancel a job that was never scheduled
         result = await svc.cancel("nonexistent-job-id")
         assert result is False
 
@@ -144,7 +137,6 @@ class TestCronCancel:
         from alex.scheduler.manager import CronJob
 
         svc = CronService(notify_callback=lambda e: None)
-        # Manually inject a job into the manager
         job = CronJob(
             id="manual-job",
             session_id="s1",

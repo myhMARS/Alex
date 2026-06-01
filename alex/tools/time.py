@@ -1,8 +1,9 @@
 """Time tool - get the current date and time."""
 
 from datetime import datetime, timedelta, timezone as dt_timezone
-from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
+
+from alex.tools.models import AlexTool
 
 
 TOOL_HINT = "Use `time` to get the current the current date/time. Prefer timezone='local' unless the user specifies otherwise."
@@ -61,8 +62,8 @@ async def _get_current_time(timezone: str = "local") -> str:
         return f"Error getting current time: {type(e).__name__} - {e}"
 
 
-def create_time_tool() -> StructuredTool:
-    return StructuredTool.from_function(
+def create_time_tool() -> AlexTool:
+    return AlexTool.from_function(
         coroutine=_get_current_time,
         name="time",
         description=(

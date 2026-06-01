@@ -12,7 +12,6 @@ import shutil
 from pathlib import Path
 
 import pytest
-pytest.importorskip("langchain_core")
 
 import alex.tools.shell as shell_mod
 from alex.tools.permissions import PERMISSION_SHELL, required_permission

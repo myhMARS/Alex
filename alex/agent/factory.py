@@ -1,8 +1,4 @@
-"""Agent factory — explicit wiring function for creating a fully-assembled Agent.
-
-Extracts the wiring logic from Agent.__init__ so callers get a ready-to-use
-Agent without knowing about internal service construction order.
-"""
+"""Agent factory — explicit wiring function for creating a fully-assembled Agent."""
 
 from __future__ import annotations
 
@@ -10,21 +6,18 @@ import logging
 from pathlib import Path
 from typing import Callable
 
-from langchain_core.callbacks import BaseCallbackHandler
-from langchain_core.language_models import BaseChatModel
-from langchain_core.tools import BaseTool as LCBaseTool
-
 from alex.agent.composition import (
     create_default_config,
-    create_default_llm,
     create_default_memory,
     create_default_skill_service,
 )
 from alex.agent.service import Agent
 from alex.bus import AsyncEventBus
 from alex.llm.base import LLMConfig
+from alex.llm.client import ChatClient
 from alex.memory.base import MemoryBase
 from alex.skill import SkillService
+from alex.tools.models import AlexTool
 from alex.tools.permissions import AuditLogger, PermissionPolicy
 from alex.tools.plugin_loader import PluginLoadResult, install_plugins
 
@@ -35,14 +28,14 @@ def create_agent(
     *,
     system_prompt: str | None = None,
     max_iterations: int = 5,
-    tools: list[LCBaseTool] | None = None,
-    callbacks: list[BaseCallbackHandler] | None = None,
+    tools: list[AlexTool] | None = None,
+    callbacks: list | None = None,
     memory: MemoryBase | None = None,
     skill_manager: SkillService | None = None,
-    llm: BaseChatModel | None = None,
+    llm: ChatClient | None = None,
     config: LLMConfig | None = None,
     event_bus: AsyncEventBus | None = None,
-    llm_factory: Callable[[], BaseChatModel] | None = None,
+    llm_factory: Callable[[], ChatClient] | None = None,
     permissions: PermissionPolicy | None = None,
     audit_logger: AuditLogger | None = None,
     audit_path: Path | None = None,
@@ -51,23 +44,13 @@ def create_agent(
 ) -> tuple[Agent, list[PluginLoadResult]]:
     """Create a fully-wired Agent with all services composed.
 
-    All parameters are optional; sensible defaults are provided for
-    memory, skills, the LLM (via LLMFactory + config), and the
-    permission policy (loaded from environment).
-
-    A persistent :class:`AuditLogger` is attached to the policy unless
-    one is explicitly passed (or *audit_path* is set to ``False``-y to
-    disable audit recording entirely).
-
-    User plugins under ``~/.alex/plugins/*.py`` are loaded by default.
-    Pass ``enable_plugins=False`` to skip plugin discovery, or supply
-    *plugin_root* to override the default location.
-
-    Returns the agent together with the per-plugin load results so the
-    host can surface diagnostics for failures.
+    All parameters are optional; sensible defaults are provided.
     """
     _config = config or create_default_config()
-    _llm = llm or (llm_factory() if llm_factory else create_default_llm())
+    # LLM is created lazily in Agent._ensure_llm() → start_services().
+    # Passing None here defers the ~1s AsyncOpenAI init to the background
+    # worker so the TUI appears immediately.
+    _llm = llm or (llm_factory() if llm_factory else None)
     _memory = memory or create_default_memory()
     _skills = skill_manager or create_default_skill_service()
     _system_prompt = system_prompt or "You are a helpful AI assistant."

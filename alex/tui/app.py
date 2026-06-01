@@ -70,6 +70,7 @@ class AlexApp(ChatControllerMixin, App):
         self._notif = NotificationController(self, self._view_state)
         self._projector = ChatProjector(self)
         self._mcp_pool: MCPClientPool | None = None
+        self._mcp_configs: list = []  # parsed early so /mcp page works during loading
         self._mcp_status_message: str = "未开始加载"
         self._status_timer: Timer | None = None
 
@@ -151,12 +152,29 @@ class AlexApp(ChatControllerMixin, App):
     async def _connect_mcp(self) -> None:
         """Load and register MCP tools from ``~/.alex/mcp.json``.
 
-        Failures are surfaced as toasts so a missing required dependency
-        or a misconfigured server doesn't block startup.
+        Config parsing is synchronous and fast; the actual server connections
+        run in a background task so they never block startup.
         """
+        from alex.tools.mcp_client import load_mcp_config
+        self._mcp_configs = load_mcp_config()
+
+        if not self._mcp_configs:
+            self._mcp_status_message = "未发现 MCP server 配置"
+            return
+
         self._mcp_status_message = "加载中"
+        asyncio.create_task(self._connect_mcp_background())
+
+    async def _connect_mcp_background(self) -> None:
+        """Connect to MCP servers in background, update status on completion."""
         try:
-            pool, tools = await load_mcp_tools_from_config()
+            pool, tools = await asyncio.wait_for(
+                load_mcp_tools_from_config(), timeout=30.0,
+            )
+        except asyncio.TimeoutError:
+            self._mcp_status_message = "加载超时（30s）"
+            self._notif.show_toast("MCP 加载超时，部分 server 可能未响应", duration=4)
+            return
         except MCPUnavailableError as e:
             self._mcp_status_message = f"不可用：{e}"
             self._notif.show_toast(f"MCP 不可用：{e}", duration=4)
@@ -169,20 +187,18 @@ class AlexApp(ChatControllerMixin, App):
         self._mcp_pool = pool
         connections = pool.connections
         connected = sum(1 for conn in connections if not conn.error)
-        if not connections:
-            self._mcp_status_message = "未发现 MCP server 配置"
-        else:
-            self._mcp_status_message = (
-                f"已处理 {len(connections)} 个 server，连接成功 {connected} 个，注册 {len(tools)} 个工具"
-            )
-        if not tools:
-            return
+        self._mcp_status_message = (
+            f"已处理 {len(connections)} 个 server，连接成功 {connected} 个，注册 {len(tools)} 个工具"
+        )
+        self._projector.refresh_status_bar()
+
         for tool in tools:
             try:
                 self._agent.register_tool(tool)
             except Exception:
                 continue
-        self._notif.show_toast(f"已加载 {len(tools)} 个 MCP 工具", duration=2)
+        if tools:
+            self._notif.show_toast(f"已加载 {len(tools)} 个 MCP 工具", duration=2)
 
     def action_quit(self) -> None:
         self._do_shutdown()

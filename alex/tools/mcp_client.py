@@ -1,7 +1,7 @@
 """MCP (Model Context Protocol) client adapter.
 
 Bridges MCP servers — launched as stdio subprocesses or reached over
-HTTP transports — into LangChain ``StructuredTool`` instances so the
+HTTP transports — into ``AlexTool`` instances so the
 rest of the agent can treat them as ordinary tools.
 
 The ``mcp`` SDK is part of Alex's main dependencies.  If it is missing
@@ -32,6 +32,7 @@ session. Cleanup on shutdown is the host's responsibility (call
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -42,10 +43,10 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from langchain_core.tools import StructuredTool
 from pydantic import BaseModel
 
 from alex.config import is_mcp_debug_enabled
+from alex.tools.models import AlexTool
 from alex.tools.permissions import PERMISSION_NETWORK
 
 logger = logging.getLogger(__name__)
@@ -274,8 +275,8 @@ def _build_mcp_tool(
     description: str,
     schema: dict[str, Any] | None,
     invoke,
-) -> StructuredTool:
-    """Wrap an MCP ``call_tool`` invocation as a LangChain ``StructuredTool``."""
+) -> AlexTool:
+    """Wrap an MCP ``call_tool`` invocation as an ``AlexTool``."""
     args_schema = _schema_to_pydantic(schema, model_name=f"MCP_{server_name}_{tool_name}_Input")
 
     async def _call(**kwargs):
@@ -286,7 +287,7 @@ def _build_mcp_tool(
         return _format_mcp_result(result)
 
     qualified_name = f"mcp__{server_name}__{tool_name}".lower()
-    return StructuredTool.from_function(
+    return AlexTool.from_function(
         coroutine=_call,
         name=qualified_name,
         description=f"[MCP:{server_name}] {description}".strip(),
@@ -325,7 +326,7 @@ class MCPConnection:
     """A single live MCP session plus its discovered tools."""
 
     config: MCPServerConfig
-    tools: list[StructuredTool] = field(default_factory=list)
+    tools: list[AlexTool] = field(default_factory=list)
     error: str | None = None
 
 
@@ -347,8 +348,8 @@ class MCPClientPool:
         return list(self._connections)
 
     @staticmethod
-    def _build_tools(*, config: MCPServerConfig, listed: Any, invoke) -> list[StructuredTool]:
-        tools: list[StructuredTool] = []
+    def _build_tools(*, config: MCPServerConfig, listed: Any, invoke) -> list[AlexTool]:
+        tools: list[AlexTool] = []
         for spec in getattr(listed, "tools", []) or []:
             tool = _build_mcp_tool(
                 server_name=config.name,
@@ -413,7 +414,7 @@ class MCPClientPool:
         ) as client:
             yield client
 
-    async def _connect_stdio(self, cfg: MCPServerConfig, sdk: tuple) -> list[StructuredTool]:
+    async def _connect_stdio(self, cfg: MCPServerConfig, sdk: tuple) -> list[AlexTool]:
         ClientSession, StdioServerParameters, stdio_client, _, _ = sdk
         params = StdioServerParameters(
             command=cfg.command,
@@ -462,7 +463,7 @@ class MCPClientPool:
             )
         return kwargs
 
-    async def _connect_streamable_http(self, cfg: MCPServerConfig, sdk: tuple) -> list[StructuredTool]:
+    async def _connect_streamable_http(self, cfg: MCPServerConfig, sdk: tuple) -> list[AlexTool]:
         ClientSession, _, _, streamable_http_client, _ = sdk
         if streamable_http_client is None:
             raise MCPUnavailableError("Installed MCP SDK does not provide streamable-http client support")
@@ -500,7 +501,7 @@ class MCPClientPool:
 
         return self._build_tools(config=cfg, listed=listed, invoke=_invoke_tool)
 
-    async def _connect_sse(self, cfg: MCPServerConfig, sdk: tuple) -> list[StructuredTool]:
+    async def _connect_sse(self, cfg: MCPServerConfig, sdk: tuple) -> list[AlexTool]:
         ClientSession, _, _, _, sse_client = sdk
         if sse_client is None:
             raise MCPUnavailableError("Installed MCP SDK does not provide SSE client support")
@@ -513,7 +514,7 @@ class MCPClientPool:
         listed = await session.list_tools()
         return self._build_tools(config=cfg, listed=listed, invoke=session.call_tool)
 
-    async def _connect_single(self, cfg: MCPServerConfig, sdk: tuple) -> list[StructuredTool]:
+    async def _connect_single(self, cfg: MCPServerConfig, sdk: tuple) -> list[AlexTool]:
         if cfg.transport == "stdio":
             return await self._connect_stdio(cfg, sdk)
         if cfg.transport == "streamable-http":
@@ -533,7 +534,17 @@ class MCPClientPool:
                 sdk = _import_mcp()
             connection = MCPConnection(config=cfg)
             try:
-                connection.tools = await self._connect_single(cfg, sdk)
+                per_server_timeout = cfg.timeout if cfg.timeout is not None else 10.0
+                connection.tools = await asyncio.wait_for(
+                    self._connect_single(cfg, sdk),
+                    timeout=per_server_timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "MCP server '%s' (%s) connection timed out after %.0fs",
+                    cfg.name, cfg.transport, cfg.timeout if cfg.timeout else 10.0,
+                )
+                connection.error = f"TimeoutError: connection timed out after {cfg.timeout if cfg.timeout else 10.0:.0f}s"
             except Exception as e:
                 logger.warning("MCP server '%s' (%s) failed to connect: %s", cfg.name, cfg.transport, e)
                 connection.error = f"{type(e).__name__}: {e}"
@@ -550,7 +561,7 @@ class MCPClientPool:
 async def load_mcp_tools_from_config(
     *,
     config_path: Path | None = None,
-) -> tuple[MCPClientPool, list[StructuredTool]]:
+) -> tuple[MCPClientPool, list[AlexTool]]:
     """Convenience: load + connect everything described by ``mcp.json``.
 
     Returns the live pool (for shutdown) and the flat list of tools.
@@ -568,7 +579,7 @@ async def load_mcp_tools_from_config(
         await pool.aclose()
         raise
 
-    tools: list[StructuredTool] = []
+    tools: list[AlexTool] = []
     for conn in pool.connections:
         tools.extend(conn.tools)
     return pool, tools

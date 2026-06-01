@@ -1,17 +1,13 @@
 """Tests for SessionPersistence — save/load/list/delete through store adapter."""
 
-import json
 import os
-import tempfile
 import threading
 import time
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
-pytest.importorskip("langchain_core")
-from langchain_core.messages import HumanMessage, AIMessage
 
+from alex import messages as msg
 from alex.store.session_adapter import SessionPersistence
 from alex.store.session import SESSIONS_DIR
 
@@ -19,13 +15,13 @@ from alex.store.session import SESSIONS_DIR
 class TestSessionPersistence:
     def test_save_and_load(self):
         sid = "test-save-load"
-        messages = [HumanMessage(content="hello"), AIMessage(content="hi")]
+        messages = [msg.user_message("hello"), msg.assistant_message("hi")]
         try:
             SessionPersistence.save(sid, messages)
             bundle = SessionPersistence.load(sid)
             assert bundle is not None
             assert len(bundle["messages"]) == 2
-            assert bundle["messages"][0].content == "hello"
+            assert bundle["messages"][0]["content"] == "hello"
         finally:
             SessionPersistence.delete(sid)
 
@@ -34,7 +30,7 @@ class TestSessionPersistence:
 
     def test_save_and_list(self):
         sid = "test-list-session"
-        messages = [HumanMessage(content="list test")]
+        messages = [msg.user_message("list test")]
         try:
             SessionPersistence.save(sid, messages)
             sessions = SessionPersistence.list_sessions()
@@ -45,7 +41,7 @@ class TestSessionPersistence:
 
     def test_delete(self):
         sid = "test-delete-session"
-        messages = [HumanMessage(content="delete me")]
+        messages = [msg.user_message("delete me")]
         SessionPersistence.save(sid, messages)
         assert SessionPersistence.load(sid) is not None
         assert SessionPersistence.delete(sid) is True
@@ -56,7 +52,7 @@ class TestSessionPersistence:
 
     def test_save_uses_atomic_replace(self, monkeypatch):
         sid = "test-atomic-save"
-        messages = [HumanMessage(content="atomic")]
+        messages = [msg.user_message("atomic")]
         replace_calls: list[tuple[str, str]] = []
         original_replace = os.replace
 
@@ -75,7 +71,7 @@ class TestSessionPersistence:
 
     def test_append_cron_record(self):
         sid = "test-cron-append"
-        messages = [HumanMessage(content="cron test")]
+        messages = [msg.user_message("cron test")]
         try:
             SessionPersistence.save(sid, messages)
             record = {
@@ -95,7 +91,7 @@ class TestSessionPersistence:
 
     def test_append_cron_record_deduplicate(self):
         sid = "test-cron-dedup"
-        messages = [HumanMessage(content="cron dedup")]
+        messages = [msg.user_message("cron dedup")]
         try:
             SessionPersistence.save(sid, messages)
             record = {"execution_id": "exec-1", "job_id": "j1", "name": "j", "status": "SUCCESS"}
@@ -109,14 +105,14 @@ class TestSessionPersistence:
     def test_save_preserves_existing_cron_history(self):
         sid = "test-save-preserve-cron-history"
         try:
-            SessionPersistence.save(sid, [HumanMessage(content="first")])
+            SessionPersistence.save(sid, [msg.user_message("first")])
             SessionPersistence.append_cron_record(sid, {
                 "execution_id": "exec-1",
                 "job_id": "job-1",
                 "name": "job",
                 "status": "SUCCESS",
             })
-            SessionPersistence.save(sid, [HumanMessage(content="second")])
+            SessionPersistence.save(sid, [msg.user_message("second")])
             bundle = SessionPersistence.load(sid)
             cron = bundle.get("cron_history", [])
             assert len(cron) == 1
@@ -134,7 +130,7 @@ class TestSessionPersistence:
 
         monkeypatch.setattr("alex.store.session._atomic_write_json", _slow_atomic_write)
         try:
-            SessionPersistence.save(sid, [HumanMessage(content="base")])
+            SessionPersistence.save(sid, [msg.user_message("base")])
             r1 = {"execution_id": "exec-1", "job_id": "job-1", "name": "job1", "status": "SUCCESS"}
             r2 = {"execution_id": "exec-2", "job_id": "job-2", "name": "job2", "status": "SUCCESS"}
             t1 = threading.Thread(target=SessionPersistence.append_cron_record, args=(sid, r1))
@@ -155,7 +151,7 @@ class TestSessionPersistence:
         from alex.bus.events import TurnCompleted
 
         sid = "test-subscribe-turn"
-        messages = [HumanMessage(content="bus turn"), AIMessage(content="ok")]
+        messages = [msg.user_message("bus turn"), msg.assistant_message("ok")]
         try:
             bus = AsyncEventBus()
             await bus.start()
@@ -181,7 +177,7 @@ class TestSessionPersistence:
         from alex.bus.events import CronJobEvent
 
         sid = "test-subscribe-cron"
-        messages = [HumanMessage(content="cron bus")]
+        messages = [msg.user_message("cron bus")]
         try:
             SessionPersistence.save(sid, messages)
 

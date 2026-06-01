@@ -29,10 +29,10 @@ import shlex
 import shutil
 from pathlib import Path
 
-from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from alex.tools._path import resolve_path_in_allowed_roots
+from alex.tools.models import AlexTool
 from alex.tools.permissions import (
     PERMISSION_SHELL,
     PreviewBlock,
@@ -230,9 +230,9 @@ async def _summarise_bash(args: dict) -> tuple[str, list[PreviewBlock]]:
     return summary, [PreviewBlock(title="bash command", body=body, kind="code")]
 
 
-def create_bash_tool(*, allowed_roots: list[Path] | None = None) -> StructuredTool:
+def create_bash_tool(*, allowed_roots: list[Path] | None = None) -> AlexTool:
     roots = allowed_roots or [Path.cwd()]
-    tool = StructuredTool.from_function(
+    tool = AlexTool.from_function(
         coroutine=_make_bash(roots),
         name="bash",
         description=(
@@ -373,9 +373,9 @@ async def _summarise_pwsh(args: dict) -> tuple[str, list[PreviewBlock]]:
     return summary, [PreviewBlock(title="pwsh command", body=body, kind="code")]
 
 
-def create_pwsh_tool(*, allowed_roots: list[Path] | None = None) -> StructuredTool:
+def create_pwsh_tool(*, allowed_roots: list[Path] | None = None) -> AlexTool:
     roots = allowed_roots or [Path.cwd()]
-    tool = StructuredTool.from_function(
+    tool = AlexTool.from_function(
         coroutine=_make_pwsh(roots),
         name="pwsh",
         description=(
@@ -414,7 +414,7 @@ def detect_available_shells() -> dict[str, str]:
 def create_available_shell_tools(
     *,
     allowed_roots: list[Path] | None = None,
-) -> list[StructuredTool]:
+) -> list[AlexTool]:
     """Build whichever of ``bash`` / ``pwsh`` the host actually supports.
 
     Hosts can call this from ``main.py`` to register both shells when
@@ -422,7 +422,7 @@ def create_available_shell_tools(
     one without bothering with platform branches themselves.
     """
     found = detect_available_shells()
-    tools: list[StructuredTool] = []
+    tools: list[AlexTool] = []
     if "bash" in found:
         tools.append(create_bash_tool(allowed_roots=allowed_roots))
     if "pwsh" in found:
