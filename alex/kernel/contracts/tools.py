@@ -48,9 +48,11 @@ class ToolsProvided(Event):
     """Published by mcp / plugin loaders to announce available tools.
 
     The tools gateway subscribes to this and merges specs into its catalog.
+    ``metadata`` carries optional status info (e.g. MCP connection state).
     """
     provider: str = ""  # "mcp" | "plugin"
     specs: list[dict[str, Any]] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

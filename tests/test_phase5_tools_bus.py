@@ -135,9 +135,8 @@ class TestTurnProcessorToolsViaBus:
             llm=None,
             push_notification=lambda e: None,
             services=_BusTurnServices(bus),
-            get_system_prompt=lambda: "",
+            get_system_prompt=lambda _: "",
             max_iterations=1,
-            session_id="test-sid",
         )
 
         catalog = await tp._get_tool_catalog()
@@ -166,9 +165,8 @@ class TestTurnProcessorToolsViaBus:
             llm=None,
             push_notification=lambda e: None,
             services=_BusTurnServices(bus),
-            get_system_prompt=lambda: "",
+            get_system_prompt=lambda _: "",
             max_iterations=1,
-            session_id="test-sid",
         )
 
         import types

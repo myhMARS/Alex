@@ -66,9 +66,8 @@ class TestTurnProcessorSkillViaBus:
             llm=None,
             push_notification=lambda e: None,
             services=_BusTurnServices(bus),
-            get_system_prompt=lambda: "",
+            get_system_prompt=lambda _: "",
             max_iterations=1,
-            session_id="test-sid",
         )
 
         # Unknown skill returns None
@@ -93,9 +92,8 @@ class TestTurnProcessorSkillViaBus:
             llm=None,
             push_notification=lambda e: None,
             services=_BusTurnServices(bus),
-            get_system_prompt=lambda: "",
+            get_system_prompt=lambda _: "",
             max_iterations=1,
-            session_id="test-sid",
         )
 
         result = await tp._retrieve_skills("test query", top_k=3)

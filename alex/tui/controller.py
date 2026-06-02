@@ -43,6 +43,7 @@ class ChatControllerMixin:
     _skills_expanded: bool = False
     _tool_output_expanded: bool = False
     _mcp_status_message: str = ""
+    _mcp_servers: list[dict] = []
     _mcp_pool: Any = None
     _mcp_configs: list[Any] = []
 
@@ -211,60 +212,79 @@ class ChatControllerMixin:
         self._show_page("Cron 任务", content, mode="cron")
 
     def _handle_mcp_cmd(self) -> None:
-        """Show current MCP runtime status."""
-        lines = ["  🔌 MCP 状态", ""]
+        """Show current MCP runtime status — driven by MCPModule bus events."""
+        lines = ["  \U0001f50c MCP 状态", ""]
         status = str(getattr(self, "_mcp_status_message", "") or "未开始加载")
         lines.append(f"  总览: {status}")
 
+        # Prefer event metadata, fall back to direct _mcp_pool (backward compat)
+        servers: list[dict] = list(getattr(self, "_mcp_servers", []) or [])
         pool = getattr(self, "_mcp_pool", None)
         connections = list(getattr(pool, "connections", []) or [])
+        configs = list(getattr(self, "_mcp_configs", []) or [])
 
-        if not connections:
-            configs = list(getattr(self, "_mcp_configs", []) or [])
-            if configs:
-                lines.append("")
-                for cfg in configs:
-                    name = cfg.name if hasattr(cfg, "name") else str(cfg)
-                    transport = cfg.transport if hasattr(cfg, "transport") else "?"
-                    enabled = cfg.enabled if hasattr(cfg, "enabled") else True
-                    state = "LOADING" if enabled else "DISABLED"
-                    target = ""
-                    if hasattr(cfg, "command") and cfg.command:
-                        target = f"\n    target: {cfg.command}"
-                    if hasattr(cfg, "url") and cfg.url:
-                        target = f"\n    target: {cfg.url}"
-                    lines.append(
-                        f"  - {name} [{transport}] {state}  tools:?"
-                    )
-                    if target:
-                        lines.append(target)
-            else:
-                lines.extend([
-                    "",
-                    "  [暂无 MCP server 配置]",
-                ])
-            self._show_page("MCP 状态", "\n".join(lines), mode="mcp")
-            return
+        if servers:
+            lines.append("")
+            for srv in servers:
+                name = srv.get("name", "?")
+                transport = srv.get("transport", "?")
+                srv_status = srv.get("status", "?")
+                tool_count = srv.get("tool_count")
+                error = srv.get("error")
+                enabled = srv.get("enabled", True)
 
-        lines.append("")
-        for conn in connections:
-            cfg = conn.config
-            if conn.error == "disabled":
-                state = "DISABLED"
-            elif conn.error:
-                state = "ERROR"
-            else:
-                state = "CONNECTED"
+                if not enabled:
+                    state = "DISABLED"
+                elif srv_status == "ERROR" or error:
+                    state = "ERROR"
+                elif srv_status in ("connected", "CONNECTED"):
+                    state = "CONNECTED"
+                else:
+                    state = srv_status.upper()
 
-            target = cfg.command if cfg.transport == "stdio" else cfg.url
-            lines.append(
-                f"  - {cfg.name} [{cfg.transport}] {state}  tools:{len(conn.tools)}"
-            )
-            if target:
-                lines.append(f"    target: {target}")
-            if conn.error and conn.error != "disabled":
-                lines.append(f"    error: {conn.error}")
-
+                tool_str = str(tool_count) if tool_count is not None else "?"
+                lines.append(f"  - {name} [{transport}] {state}  tools:{tool_str}")
+                cmd = srv.get("command", "")
+                url = srv.get("url", "")
+                if cmd:
+                    lines.append(f"    target: {cmd}")
+                if url:
+                    lines.append(f"    target: {url}")
+                if error:
+                    lines.append(f"    error: {error}")
+        elif connections:
+            lines.append("")
+            for conn in connections:
+                cfg = conn.config
+                if conn.error == "disabled":
+                    state = "DISABLED"
+                elif conn.error:
+                    state = "ERROR"
+                else:
+                    state = "CONNECTED"
+                target = cfg.command if cfg.transport == "stdio" else cfg.url
+                lines.append(f"  - {cfg.name} [{cfg.transport}] {state}  tools:{len(conn.tools)}")
+                if target:
+                    lines.append(f"    target: {target}")
+                if conn.error and conn.error != "disabled":
+                    lines.append(f"    error: {conn.error}")
+        elif configs:
+            lines.append("")
+            for cfg in configs:
+                name = cfg.name if hasattr(cfg, "name") else str(cfg)
+                transport = cfg.transport if hasattr(cfg, "transport") else "?"
+                enabled = cfg.enabled if hasattr(cfg, "enabled") else True
+                state = "LOADING" if enabled else "DISABLED"
+                target = ""
+                if hasattr(cfg, "command") and cfg.command:
+                    target = f"    target: {cfg.command}"
+                if hasattr(cfg, "url") and cfg.url:
+                    target = f"    target: {cfg.url}"
+                lines.append(f"  - {name} [{transport}] {state}  tools:?")
+                if target:
+                    lines.append(target)
+        else:
+            lines.extend(["", "  [等待 MCP 模块状态更新...]"])
         self._show_page("MCP 状态", "\n".join(lines), mode="mcp")
 
     # ── session management（通过 bus）──────────────────────────────────

@@ -584,7 +584,6 @@ async def test_mcp_command_shows_global_failure_without_pool():
 
         content = str(getattr(pilot.app.query_one("#page-content"), "_Static__content"))
         assert "加载失败：ValueError: bad config" in content
-        assert "暂无 MCP server 配置" in content
 
 
 @pytest.mark.asyncio

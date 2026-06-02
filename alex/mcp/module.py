@@ -42,8 +42,32 @@ class MCPModule:
         # Provide handler for tool invocation (routed through tools gateway)
         bus.provide(InvokeProviderTool, self._handle_invoke)
 
+        # 同步加载配置并发布初始状态，让 TUI 及时展示
+        configs: list = []
+        try:
+            from alex.mcp.mcp_client import load_mcp_config
+            configs = load_mcp_config(self._config_path)
+        except Exception:
+            bus.publish(ToolsProvided(provider="mcp", specs=[],
+                metadata={"status": "config_error", "message": "配置读取失败"}))
+            logger.warning("MCP config load failed", exc_info=True)
+            return
+
+        if not configs:
+            bus.publish(ToolsProvided(provider="mcp", specs=[],
+                metadata={"status": "no_servers", "message": "未发现 MCP server 配置"}))
+            logger.info("No MCP servers configured")
+            return
+
+        bus.publish(ToolsProvided(provider="mcp", specs=[],
+            metadata={
+                "status": "connecting", "message": "连接中（后台）",
+                "servers": [_serialize_config(cfg) for cfg in configs],
+            }))
+        logger.info("MCP: connecting to %d servers in background", len(configs))
+
         # Connect to MCP servers in the background — never block startup
-        self._connect_task = asyncio.create_task(self._connect_servers())
+        self._connect_task = asyncio.create_task(self._connect_servers(configs))
 
         logger.info("MCPModule started (provides InvokeProviderTool, connecting in background)")
 
@@ -66,26 +90,22 @@ class MCPModule:
 
     # ── server connection ────────────────────────────────────────────────
 
-    async def _connect_servers(self) -> None:
-        """Connect to configured MCP servers and announce tools.
+    async def _connect_servers(self, configs: list) -> None:
+        """Connect to *configs* (already loaded) and announce tools.
 
         Runs as a background task — a slow server never blocks the TUI.
-        Each server gets a 10 s timeout.
+        Each server gets a 15 s overall timeout.
         """
+        if not configs:
+            return
+
         try:
-            from alex.mcp.mcp_client import load_mcp_config, MCPClientPool
+            from alex.mcp.mcp_client import MCPClientPool
         except Exception:
             logger.warning("MCP client not available", exc_info=True)
-            return
-
-        try:
-            configs = load_mcp_config(self._config_path)
-        except Exception:
-            logger.warning("Failed to load MCP config", exc_info=True)
-            return
-
-        if not configs:
-            logger.info("No MCP servers configured")
+            if self._bus:
+                self._bus.publish(ToolsProvided(provider="mcp", specs=[],
+                    metadata={"status": "error", "message": "MCP client 不可用"}))
             return
 
         self._pool = MCPClientPool()
@@ -96,15 +116,24 @@ class MCPModule:
             )
         except asyncio.TimeoutError:
             logger.warning("MCP server connection timed out (15 s)")
+            if self._bus:
+                self._bus.publish(ToolsProvided(provider="mcp", specs=[],
+                    metadata={"status": "timeout", "message": "连接超时（15s）"}))
             return
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.warning("MCP server connection failed", exc_info=True)
+            if self._bus:
+                self._bus.publish(ToolsProvided(provider="mcp", specs=[],
+                    metadata={"status": "error", "message": "连接失败"}))
             return
 
         all_specs: list[dict[str, Any]] = []
+        server_details: list[dict[str, Any]] = []
         for conn in connections:
+            detail = _serialize_connection(conn)
+            server_details.append(detail)
             if conn.error:
                 logger.warning(
                     "MCP server '%s' error: %s", conn.config.name, conn.error,
@@ -120,9 +149,16 @@ class MCPModule:
                     "metadata": tool.metadata or {},
                 })
 
-        if all_specs and self._bus:
-            self._bus.publish(ToolsProvided(provider="mcp", specs=all_specs))
-            logger.info("MCP: announced %d tools from %d servers", len(all_specs), len(connections))
+        if self._bus:
+            tool_count = len(all_specs)
+            self._bus.publish(ToolsProvided(provider="mcp", specs=all_specs,
+                metadata={
+                    "status": "connected",
+                    "message": f"已连接，注册 {tool_count} 个工具",
+                    "tool_count": tool_count,
+                    "servers": server_details,
+                }))
+            logger.info("MCP: announced %d tools from %d servers", tool_count, len(connections))
 
     # ── request handler ──────────────────────────────────────────────────
 
@@ -151,3 +187,35 @@ class MCPModule:
             return ToolResult(name=req.name, output=str(output), run_id=run_id)
         except Exception as e:
             return ToolResult(name=req.name, error=str(e), run_id=run_id)
+
+
+# ── serialization helpers (no alex.tui dependency) ──────────────────────────
+
+
+def _serialize_config(cfg: Any) -> dict[str, Any]:
+    """Serialize an ``MCPServerConfig`` to a plain dict for bus metadata."""
+    return {
+        "name": getattr(cfg, "name", ""),
+        "transport": getattr(cfg, "transport", "stdio"),
+        "command": getattr(cfg, "command", ""),
+        "url": getattr(cfg, "url", ""),
+        "enabled": getattr(cfg, "enabled", True),
+        "status": "connecting",
+        "tool_count": None,
+        "error": None,
+    }
+
+
+def _serialize_connection(conn: Any) -> dict[str, Any]:
+    """Serialize an ``MCPConnection`` to a plain dict for bus metadata."""
+    cfg = conn.config
+    return {
+        "name": getattr(cfg, "name", ""),
+        "transport": getattr(cfg, "transport", "stdio"),
+        "command": getattr(cfg, "command", ""),
+        "url": getattr(cfg, "url", ""),
+        "enabled": getattr(cfg, "enabled", True),
+        "status": "ERROR" if conn.error else "CONNECTED",
+        "tool_count": len(getattr(conn, "tools", []) or []),
+        "error": conn.error or None,
+    }
