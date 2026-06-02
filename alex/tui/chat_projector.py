@@ -233,6 +233,8 @@ class ChatProjector:
             )
             if event.content:
                 turn.response = event.content
+                if event.content.startswith("Error:"):
+                    turn.is_error = True
             if event.thinking:
                 turn.thinking = event.thinking
             renderer.on_batch(list(event.message_batch or []))
@@ -262,11 +264,12 @@ class ChatProjector:
                 kind="cron" if event.source == "cron" else "user",
             )
             turn.response = f"Error: {err}"
+            turn.is_error = True
             renderer.finalize(turn)
         else:
             self._user_inputs.pop(event.turn_id, None)
             chat_view = self._app.query_one("#chat-view", VerticalScroll)
-            chat_view.mount(SystemBubble(f"turn error: {err}"))
+            chat_view.mount(SystemBubble(f"turn error: {err}", is_error=True))
         chat_view = self._app.query_one("#chat-view", VerticalScroll)
         self.trim_chat_view(chat_view)
         chat_view.scroll_end()

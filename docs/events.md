@@ -1,112 +1,154 @@
-# 类型化事件系统 (`alex/bus/events.py`)
+# 类型化消息系统 (`alex/kernel/`)
 
 ## 设计思路
 
-`alex/bus/events.py` 定义三层事件继承体系（`Event -> Command / DomainEvent / UIEvent`），替代早期裸 `dict` 通知模型。Cron 调度器、技能反思、Turn 编排等子系统发出具体类型的事件，TUI 或其他前端按类型分发渲染。
+Alex 的消息系统定义在 `alex/kernel/bus.py` 和 `alex/kernel/contracts/` 中。所有跨模块通信通过 `MessageBus` Protocol 完成，支持三种消息语义：
 
-## 事件层次
+| 语义 | 基类 | 通信模式 | 用途 |
+|------|------|---------|------|
+| **Event** | `Event` | 广播 pub/sub，fire-and-forget | 状态变更通知 |
+| **Command** | `Command(Event)` | 点对点，可选 ack | 行为请求 |
+| **Request/Reply** | `Request[T]` | 点对点，返回类型安全值 | 能力调用 |
+
+`Event` 和 `Command` 继承自同一基类，共享 `event_id` / `session_id` / `turn_id` / `source` / `ts` / `trace_id` 字段。`Request[T]` 独立设计，携带 `_correlation_id` 用于 reply 匹配。
+
+## MessageBus Protocol
+
+```python
+class MessageBus(Protocol):
+    # 生命周期
+    async def start(self) -> None: ...
+    async def shutdown(self) -> None: ...
+
+    # Event plane (广播)
+    def publish(self, event: Event) -> None: ...
+    async def subscribe(self, event_type: type, handler: EventHandler) -> None: ...
+    async def unsubscribe(self, event_type: type, handler: EventHandler) -> None: ...
+
+    # Request plane (点对点，有返回值)
+    async def request(self, req: Request[T], *, timeout: float = 30.0) -> T: ...
+    def provide(self, request_type: type, handler: ReqHandler) -> None: ...
+```
+
+- `publish()` → 所有订阅该类型的 handler 并发执行
+- `request()` → 发送到唯一的 provider handler，等待返回值；超时 / 无 handler 抛 `CapabilityTimeout` / `CapabilityUnavailable`
+- `provide()` → 注册 request handler（一种类型只能有一个）
+
+## 契约组织
+
+所有跨模块消息类型定义在 `alex/kernel/contracts/`，按领域分文件：
 
 ```
-Event (event_id, session_id, turn_id, source, ts)
-├── Command          # 行为请求（request）
-│   ├── UserTurnRequested
-│   ├── CronTurnRequested
-│   ├── ResumeSessionRequested
-│   ├── FeedbackSubmitted
-│   └── ClearSessionRequested
-├── DomainEvent      # 状态变更（fact）
-│   ├── TurnStarted / TurnCompleted / TurnFailed
-│   ├── SkillMatched / SkillReflected
-│   ├── ToolExecutionRequested / ToolExecutionCompleted
-│   ├── CronScheduled / CronTriggered
-│   └── CronRecordPersist
-└── UIEvent          # 前端信号
-    ├── ThinkingUpdated / TokenEmitted
-    ├── ToolStarted / ToolFinished
-    ├── SkillLoaded
-    ├── SkillReflectEvent / SkillReflectErrorEvent
-    ├── CronJobEvent / CronDebugEvent
-    ├── CronBatch / CronDone / CronError
-    ├── ToastRequested
-    └── SessionRestored
+alex/kernel/contracts/
+├── __init__.py    # 统一导出
+├── chat.py        # 对话契约
+├── tools.py       # 工具契约
+├── skills.py      # 技能契约
+├── memory.py      # 记忆契约
+├── session.py     # 会话契约
+└── cron.py        # 定时任务契约
 ```
 
-## 常用事件
+### 对话契约 (`chat.py`)
 
-| 事件类 | 触发时机 | 关键字段 |
-|--------|---------|---------|
-| `UserTurnRequested` | 用户发送消息时 | `user_text` |
-| `TurnStarted` | 每个 turn 开始时 | `kind` ("user"/"cron") |
-| `TurnCompleted` | 每个 turn 完成时 | `messages`, `content`, `thinking` |
-| `TurnFailed` | turn 异常时 | `error` |
-| `ThinkingUpdated` | LLM 产出推理内容 | `delta`, `stream_id` |
-| `TokenEmitted` | LLM 产出回复 token | `delta`, `stream_id` |
-| `ToolStarted` | 工具调用开始 | `tool_name`, `tool_input`, `is_cron`, `stream_id` |
-| `ToolFinished` | 工具调用完成 | `output`, `is_cron`, `stream_id` |
-| `SkillLoaded` | Agent 加载技能详情 | `skill_name`, `skill_pattern` |
-| `SkillReflectEvent` | 技能反思完成后 | `new`, `updated`, `deprecated`, `names` |
-| `SkillReflectErrorEvent` | 技能反思失败时 | `error` |
-| `CronJobEvent` | Cron 任务状态变更 | `job_id`, `name`, `status`, `prompt`, `result`, `error` |
-| `CronBatch` | cron turn 消息批次 | `stream_id`, `messages` |
-| `CronDone` | cron turn 流完成 | `stream_id`, `content`, `thinking` |
-| `CronError` | cron turn 流出错 | `stream_id`, `error` |
-| `CronRecordPersist` | 跨 session cron 记录持久化 | `session_id`, `record` |
-| `CronDebugEvent` | Cron 调试日志 | `message` |
+| 类型 | 语义 | 关键字段 | 发布者 → 订阅者 |
+|------|------|---------|----------------|
+| `UserTurnRequested` | Command | `user_text` | TUI → Agent |
+| `TurnStarted` | Event | `kind` ("user"/"cron") | Agent → TUI, Store |
+| `TurnCompleted` | Event | `messages`, `content`, `thinking` | Agent → Store, TUI |
+| `TurnFailed` | Event | `error` | Agent → TUI |
+| `ThinkingUpdated` | Event | `delta`, `stream_id` | Agent → TUI |
+| `TokenEmitted` | Event | `delta`, `stream_id` | Agent → TUI |
+| `FeedbackSubmitted` | Command | `positive` | TUI → Skill |
 
-## 分发机制
+### 工具契约 (`tools.py`)
 
-所有事件通过 `AsyncEventBus` 分发：
+| 类型 | 语义 | 关键字段 | 发布者 → 订阅者 |
+|------|------|---------|----------------|
+| `GetToolCatalog` | Request[list[ToolSpec]] | — | Agent → Tools |
+| `ExecuteTool` | Request[ToolResult] | `name`, `args`, `ctx` | Agent → Tools |
+| `RegisterTool` | Request[None] | `name`, `description`, `json_schema`, `callable_ref` | Skill → Tools |
+| `UnregisterTool` | Request[None] | `name` | — → Tools |
+| `InvokeProviderTool` | Request[ToolResult] | `provider`, `name`, `args` | Tools → MCP |
+| `ToolsProvided` | Event | `provider`, `specs` | MCP, Plugin → Tools |
+| `ToolStarted` | Event | `tool_id`, `tool_name`, `tool_input` | Tools → TUI |
+| `ToolFinished` | Event | `tool_id`, `output` | Tools → TUI |
+| `ToolApprovalRequested` | Event | `req_id`, `tool_name`, `preview` | Tools → TUI |
+| `ToolApprovalResolved` | Event | `req_id`, `granted`, `remember` | TUI → Tools |
 
-- 发布：`bus.publish(event)`
-- 订阅：`await bus.subscribe(EventType, handler)`
+### 技能契约 (`skills.py`)
+
+| 类型 | 语义 | 关键字段 | 发布者 → 订阅者 |
+|------|------|---------|----------------|
+| `RetrieveSkills` | Request[list[SkillCard]] | `query`, `top_k` | Agent → Skill |
+| `LoadSkill` | Request[SkillCard] | `skill_name` | Agent → Skill |
+| `ReflectSkills` | Command | — | Agent → Skill |
+| `SkillsReflected` | Event | `new`, `updated`, `deprecated`, `names` | Skill → TUI |
+| `SkillLoaded` | Event | `skill_name`, `skill_pattern` | Skill → TUI |
+| `SkillReflectError` | Event | `error` | Skill → TUI |
+| `ListSkills` | Request[list[dict]] | `include_deprecated` | TUI → Skill |
+| `DeleteSkill` | Request[str\|None] | `target` | TUI → Skill |
+| `DeprecateSkill` | Request[str\|None] | `target` | TUI → Skill |
+| `GetSkillName` | Request[str] | `skill_id` | — → Skill |
+| `RecordSkillUsage` | Request[None] | `skill_id`, `positive` | — → Skill |
+| `MergeSkills` | Request[dict] | — | TUI → Skill |
+
+### 记忆契约 (`memory.py`)
+
+全部为 Request 类型（记忆模块不主动发布事件）：
+
+| 类型 | 返回 | 用途 |
+|------|------|------|
+| `GetContext` | `list[dict]` | 获取会话上下文 |
+| `AppendMessages` | `None` | 追加消息 |
+| `ReplaceMemory` | `None` | 替换全部记忆 |
+| `ClearMemory` | `None` | 清空记忆 |
+
+### 会话契约 (`session.py`)
+
+| 类型 | 语义 | 用途 |
+|------|------|------|
+| `ListSessions` | Request[list] | 列出历史会话 |
+| `LoadSession` | Request[list[dict]\|None] | 加载会话数据 |
+| `SessionRestored` | Event | 会话恢复通知 |
+
+### Cron 契约 (`cron.py`)
+
+| 类型 | 语义 | 关键字段 | 发布者 → 订阅者 |
+|------|------|---------|----------------|
+| `ScheduleCron` | Request[str] | `cron`, `prompt`, `recurring`, `durable` | Agent(cron tool) → Cron |
+| `CancelCron` | Request[bool] | `job_id` | Agent(cron tool) → Cron |
+| `ListCronJobs` | Request[list[dict]] | — | Agent(cron_jobs tool) → Cron |
+| `CronTurnRequested` | Command | `trigger` | Cron → Agent |
+| `CronJobEvent` | Event | `job_id`, `name`, `status`, `prompt` | Cron → TUI |
+
+## DTO 设计
+
+`alex/kernel/dto/` 定义跨模块数据传递对象（纯 dataclass，零业务逻辑）：
+
+| DTO | 用途 |
+|-----|------|
+| `MessageDTO` | 消息序列化格式 |
+| `SkillCard` | 技能摘要卡片（id, name, pattern, instruction, tags, status...） |
+| `ToolSpec` | 工具规格（name, description, json_schema, provider, metadata） |
+| `ToolResult` | 工具执行结果（name, output, error, run_id） |
+| `ToolExecutionContext` | 工具执行上下文（session_id, turn_id, source, metadata） |
+
+## 具体实现
+
+`alex/bus/in_memory.py` 提供 `AsyncEventBus` — `MessageBus` Protocol 的具体实现：
+
+- **Event plane**：维护 `dict[type, list[EventHandler]]`，`publish()` 时创建 task 并发执行所有 handler
+- **Request plane**：维护 `dict[type, ReqHandler]`，`request()` 生成 `correlation_id`，通过内部 `asyncio.Future` 等待 handler 返回
 - 同一 `session_id` 的事件串行处理，不同 `session_id` 可并行
 - handler 异常隔离，不拖垮总线
 
-## 使用方式
-
-### 用户 turn
-
-```python
-# Agent.chat_stream() 发布
-self.push_notification(UserTurnRequested(session_id=sid, user_text=msg))
-
-# TurnProcessor.stream_user_turn() 发布
-self._push_notification(TurnStarted(session_id=sid, turn_id=tid, ...))
-self._push_notification(TurnCompleted(session_id=sid, turn_id=tid, ...))
-# 异常时发布 TurnFailed
-self._push_notification(TurnFailed(session_id=sid, turn_id=tid, ...))
-```
-
-### Cron 链路
-
-```python
-# CronManager 运行时 emit
-self._emit(CronJobEvent(job_id=..., name=..., status=..., prompt=..., ...))
-
-# TurnProcessor.run_cron_turn() 流式事件
-push_notification(ThinkingUpdated(stream_id=sid, delta=...))
-push_notification(TokenEmitted(stream_id=sid, delta=...))
-push_notification(CronBatch(stream_id=sid, messages=...))
-push_notification(CronDone(stream_id=sid, content=..., thinking=...))
-```
-
-### TUI 消费
-
-TUI 通过总线订阅 handler 处理事件：
-
-- `UserTurnRequested` → 仅可观测性（暂不驱动渲染）
-- `CronJobEvent` → 状态栏刷新 + toast + 持久化
-- `ToolStarted(is_cron=True)` → StreamRenderer 创建 cron bubble
-- `TokenEmitted(stream_id)` → StreamRenderer 追加响应文本
-- `CronDone(stream_id)` → StreamRenderer 完成气泡 + ChatHistory.add()
-- `SkillReflectEvent` → SystemBubble + Toast
-- `TurnCompleted` → SessionPersistence 自动保存
-
 ## 与旧通知模型的区别
 
-| 特性 | 旧 (`events.py` 裸 dict) | 新 (`bus/events.py`) |
-|------|--------------------------|----------------------|
-| 类型安全 | dict 键拼写风险 | dataclass 字段类型 |
-| 分发 | Agent `_pending_notifications` 轮询 | AsyncEventBus push |
-| 订阅 | 无（TUI 轮询消费全部） | 按类型订阅，handler 隔离 |
-| 跨线程 | 手动 append 到列表 | `loop.call_soon_threadsafe` |
+| 特性 | 旧 (`bus/events.py` 裸 dataclass) | 新 (`kernel/contracts/` + `kernel/bus.py`) |
+|------|----------------------------------|-------------------------------------------|
+| 消息语义 | 全部 Event，语义模糊 | Event / Command / Request 三种明确语义 |
+| 类型安全 | dataclass 字段类型 | Request[T] 泛型返回类型 |
+| 请求-响应 | 无（需手动实现） | `request()` + `provide()` 原生支持 |
+| 模块隔离 | events 散落在 `bus/events.py` | 按领域分 contract 文件 |
+| 跨模块类型 | 模块间直接 import | 全部通过 kernel，模块间零导入 |

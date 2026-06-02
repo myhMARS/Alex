@@ -1,40 +1,83 @@
-# LLM 工厂层 (`alex/llm/`)
+# LLM 客户端 (`alex/llm/`)
 
 ## 设计思路
 
-工厂模式 + 装饰器注册。每个 provider 是一个独立文件，通过 `@LLMFactory.register("provider_name")` 自动注册。所有适配器继承 LangChain 的 `BaseChatModel`，与 LangGraph 无缝集成。
+基于 **OpenAI Python SDK** 的统一 `ChatClient`，取代早期的 LangChain adapter 模式。单个 `ChatClient` 类通过 `LLMConfig` 配置支持 DeepSeek、OpenAI、Anthropic 等多 provider —— 不再需要每个 provider 写一个 adapter 类。
 
 ## 核心组件
 
-| 组件 | 职责 |
-|------|------|
-| `LLMConfig` | 统一配置数据类（provider、api_key、base_url、model、temperature 等） |
-| `LLMFactory` | 工厂类，维护 provider → adapter 的注册表，`create(config)` 生产实例 |
-| 各 Adapter | 继承对应 LangChain ChatModel，实现 `from_config(cls, config)` 类方法 |
+| 组件 | 文件 | 职责 |
+|------|------|------|
+| `LLMConfig` | `base.py` | 统一配置数据类（provider、api_key、base_url、model、temperature 等） |
+| `LLMFactory` | `factory.py` | 工厂类，`create(config)` 生产 `ChatClient` 实例 |
+| `ChatClient` | `client.py` | 统一客户端：`stream_chat()` 流式对话 + `json_completion()` JSON 模式补全 |
 
-## 业务逻辑
-
-1. `LLMFactory.register(name)` — 装饰器，将 adapter 类注册到工厂
-2. `LLMFactory.create(config)` — 根据 `config.provider` 查找注册表，实例化对应 adapter
-3. 各 adapter 负责将通用 `LLMConfig` 映射为各平台特有参数
-4. DeepSeek adapter 额外处理 `reasoning_content` 回传（thinking mode 支持）
-
-## 扩展方式
-
-新增 provider = 新增一个文件 + 一个装饰器，零侵入。
-
-## client — 统一 LLM 客户端
+## ChatClient
 
 `client.py` 提供两种调用方式：
 
-- **`ChatClient`** — 实例化客户端，支持 `stream_chat()`（流式对话）和 `json_completion()`（JSON 模式补全）
-- **`create_json_completion()`** — 模块级便捷函数，内部创建 `ChatClient`，用于反射和技能合并等无需长期持有 client 的场景
+- **`stream_chat(messages, tools)`** — 流式对话，返回 async generator，逐 token yield `(delta_content, reasoning_content)` 元组
+- **`json_completion(prompt, system_prompt)`** — JSON 模式补全，用于技能反思、合并等非对话场景
+- **`create_json_completion(prompt, ...)`** — 模块级便捷函数，内部创建 ChatClient
 
-两者共享相同的 provider 处理逻辑：
+### 流式对话
+
+```python
+client = ChatClient(config)
+async for delta, reasoning in client.stream_chat(messages, tools=tool_schemas):
+    if reasoning:
+        # DeepSeek thinking mode → bus.publish(ThinkingUpdated)
+    if delta:
+        # 正常 token → bus.publish(TokenEmitted)
+```
+
+### JSON 模式
+
 - 使用 OpenAI SDK 的 `response_format: {"type": "json_object"}` 确保 JSON 输出
 - DeepSeek provider 自动通过 `extra_body` 禁用 thinking mode（避免混入 reasoning_content）
 - 接受可选 `config: LLMConfig` 参数，`None` 时回退到 `get_llm_config()`
 - 返回纯 JSON 字符串，由调用方配合 `json_repair` 解析
+
+### Provider 处理
+
+与早期 LangChain 适配器模式不同，ChatClient 是 **单一类**，通过 `LLMConfig` 区分 provider：
+
+- `provider="deepseek"` → `base_url` 默认 `https://api.deepseek.com`，启用 `extra_body` 控制 reasoning
+- `provider="openai"` → `base_url` 默认 `https://api.openai.com/v1`
+- `provider="anthropic"` → 通过 Anthropic 兼容端点接入
+- 自定义 provider → 通过 `base_url` + `api_key` 任意配置
+
+## LLMConfig
+
+```python
+@dataclass
+class LLMConfig:
+    provider: str = "deepseek"           # provider 标识符
+    api_key: str = ""                     # API 密钥
+    base_url: str = "https://api.deepseek.com"
+    model: str = "deepseek-chat"
+    max_tokens: int = 8192
+    temperature: float = 0.0
+    extra: dict = field(default_factory=dict)  # provider 特有参数
+```
+
+## 使用示例
+
+```python
+from alex.config import get_llm_config
+from alex.llm.client import ChatClient
+
+config = get_llm_config()  # 从环境变量读取
+client = ChatClient(config)
+
+# 流式对话
+async for delta, reasoning in client.stream_chat(messages, tools=[...]):
+    ...
+
+# JSON 补全
+from alex.llm import create_json_completion
+result = await create_json_completion("分析以下对话...", system_prompt="你是技能分析师")
+```
 
 ## 目录结构
 
@@ -43,5 +86,5 @@ alex/llm/
 ├── __init__.py       # ChatClient / create_json_completion 导出
 ├── factory.py        # LLMFactory — ChatClient 构造
 ├── base.py           # LLMConfig 数据类
-└── client.py         # ChatClient（streaming + JSON-mode）
+└── client.py         # ChatClient (OpenAI SDK, streaming + JSON-mode)
 ```

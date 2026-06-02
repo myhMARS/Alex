@@ -28,10 +28,16 @@ class SystemBubble(Static):
         color: $text-muted;
         height: auto;
     }
+    SystemBubble.error {
+        color: $error;
+        text-style: bold;
+    }
     """
 
-    def __init__(self, text: str) -> None:
+    def __init__(self, text: str, *, is_error: bool = False) -> None:
         super().__init__(text)
+        if is_error:
+            self.add_class("error")
 
 
 class UserBubble(Static):
@@ -313,6 +319,12 @@ class AlexBubble(Vertical):
         self._current_response = None
         for child in list(self.children):
             child.remove()
+        if turn.is_error:
+            self.add_class("error")
+            self.border_title = "Alex  ❌ Error"
+        else:
+            self.remove_class("error")
+            self.border_title = "Alex"
         display_tool_calls = _coalesce_tool_calls(turn.tool_calls)
         for widget in self._build_sections():
             if "response-text" in widget.classes and display_tool_calls:

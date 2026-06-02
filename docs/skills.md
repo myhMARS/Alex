@@ -6,6 +6,16 @@ Agent 具备成长性：从历史对话中识别模式、提炼策略性技能�
 
 **关键原则**：技能存储的是"策略"（HOW to respond），不是"知识"（WHAT is the fact）。
 
+## SkillModule
+
+`module.py` 是技能模块的 bus 入口，启动时：
+
+1. 注册 8 个 request handler（`RetrieveSkills`, `LoadSkill`, `ListSkills`, `DeleteSkill`, `DeprecateSkill`, `RecordSkillUsage`, `MergeSkills`, `GetSkillName`）
+2. 订阅 `ReflectSkills` Command 和 `FeedbackSubmitted` Command
+3. 通过 `bus.request(RegisterTool(...))` 向 ToolsModule 注册 `load_skill` 和 `list_skills` 工具
+
+依赖：`["tools"]` — 需要 ToolsModule 先启动以接收工具注册。
+
 ## 核心数据模型：Skill
 
 | 字段 | 说明 |
@@ -25,22 +35,24 @@ Agent 具备成长性：从历史对话中识别模式、提炼策略性技能�
 ## 架构分层
 
 ```
-SkillService（构造函数注入全部依赖）
-    ├── SkillStore      # JSON 文件持久化 + Jinja2 模板管理
-    ├── SkillRetriever  # 标签 + 关键词 + 置信度加权检索
-    ├── Reflector       # LLM JSON-mode 反思引擎
-    └── EvolutionEngine # 生命周期进化状态机
+SkillModule (bus 入口)
+    └── SkillService（构造函数注入全部依赖）
+            ├── SkillStore      # JSON 文件持久化 + Jinja2 模板管理
+            ├── SkillRetriever  # 标签 + 关键词 + 置信度加权检索
+            ├── Reflector       # LLM JSON-mode 反思引擎
+            └── EvolutionEngine # 生命周期进化状态机
 ```
 
 ## 组件职责
 
 | 组件 | 文件 | 职责 |
 |------|------|------|
+| **SkillModule** | `module.py` | bus 入口：注册 handler、订阅事件、注册工具 |
 | **SkillService** | `service.py` | 业务逻辑编排：检索、反思、合并、CRUD |
 | **Skill** | `models.py` | 纯数据类，不含业务逻辑 |
 | **SkillStore** | `repository.py` | JSON 文件持久化 + `~/.alex/skills/prompts/` 模板管理 |
 | **SkillRetriever** | `matcher.py` | 标签匹配 + 关键词 + 置信度加权，返回 top-K |
-| **Reflector** | `reflector.py` | LLM 反思引擎 — 通过注入的 `LLMConfig` 调用 `create_json_completion`，分析对话 + episodes，返回 `ReflectionResult` |
+| **Reflector** | `reflector.py` | LLM 反思引擎 — 通过 `create_json_completion` 分析对话 + episodes，返回 `ReflectionResult` |
 | **EvolutionEngine** | `evolution.py` | 生命周期状态机 — CANDIDATE → ACTIVE → DEPRECATED |
 
 ## 核心业务流程
@@ -51,18 +63,17 @@ SkillService（构造函数注入全部依赖）
 用户输入
   │
   ▼
-SkillService.inject_skills_prompt(query)
-  │  渲染 skills_section.j2 模板
-  │  列出所有活跃技能的名称 + pattern（轻量目录）
+AgentModule → bus.request(RetrieveSkills(query, top_k))
+  │  SkillModule 返回匹配的 SkillCard 列表
   │
   ▼
-追加到 system prompt（仅在技能列表变化时重建 graph）
+Prompt 注入技能目录（skills_section.j2 模板）
   │
   ▼
 Agent 执行对话流程
   │  当 Agent 判断某技能匹配时：
   │  调用 load_skill(skill_name) 工具
-  │  → 加载该技能的完整 instruction
+  │  → bus.request(LoadSkill(skill_name)) → SkillModule 返回完整 SkillCard
   │  → TUI 显示 SkillLoaded 事件
   │
   ▼
@@ -75,38 +86,24 @@ Agent 执行对话流程
 判断是否触发反思（见触发策略）
   │
   ▼ (是)
-从 Memory 获取近期对话（最近 20 条）+ 积累的 episodes
+bus.publish(ReflectSkills(session_id=...))
   │
   ▼
-Reflector 调用 LLM（JSON mode）分析
-  │  输入：对话消息 + 已有技能列表 + problem-solving episodes
-  │  输出：ReflectionResult
+SkillModule._handle_reflect()
+  ├─ bus.request(GetContext) → MemoryModule 返回最近对话
+  ├─ Reflector 调用 LLM（JSON mode）分析
+  │   输入：对话消息 + 已有技能列表 + problem-solving episodes
+  │   输出：ReflectionResult
   │
-  ▼
-ReflectionResult:
-  ├─ new_skills: 新提炼的技能 (status=CANDIDATE)
-  ├─ updated_skills: 需要更新的已有技能
-  └─ deprecated_ids: 建议废弃的技能
+  ├─ ReflectionResult:
+  │   ├─ new_skills: 新提炼的技能 (status=CANDIDATE)
+  │   ├─ updated_skills: 需要更新的已有技能
+  │   └─ deprecated_ids: 建议废弃的技能
   │
-  ▼
-SkillStore 持久化变更 + 更新 Jinja2 模板
-  │
-  ▼
-EvolutionEngine.evolve() — 执行生命周期评估
+  ├─ SkillStore 持久化变更 + 更新 Jinja2 模板
+  ├─ EvolutionEngine.evolve() — 执行生命周期评估
+  └─ bus.publish(SkillsReflected(...)) → TUI toast 通知
 ```
-
-### 多轮 Episode 采集
-
-Agent 每轮对话记录一个 episode：
-```python
-{
-    "query": "用户问题（前 200 字符）",
-    "skills_loaded": ["已加载技能名"],
-    "tools_used": ["web_search", "web_fetch"],
-    "outcome": "回复摘要（前 300 字符）"
-}
-```
-Episodes 在反思时传递给 Reflector，帮助 LLM 理解完整的问题解决过程。
 
 ### 用户反馈：效果追踪
 
@@ -114,16 +111,12 @@ Episodes 在反思时传递给 Reflector，帮助 LLM 理解完整的问题解�
 用户按 Ctrl+G / Ctrl+B
   │
   ▼
-Agent.provide_feedback(positive, turn_id)
+TuiModule → bus.publish(FeedbackSubmitted(positive=..., session_id=...))
   │
   ▼
-SkillService.record_usage(skill_id, success=True/False)
-  │
-  ▼
-更新 use_count / success_count / failure_count → 置信度自动重算
-  │
-  ▼ (负反馈)
-异步触发反思
+SkillModule._on_feedback()
+  ├─ 负反馈 → 触发反思
+  └─ bus.publish(SkillsReflected(...))
 ```
 
 ## 技能生命周期
@@ -183,11 +176,13 @@ SkillService.record_usage(skill_id, success=True/False)
 ```
 alex/skill/
 ├── __init__.py
-├── models.py           # Skill 数据类
-├── service.py          # SkillService — 构造函数注入全部依赖
-├── repository.py       # SkillStore — JSON 持久化 + 模板管理
-├── matcher.py          # SkillRetriever — 标签 + 关键词检索
-├── reflector.py        # Reflector — LLM JSON-mode 反思引擎（支持 episodes）
-├── evolution.py        # EvolutionEngine — 进化策略 & 生命周期 + 上限裁剪
-└── ports.py            # SkillServicePort Protocol — 与 SkillService 当前 API 保持同步
+├── module.py            # SkillModule — bus 入口
+├── models.py            # Skill 数据类
+├── service.py           # SkillService — 构造函数注入全部依赖
+├── repository.py        # SkillStore — JSON 持久化 + 模板管理
+├── matcher.py           # SkillRetriever — 标签 + 关键词检索
+├── reflector.py         # Reflector — LLM JSON-mode 反思引擎
+├── evolution.py         # EvolutionEngine — 进化策略 & 生命周期
+├── ports.py             # SkillServicePort Protocol
+└── factory.py           # SkillModule 工厂函数
 ```

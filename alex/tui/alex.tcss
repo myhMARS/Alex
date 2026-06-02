@@ -80,6 +80,10 @@ AlexBubble {
     border-title-style: bold;
     height: auto;
 }
+AlexBubble.error {
+    border: round $error;
+    border-title-color: $error;
+}
 AlexBubble > .thinking-collapsed {
     height: 1;
     color: $text-muted;

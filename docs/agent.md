@@ -1,36 +1,52 @@
-# Agent 核心编排层 (`alex/agent/`)
+# Agent 对话引擎 (`alex/agent/`)
 
 ## 职责
 
-Agent 是整个系统的薄编排 facade，把 LLM、Memory、Tools（含权限策略）、Skills、Cron、Session 各层组合起来，并通过 `AsyncEventBus` 与 TUI / 持久化层交互。
+`AgentModule` 是对话引擎的 bus 入口，订阅 `UserTurnRequested` 和 `CronTurnRequested`，驱动完整对话循环。模块内的 `Agent` 类仅依赖 `AsyncEventBus`，通过 kernel 契约与 Memory、Tools、Skill 等模块交互。
 
-业务逻辑分散在 5 个独立的 application service 中，`Agent` 自己只负责装配 + 代理调用：
+**核心设计原则**：Agent 不直接导入其他模块的内部实现，所有跨模块能力调用走 `bus.request(RequestType(...))`。
 
-| 子组件 | 文件 | 职责 |
-|--------|------|------|
-| `ChatAppService` | `chat_service.py` | 聊天流、工具执行、LangGraph 管理；持有 `ToolRegistry` / `ToolExecutor` / `PermissionPolicy` |
-| `SessionService` | `session_service.py` | session 持久化边界 + 历史恢复（通过 `store/session_serializer`） |
-| `CronService` | `cron_service.py` | `CronManager` 生命周期封装（绑定 loop / start / shutdown / schedule / cancel） |
-| `FeedbackAppService` | `feedback_service.py` | 用户评分、episodes 采集、条件反思触发；per-session state 隔离 |
-| `SkillAdminAppService` | `skill_admin_service.py` | 技能 CRUD / merge / load_skill 入口（通过 `LLMConfig` 注入） |
-| `TurnProcessor` | `turn_processor.py` | 单消费者 FIFO；统一处理用户 turn 与 cron turn 的流式执行、记忆写入和事件发布 |
-| `PromptAssembler` | `prompt.py` | 动态 prompt 组装（技能目录注入） |
-| `composition.py` | `composition.py` | 共享默认依赖构造 helper（config / llm / memory / skill_service），供 `factory.py` 和 `Agent.__init__` 复用 |
+## 核心组件
 
-`create_agent()`（`factory.py`）作为对外的装配入口：默认值合并、权限策略构造、`AuditLogger` 挂载、用户插件加载，全在这一处完成。`main.py` 通过它取得 ready-to-use 的 `Agent` 实例。
+| 组件 | 文件 | 职责 |
+|------|------|------|
+| `AgentModule` | `module.py` | bus 入口：订阅 UserTurnRequested / CronTurnRequested，实现 TurnServices 协议 |
+| `Agent` | `service.py` | 薄 facade：管理 ChatAppService，提供 chat_stream / execute_cron_prompt |
+| `ChatAppService` | `chat_service.py` | 核心引擎：LLM 循环、工具执行、turn 管理 |
+| `TurnProcessor` | `turn_processor.py` | 单消费者 FIFO：统一处理 user turn 与 cron turn 的流式执行、记忆写入和事件发布 |
 
-Agent 自身**不**直接依赖 `CronManager`、`SessionPersistence`、`deserialize_message` 等内部实现 —— 这些边界已通过对应的 service 收口。
+## 模块启动
 
-## 对外接口 (AgentFacade Protocol)
+```
+AgentModule.start(bus)
+  ├─ 创建 Agent(bus, system_prompt)
+  ├─ agent.start_services()  → 创建 ChatClient + start bus
+  ├─ bus.subscribe(UserTurnRequested, _on_user_turn)
+  └─ bus.subscribe(CronTurnRequested, _on_cron_turn)
+```
 
-仅列出 Protocol 中定义的公开契约。`register_tool`、`permissions`、`schedule_cron_job` 等内部装配方法存在于 Agent 具体类上，但不在面向 TUI 的 Protocol 合约中。
+## 跨模块通信 (TurnServices)
+
+`AgentModule` 实现 TurnServices 协议，将所有跨模块调用委托给 bus request：
+
+| 方法 | Bus Request | 返回 |
+|------|-------------|------|
+| `get_memory_context(session_id)` | `GetContext` | `list[dict]` |
+| `append_memory(session_id, messages)` | `AppendMessages` | `None` |
+| `get_skill_by_name(skill_name)` | `LoadSkill` | `SkillCard \| None` |
+| `retrieve_skills(query, top_k)` | `RetrieveSkills` | `list[SkillCard]` |
+| `get_tool_catalog()` | `GetToolCatalog` | `list[ToolSpec]` |
+| `execute_tool(ctx, name, args)` | `ExecuteTool` | `ToolResult` |
+
+## 对外接口
+
+`Agent` 类暴露的公开方法（供 `AgentModule` 和 `AlexApp` 调用）：
 
 | 方法 | 说明 |
 |------|------|
 | **生命周期** | |
-| `bind_event_loop(loop)` | 绑定事件循环（委托 CronService） |
-| `start_services()` | 启动后台服务（委托 CronService） |
-| `shutdown()` | 关闭后台服务（委托 CronService） |
+| `start_services()` | 创建 ChatClient（如果未注入），启动 bus |
+| `shutdown()` | 关闭 ChatAppService |
 | **事件总线** | |
 | `bus` (property) | 当前 EventBus 实例 |
 | `bind_event_bus(bus)` | 绑定事件总线 |
@@ -38,68 +54,71 @@ Agent 自身**不**直接依赖 `CronManager`、`SessionPersistence`、`deserial
 | `set_session_context(session_id, cron_history)` | 设置当前 session 上下文 |
 | `session_id` (property) | 当前 session ID |
 | **对话** | |
-| `chat_stream(message) → AsyncIterator` | 流式对话，yield ThinkingUpdated / TokenEmitted / ToolStarted / ToolFinished / SkillLoaded |
+| `chat_stream(message)` | 执行用户 turn，事件通过 bus 广播 |
 | `last_turn_result` (property) | 最后一轮的流式执行结果 |
-| **记忆** | |
-| `restore_history(messages)` | 从消息列表恢复对话历史 |
-| `clear_history()` | 清空对话记忆 |
-| **反馈** | |
-| `provide_feedback(positive, turn_id)` | 用户反馈（驱动技能进化 & 负反馈触发反思） |
-| **技能** | |
-| `reflect() → dict` | 强制触发技能反思 |
-| `list_skills() → list[dict]` | 列出所有技能 |
-| `delete_skill(target) → str | None` | 按名称或 ID 前缀删除技能 |
-| `deprecate_skill(target) → str | None` | 按名称或 ID 前缀废弃技能 |
-| `merge_skills() → dict` | LLM 驱动的技能去重合并 |
-| **会话持久化** | |
-| `list_sessions() → list[dict]` | 列出所有历史会话 |
-| `load_session(session_id) → dict | None` | 加载指定会话的数据 |
-| `subscribe_store(bus)` | 订阅 Store 的持久化事件 |
-| **Cron** | |
-| `list_cron_jobs() → list[dict]` | 列出当前 cron 任务 |
-| `list_session_cron_history(query, limit) → list[dict]` | 当前 session 的 cron 执行历史 |
+| `execute_cron_prompt(...)` | 执行 cron turn prompt |
 
 ## 事件发布
 
-Agent 通过 `push_notification()` 向 EventBus 发布以下事件：
+对话过程中通过 bus 发布以下事件（定义在 `alex/kernel/contracts/`）：
 
-| 事件 | 触发时机 |
-|------|---------|
-| `UserTurnRequested` | 每个用户 turn 开始时（提升可观测性） |
-| `CronJobEvent` | Cron 任务状态变更（供 TUI / store 等观察者消费） |
-| `SkillReflectEvent` / `SkillReflectErrorEvent` | 技能反思完成/失败 |
+| 事件 | 类型 | 触发时机 |
+|------|------|---------|
+| `UserTurnRequested` | Command | TUI 发布，Agent 订阅 |
+| `CronTurnRequested` | Command | CronModule 发布，Agent 订阅 |
+| `TurnStarted` | Event | 每个 turn 开始时 |
+| `TurnCompleted` | Event | 每个 turn 完成时（StoreModule 订阅 → 持久化） |
+| `TurnFailed` | Event | turn 异常时 |
+| `ThinkingUpdated` | Event | LLM 产出推理内容 |
+| `TokenEmitted` | Event | LLM 产出回复 token |
+| `ToolStarted` | Event | 工具调用开始 |
+| `ToolFinished` | Event | 工具调用完成 |
 
-`TurnStarted` / `TurnCompleted` / `TurnFailed` 由 `TurnProcessor` 直接发布。
+## 用户 Turn 流程
 
-## 内置工具
+```
+TUI 用户输入
+  │
+  ▼
+TuiModule.publish_user_turn() → bus.publish(UserTurnRequested)
+  │
+  ▼
+AgentModule._on_user_turn()
+  ├─ asyncio.create_task(_process_user_turn)  ← 不阻塞 bus dispatch loop
+  │
+  ├─ Agent.set_session_context(session_id)
+  ├─ Agent.chat_stream(user_text)
+  │   ├─ bus.publish(TurnStarted)
+  │   ├─ TurnProcessor.stream_user_turn()
+  │   │   ├─ bus.request(GetContext) → MemoryModule 返回历史
+  │   │   ├─ bus.request(RetrieveSkills) → SkillModule 检索技能
+  │   │   ├─ bus.request(GetToolCatalog) → ToolsModule 返回工具目录
+  │   │   ├─ ChatClient.stream_chat() → yield tokens
+  │   │   │   ├─ bus.publish(ThinkingUpdated) / bus.publish(TokenEmitted)
+  │   │   │   └─ 工具调用时：
+  │   │   │       ├─ bus.request(ExecuteTool) → ToolsModule 执行 + 权限检查
+  │   │   │       └─ bus.publish(ToolStarted) / bus.publish(ToolFinished)
+  │   │   └─ bus.publish(TurnCompleted) → StoreModule 持久化
+  │   └─ return
+  │
+  └─ 如果本轮未匹配 skill → bus.publish(ReflectSkills)
+```
 
-Agent 自动注册两个内置工具（无需主程序显式装配）：
+## Cron Turn 流程
 
-- `load_skill` — 按名加载技能完整执行流程，命中后 `SkillLoaded` 事件推到 TUI
-- `cron_jobs` — 查询当前 cron 任务列表，包含 durable 持久化任务
-
-`main.py` / `create_agent()` 还会再注册一组本地能力工具：`read` / `write` / `edit` / `grep` / `glob` / `git_inspect` / `bash` / `pwsh` / `time` / `web_search` / `web_fetch` / `cron`。详见 [tools.md](./tools.md)。
-
-## Cron 后台任务
-
-- 基于 **APScheduler** 的异步调度器（通过 `CronService → CronManager`）
-- 使用本地时区的标准 5 字段 **crontab** 表达式
-- 每次触发都执行一段 `prompt`，结果以 cron 流式对话注入 TUI；`prompt` 必须只描述真实任务内容，不能包含提醒包装、到时措辞、状态说明或装饰性文本
-- `durable=true` 时任务持久化到 `~/.alex/cron/`，重启后自动恢复并重新绑定到当前会话
-- durable 只持久化任务定义；Alex 关闭时不会在后台继续执行，恢复后仍只会在会话活跃且空闲时触发
-- Agent 的 `execute_cron_prompt()` 作为 runner 注入 CronService；调度任务仍沿用统一权限与审计链路
-- TUI 右侧 `后台任务` 状态栏展示当前 `RUNNING` / `SCHEDULED` 任务，并按秒刷新 `next:` 倒计时
-
-## 权限与审计
-
-`ChatAppService` 在构造时持有一个 `PermissionPolicy`：
-
-- 启动时由 `create_agent()` 通过 `PermissionPolicy.from_env(audit_logger=AuditLogger(...))` 创建
-- 默认放开 `read` + `network`；`write` / `shell` 必须显式授权或走 confirm hook
-- `register_tool(...)` 注册路径会自动给带 `metadata["required_permission"]` 的工具包一层权限 gate
-- LangGraph 调用 `tool.ainvoke()` 时直接命中 gate；`ToolExecutor`（cron runner 路径）也会查同一个策略，但已 gate 的工具由 wrapper 自检以避免双重 prompt
-- `set_permissions(policy)` 在 TUI mount 时被调用，注入 `NotificationController.confirm_permission` 作为 `confirm_hook`，让 modal 弹出 diff 预览
-- 每次决策（`auto_allow` / `auto_deny` / `allow_once` / `allow_always` / `deny`）由 `AuditLogger` 异步追加到 `~/.alex/audit/permissions.jsonl`
+```
+CronManager fire
+  │
+  ▼
+CronModule._cron_runner() → bus.publish(CronTurnRequested)
+  │
+  ▼
+AgentModule._on_cron_turn()
+  ├─ asyncio.create_task(_process_cron_turn)
+  └─ Agent.execute_cron_prompt(session_id, job_id, name, prompt, stream_id)
+      └─ ChatAppService.execute_cron_prompt()
+          └─ TurnProcessor.run_cron_turn() → 流式事件通过 bus 广播
+```
 
 ## 并发模型
 
@@ -111,67 +130,21 @@ User / cron turn submit
      ├─ enqueue FIFO
      │
      └─ TurnProcessor single consumer
-          ├─ read memory
-          ├─ stream LLM
-          ├─ write batch
+          ├─ read memory (bus.request GetContext)
+          ├─ stream LLM (ChatClient)
+          ├─ write batch (bus.request AppendMessages)
           └─ process next queued turn
 ```
 
-权限 confirm modal 也通过 `NotificationController` 内部的 `_confirm_lock` 串行化，避免用户 turn 与 cron turn 同时弹窗。
-
-## 完整对话流程
-
-```
-User Input
-  │
-  ├─► [Bus] bus.publish(UserTurnRequested)
-  │
-  ├─► [Skills] PromptAssembler.ensure_skills_prompt(query) → 技能目录注入
-  │
-  ├─► [Memory] Memory.get_context(session_id) → 获取历史上下文
-  │
-  ├─► [LLM/Graph] 执行 LangGraph Agent
-  │       ├─► LLM 推理（thinking + content）
-  │       │     └─► yield ThinkingUpdated / TokenEmitted
-  │       ├─► [Tools] 工具调用
-  │       │     ├─► permission gate 拦截 → 必要时弹 modal
-  │       │     ├─► AuditLogger 异步追加决策
-  │       │     ├─► 通过 → 实际执行；否则返回 "Error: ... blocked"
-  │       │     └─► load_skill / read / edit / bash / ... 等
-  │       │     └─► yield ToolStarted / ToolFinished / SkillLoaded
-  │       └─► 循环至最终回复
-  │
-  ├─► [Memory] 更新记忆（含 reasoning_content）
-  │
-  ├─► [Bus] bus.publish(TurnCompleted) → SessionPersistence 自动保存
-  │
-  ├─► [Skills] 记录技能使用情况 & episode
-  │
-  └─► [Skills] maybe_reflect() — 条件触发反思
-```
-
-## 反思机制
-
-- 每 5 轮对话自动触发
-- 新领域（无技能匹配）时触发
-- 用户负反馈（Ctrl+B）时异步触发
-- `/reflect` 命令手动触发
-- 反思结果通过 `SkillReflectEvent` 推送到 EventBus，由 TUI `NotificationController` 转成 toast
+权限 confirm modal 也通过 `NotificationController` 内部的 `_confirm_lock` 串行化，避免 user turn 与 cron turn 同时弹窗。
 
 ## 目录结构
 
 ```
 alex/agent/
 ├── __init__.py
-├── service.py                  # Agent facade（薄编排层）
-├── factory.py                  # create_agent() — 装配 + 权限 + AuditLogger + 插件
-├── composition.py              # 共享默认依赖构造 helper
-├── chat_service.py             # ChatAppService（聊天流、工具执行、图管理、权限）
-├── session_service.py          # Session 持久化 + 历史恢复边界
-├── cron_service.py             # CronManager 生命周期封装
-├── feedback_service.py         # FeedbackAppService — 评分 / episodes / 反思（通过 LLMConfig 注入）
-├── skill_admin_service.py      # SkillAdminAppService — 技能 CRUD / merge（通过 LLMConfig 注入）
-├── turn_processor.py           # TurnProcessor — 统一 user/cron turn FIFO 执行
-├── prompt.py                   # PromptAssembler — 动态 prompt 组装
-└── ports.py                    # AgentFacade Protocol
+├── module.py                   # AgentModule — bus 入口，订阅 UserTurnRequested
+├── service.py                  # Agent — 薄 facade，仅依赖 bus
+├── chat_service.py             # ChatAppService — LLM 循环 + 工具执行
+└── turn_processor.py           # TurnProcessor — 统一 user/cron turn FIFO
 ```

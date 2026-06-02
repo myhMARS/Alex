@@ -20,6 +20,7 @@ class ChatTurn:
     tool_calls: list[dict] = field(default_factory=list)
     skills: list[dict] = field(default_factory=list)
     kind: str = "user"  # "user" | "cron" — controls whether render_turn shows a UserBubble
+    is_error: bool = False  # True when the turn ended with an LLM or agent error
 
 
 def _parse_load_skill_output(output: str) -> dict | None:
