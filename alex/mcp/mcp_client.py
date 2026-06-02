@@ -1,8 +1,8 @@
 """MCP (Model Context Protocol) client adapter.
 
 Bridges MCP servers — launched as stdio subprocesses or reached over
-HTTP transports — into ``AlexTool`` instances so the
-rest of the agent can treat them as ordinary tools.
+HTTP transports — into lightweight tool wrappers so the
+MCP module can treat them as ordinary tools without importing ``alex.tools``.
 
 The ``mcp`` SDK is part of Alex's main dependencies.  If it is missing
 from the active environment, ``MCPUnavailableError`` explains that the
@@ -33,23 +33,67 @@ session. Cleanup on shutdown is the host's responsibility (call
 from __future__ import annotations
 
 import asyncio
-import json
+import inspect
 import logging
 from contextlib import asynccontextmanager
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
-import inspect
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 import httpx
 from pydantic import BaseModel
 
-from alex.config import is_mcp_debug_enabled
-from alex.tools.models import AlexTool
-from alex.tools.permissions import PERMISSION_NETWORK
+from alex.config import is_mcp_debug_enabled, load_mcp_config, MCP_CONFIG_PATH, MCPServerConfig
 
 logger = logging.getLogger(__name__)
+
+# Re-export for backward compatibility
+DEFAULT_CONFIG_PATH = MCP_CONFIG_PATH
+
+# ── lightweight MCP tool wrapper (no alex.tools dependency) ──────────────
+
+# Permission constant — network access is required for MCP server communication.
+_PERMISSION_NETWORK = "network"
+
+
+class MCPTool:
+    """Lightweight wrapper around an MCP tool callable.
+
+    Replaces ``AlexTool`` so the MCP module can store and invoke tools
+    without importing ``alex.tools``.  The tools gateway in ``alex.tools``
+    is responsible for converting these into full ``AlexTool`` instances
+    if needed.
+    """
+
+    __slots__ = ("name", "description", "parameters", "metadata", "_invoke")
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        description: str,
+        parameters: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        invoke: Callable[..., Any],
+    ) -> None:
+        self.name = name
+        self.description = description
+        self.parameters = parameters or {}
+        self.metadata = metadata or {}
+        self._invoke = invoke
+
+    async def invoke(self, args: dict[str, Any]) -> Any:
+        """Execute the tool with the given arguments."""
+        return await self._invoke(self.name, args)
+
+    async def ainvoke(self, args: dict[str, Any]) -> str:
+        """Async invoke — returns string result (compatible with AlexTool API)."""
+        result = await self.invoke(args)
+        return str(result)
 
 
 def _debug_enabled() -> bool:
@@ -108,107 +152,6 @@ def _import_mcp():
     return ClientSession, StdioServerParameters, stdio_client, streamable_http_client, sse_client
 
 
-# ── config loading ────────────────────────────────────────────────────
-
-DEFAULT_CONFIG_PATH = Path.home() / ".alex" / "mcp.json"
-
-
-@dataclass
-class MCPServerConfig:
-    name: str
-    transport: str = "stdio"
-    command: str = ""
-    args: list[str] = field(default_factory=list)
-    env: dict[str, str] = field(default_factory=dict)
-    url: str = ""
-    headers: dict[str, str] = field(default_factory=dict)
-    timeout: float | None = None
-    sse_read_timeout: float | None = None
-    enabled: bool = True
-
-
-def _normalize_transport(raw: Any, *, has_command: bool, has_url: bool) -> str | None:
-    value = str(raw or "").strip().lower().replace("_", "-")
-    if not value:
-        if has_url:
-            return "streamable-http"
-        if has_command:
-            return "stdio"
-        return None
-    aliases = {
-        "stdio": "stdio",
-        "http": "streamable-http",
-        "streamable-http": "streamable-http",
-        "streamablehttp": "streamable-http",
-        "sse": "sse",
-        "http-sse": "sse",
-    }
-    return aliases.get(value)
-
-
-def load_mcp_config(path: Path | None = None) -> list[MCPServerConfig]:
-    """Parse ``~/.alex/mcp.json`` into a list of server configs.
-
-    Returns an empty list when the file does not exist; raises
-    :class:`ValueError` for malformed payloads.
-    """
-    target = path or DEFAULT_CONFIG_PATH
-    if not target.exists():
-        return []
-    try:
-        with open(target, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError) as e:
-        raise ValueError(f"failed to parse {target}: {e}") from e
-
-    raw = data.get("mcpServers") if isinstance(data, dict) else None
-    if not isinstance(raw, dict):
-        return []
-
-    configs: list[MCPServerConfig] = []
-    for name, payload in raw.items():
-        if not isinstance(payload, dict):
-            continue
-        command = str(payload.get("command", "")).strip()
-        url = str(payload.get("url", "")).strip()
-        transport = _normalize_transport(
-            payload.get("transport"),
-            has_command=bool(command),
-            has_url=bool(url),
-        )
-        if not transport:
-            continue
-        if transport == "stdio" and not command:
-            continue
-        if transport in {"streamable-http", "sse"} and not url:
-            continue
-        args = payload.get("args", [])
-        if not isinstance(args, list):
-            args = []
-        env = payload.get("env", {})
-        if not isinstance(env, dict):
-            env = {}
-        headers = payload.get("headers", {})
-        if not isinstance(headers, dict):
-            headers = {}
-        enabled = payload.get("disabled") is not True
-        timeout = payload.get("timeout")
-        sse_read_timeout = payload.get("sse_read_timeout")
-        configs.append(MCPServerConfig(
-            name=name,
-            transport=transport,
-            command=command,
-            args=[str(a) for a in args],
-            env={str(k): str(v) for k, v in env.items()},
-            url=url,
-            headers={str(k): str(v) for k, v in headers.items()},
-            timeout=float(timeout) if isinstance(timeout, (int, float)) else None,
-            sse_read_timeout=float(sse_read_timeout) if isinstance(sse_read_timeout, (int, float)) else None,
-            enabled=enabled,
-        ))
-    return configs
-
-
 # ── tool adaptation ───────────────────────────────────────────────────
 
 def _safe_field_name(raw: str) -> str:
@@ -237,12 +180,10 @@ def _schema_to_pydantic(schema: dict[str, Any] | None, model_name: str) -> type[
     for raw_name, prop in properties.items():
         py_name = _safe_field_name(raw_name)
         py_type = _json_type_to_python(prop)
-        default = ... if raw_name in required else prop.get("default", None)
-        # pydantic v2 distinguishes required from default-None by ``...``.
         if raw_name in required:
             fields[py_name] = (py_type, ...)
         else:
-            fields[py_name] = (py_type | None, default)
+            fields[py_name] = (py_type | None, prop.get("default", None))
 
     if not fields:
         return create_model(model_name, __base__=BaseModel)
@@ -275,11 +216,11 @@ def _build_mcp_tool(
     description: str,
     schema: dict[str, Any] | None,
     invoke,
-) -> AlexTool:
-    """Wrap an MCP ``call_tool`` invocation as an ``AlexTool``."""
+) -> MCPTool:
+    """Wrap an MCP ``call_tool`` invocation as a lightweight ``MCPTool``."""
     args_schema = _schema_to_pydantic(schema, model_name=f"MCP_{server_name}_{tool_name}_Input")
 
-    async def _call(**kwargs):
+    async def _call(_tool_name: str, kwargs: dict):
         try:
             result = await invoke(tool_name, kwargs)
         except Exception as e:
@@ -287,17 +228,26 @@ def _build_mcp_tool(
         return _format_mcp_result(result)
 
     qualified_name = f"mcp__{server_name}__{tool_name}".lower()
-    return AlexTool.from_function(
-        coroutine=_call,
+    return MCPTool(
         name=qualified_name,
         description=f"[MCP:{server_name}] {description}".strip(),
-        args_schema=args_schema,
+        parameters=_schema_to_dict(args_schema) if args_schema else {},
         metadata={
-            "required_permission": PERMISSION_NETWORK,
+            "required_permission": _PERMISSION_NETWORK,
             "mcp_server": server_name,
             "mcp_tool": tool_name,
+            "args_schema": args_schema,
         },
+        invoke=_call,
     )
+
+
+def _schema_to_dict(model: type[BaseModel]) -> dict[str, Any]:
+    """Extract JSON schema dict from a pydantic model."""
+    try:
+        return model.model_json_schema()
+    except Exception:
+        return {}
 
 
 def _format_mcp_result(result: Any) -> str:
@@ -326,7 +276,7 @@ class MCPConnection:
     """A single live MCP session plus its discovered tools."""
 
     config: MCPServerConfig
-    tools: list[AlexTool] = field(default_factory=list)
+    tools: list[MCPTool] = field(default_factory=list)
     error: str | None = None
 
 
@@ -348,8 +298,8 @@ class MCPClientPool:
         return list(self._connections)
 
     @staticmethod
-    def _build_tools(*, config: MCPServerConfig, listed: Any, invoke) -> list[AlexTool]:
-        tools: list[AlexTool] = []
+    def _build_tools(*, config: MCPServerConfig, listed: Any, invoke) -> list[MCPTool]:
+        tools: list[MCPTool] = []
         for spec in getattr(listed, "tools", []) or []:
             tool = _build_mcp_tool(
                 server_name=config.name,
@@ -414,7 +364,7 @@ class MCPClientPool:
         ) as client:
             yield client
 
-    async def _connect_stdio(self, cfg: MCPServerConfig, sdk: tuple) -> list[AlexTool]:
+    async def _connect_stdio(self, cfg: MCPServerConfig, sdk: tuple) -> list[MCPTool]:
         ClientSession, StdioServerParameters, stdio_client, _, _ = sdk
         params = StdioServerParameters(
             command=cfg.command,
@@ -463,7 +413,7 @@ class MCPClientPool:
             )
         return kwargs
 
-    async def _connect_streamable_http(self, cfg: MCPServerConfig, sdk: tuple) -> list[AlexTool]:
+    async def _connect_streamable_http(self, cfg: MCPServerConfig, sdk: tuple) -> list[MCPTool]:
         ClientSession, _, _, streamable_http_client, _ = sdk
         if streamable_http_client is None:
             raise MCPUnavailableError("Installed MCP SDK does not provide streamable-http client support")
@@ -501,7 +451,7 @@ class MCPClientPool:
 
         return self._build_tools(config=cfg, listed=listed, invoke=_invoke_tool)
 
-    async def _connect_sse(self, cfg: MCPServerConfig, sdk: tuple) -> list[AlexTool]:
+    async def _connect_sse(self, cfg: MCPServerConfig, sdk: tuple) -> list[MCPTool]:
         ClientSession, _, _, _, sse_client = sdk
         if sse_client is None:
             raise MCPUnavailableError("Installed MCP SDK does not provide SSE client support")
@@ -514,7 +464,7 @@ class MCPClientPool:
         listed = await session.list_tools()
         return self._build_tools(config=cfg, listed=listed, invoke=session.call_tool)
 
-    async def _connect_single(self, cfg: MCPServerConfig, sdk: tuple) -> list[AlexTool]:
+    async def _connect_single(self, cfg: MCPServerConfig, sdk: tuple) -> list[MCPTool]:
         if cfg.transport == "stdio":
             return await self._connect_stdio(cfg, sdk)
         if cfg.transport == "streamable-http":
@@ -561,7 +511,7 @@ class MCPClientPool:
 async def load_mcp_tools_from_config(
     *,
     config_path: Path | None = None,
-) -> tuple[MCPClientPool, list[AlexTool]]:
+) -> tuple[MCPClientPool, list[MCPTool]]:
     """Convenience: load + connect everything described by ``mcp.json``.
 
     Returns the live pool (for shutdown) and the flat list of tools.
@@ -579,7 +529,7 @@ async def load_mcp_tools_from_config(
         await pool.aclose()
         raise
 
-    tools: list[AlexTool] = []
+    tools: list[MCPTool] = []
     for conn in pool.connections:
         tools.extend(conn.tools)
     return pool, tools

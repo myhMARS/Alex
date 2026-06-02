@@ -1,4 +1,4 @@
-"""Tests for the permission policy + executor integration."""
+"""Tests for the permission policy and tool gating."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from alex.tools.permissions import (
     gate_tools_with_policy,
     required_permission,
 )
-from alex.tools.ports import ToolExecutionContext
+from alex.kernel.dto.tool import ToolExecutionContext
 from alex.tools.registry import ToolRegistry
 from alex.tools.executor import ToolExecutor
 
@@ -144,39 +144,28 @@ class TestRequiredPermissionHelper:
         assert required_permission(tool) is None
 
 
-class TestExecutorEnforcesPolicy:
+class TestSimplifiedExecutor:
+    """简化后的 ToolExecutor 只负责执行，不做权限检查。"""
+
     @pytest.mark.asyncio
-    async def test_blocks_unallowed_permission(self):
+    async def test_executes_tool(self):
         registry = ToolRegistry()
         registry.register(_make_tool("write_thing", PERMISSION_WRITE))
-        executor = ToolExecutor(registry, permissions=PermissionPolicy())
+        executor = ToolExecutor(registry)
         result = await executor.execute(
             ToolExecutionContext(session_id="s1"), "write_thing", {"text": "ok"},
         )
+        # 简化后的 executor 不检查权限，直接执行
+        assert result == "ok"
+
+    @pytest.mark.asyncio
+    async def test_nonexistent_tool_returns_error(self):
+        registry = ToolRegistry()
+        executor = ToolExecutor(registry)
+        result = await executor.execute(
+            ToolExecutionContext(session_id="s1"), "nonexistent", {},
+        )
         assert result.startswith("Error:")
-        assert "blocked" in result
-
-    @pytest.mark.asyncio
-    async def test_runs_when_permission_granted(self):
-        registry = ToolRegistry()
-        registry.register(_make_tool("write_thing", PERMISSION_WRITE))
-        policy = PermissionPolicy(allowed={PERMISSION_WRITE})
-        executor = ToolExecutor(registry, permissions=policy)
-        result = await executor.execute(
-            ToolExecutionContext(session_id="s1"), "write_thing", {"text": "hi"},
-        )
-        assert result == "hi"
-
-    @pytest.mark.asyncio
-    async def test_set_permissions_propagates_to_executor(self):
-        registry = ToolRegistry()
-        registry.register(_make_tool("write_thing", PERMISSION_WRITE))
-        executor = ToolExecutor(registry, permissions=PermissionPolicy())
-        executor.set_permissions(PermissionPolicy(allowed={PERMISSION_WRITE}))
-        result = await executor.execute(
-            ToolExecutionContext(session_id="s1"), "write_thing", {"text": "hi"},
-        )
-        assert result == "hi"
 
 
 class TestToolGating:
@@ -236,24 +225,3 @@ class TestToolGating:
         assert getattr(tools[0], "_alex_permission_gated", None) is not None
         assert getattr(tools[1], "_alex_permission_gated", None) is not None
         assert getattr(tools[2], "_alex_permission_gated", None) is None
-
-    @pytest.mark.asyncio
-    async def test_executor_skips_redundant_check_for_gated_tool(self):
-        """When a tool is already gated, the executor must not double-prompt."""
-        registry = ToolRegistry()
-        tool = _make_tool("write_thing", PERMISSION_WRITE)
-        registry.register(tool)
-        prompt_calls: list[str] = []
-
-        async def _hook(req):
-            prompt_calls.append(req.tool_name)
-            return True
-
-        policy = PermissionPolicy(confirm_hook=_hook)
-        gate_tool_with_policy(tool, policy)
-        executor = ToolExecutor(registry, permissions=policy)
-        result = await executor.execute(
-            ToolExecutionContext(session_id="s1"), "write_thing", {"text": "hi"},
-        )
-        assert result == "hi"
-        assert prompt_calls == ["write_thing"]

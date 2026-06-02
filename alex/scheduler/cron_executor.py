@@ -5,9 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import time
-from typing import Any, Awaitable, Callable
-
-from alex.bus.events import CronJobEvent
+from typing import Any, Callable
 from alex.scheduler.manager import CronJob, NormalizedCronRunner
 
 
@@ -105,7 +103,9 @@ class CronExecutor:
             If set, called with *job.id* when a non-recurring job finishes
             so the scheduler can clean up APScheduler / runner registries.
         """
-        self._running_tasks[job.id] = asyncio.current_task()  # type: ignore[arg-type]
+        task = asyncio.current_task()
+        if task is not None:
+            self._running_tasks[job.id] = task
         run_status = "FAILED"
         run_seq = job.runs_done + 1
         stream_id = f"cron:{job.id}:{run_seq}"
@@ -196,7 +196,7 @@ class CronExecutor:
             except Exception:
                 pass  # best-effort — state is already persisted
         finally:
-            self._running_tasks.pop(job.id, None)
+            _ = self._running_tasks.pop(job.id, None)
 
     # ── helpers for CronManager ──────────────────────────────────────
 

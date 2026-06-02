@@ -391,7 +391,7 @@ def _build_write_summariser(allowed_roots: list[Path]):
         try:
             target = _resolve_safe_path(raw_path, allowed_roots)
         except ValueError as e:
-            return (f"write blocked: {e}", [])
+            return f"write blocked: {e}", []
 
         existing_text, note = _read_existing_text(target, encoding)
         new_bytes = len(new_content.encode(encoding, errors="replace"))
@@ -447,7 +447,7 @@ def _build_edit_summariser(allowed_roots: list[Path]):
         try:
             target = _resolve_safe_path(raw_path, allowed_roots)
         except ValueError as e:
-            return (f"edit blocked: {e}", [])
+            return f"edit blocked: {e}", []
 
         if not target.exists():
             return (
@@ -455,11 +455,11 @@ def _build_edit_summariser(allowed_roots: list[Path]):
                 [],
             )
         if old_string == new_string:
-            return ("edit blocked: old_string and new_string are identical", [])
+            return "edit blocked: old_string and new_string are identical", []
 
         existing_text, note = _read_existing_text(target, encoding)
         if note:
-            return (f"Edit {target}", [PreviewBlock(title=str(target), body=note)])
+            return f"Edit {target}", [PreviewBlock(title=str(target), body=note)]
 
         occurrences = existing_text.count(old_string)
         if occurrences == 0:

@@ -16,7 +16,6 @@ JSON mode::
 
 from __future__ import annotations
 
-import json as _json
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field

@@ -8,7 +8,6 @@ Windows-only runners alike.
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 import pytest
@@ -235,7 +234,7 @@ class TestHostDetection:
         found = detect_available_shells()
         assert isinstance(found, dict)
         for name in found:
-            assert name in {"bash", "pwsh"}
+            assert name in {"bash", "pwsh", "bash_wsl"}
 
     def test_create_available_returns_only_present_shells(self):
         tools = create_available_shell_tools()

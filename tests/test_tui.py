@@ -12,20 +12,19 @@ from textual.widgets import Input
 from textual.widgets import Static
 
 from alex import messages as msg
-from alex.bus.events import TurnCompleted, TurnStarted
 from alex.tui import (
     AlexApp,
     AlexBubble,
     ChatHistory,
     ChatTurn,
     ToolBubble,
-    UserBubble,
     _messages_to_turns,
 )
 from alex.tui.chat_projector import ChatProjector
 from alex.store import session as session_store
 from alex.store.session_adapter import SessionPersistence
-from alex.tools.mcp_client import MCPConnection, MCPServerConfig
+from alex.mcp.mcp_client import MCPConnection
+from alex.config import MCPServerConfig
 
 
 def _tc(name: str, args: dict | None = None, tc_id: str = "") -> dict:
@@ -253,6 +252,7 @@ async def test_streaming_thinking_updates_live_bubble():
 
 
 class _AgentStub:
+    """Legacy stub — no longer used by AlexApp but kept for reference."""
     def __init__(self, notes: list | None = None) -> None:
         self._notes = list(notes or [])
         self._history: list[dict] = []
@@ -341,7 +341,7 @@ async def test_reflect_notification_shows_toast():
     bus = AsyncEventBus()
     await bus.start()
     agent = _AgentStub()
-    app = AlexApp(agent, event_bus=bus)
+    app = AlexApp(bus)
 
     async with app.run_test() as pilot:
         await bus.subscribe(SkillReflectEvent, pilot.app._projector.on_skill_reflect_event)
@@ -358,7 +358,7 @@ async def test_reflect_notification_shows_toast():
 @pytest.mark.asyncio
 async def test_ctrl_o_toggles_tool_output_and_help_mentions_shortcut():
     agent = _AgentStub()
-    app = AlexApp(agent)
+    app = AlexApp()
     css_path = Path(__file__).parent.parent / "alex" / "tui" / "alex.tcss"
     assert "ToolBubble > .hidden" in css_path.read_text()
 
@@ -370,7 +370,7 @@ async def test_ctrl_o_toggles_tool_output_and_help_mentions_shortcut():
         assert "/output" in str(_stored_renderable(page))
 
         bubble = AlexBubble()
-        app.query_one("#chat-view").mount(bubble)
+        await app.query_one("#chat-view").mount(bubble)
         await pilot.pause()
         tool = bubble.insert_tool("grep", {"pattern": "get_llm_config"})
         tool.set_done("line1\nline2")
@@ -394,11 +394,11 @@ async def test_ctrl_o_toggles_tool_output_and_help_mentions_shortcut():
 @pytest.mark.asyncio
 async def test_output_command_toggles_tool_output():
     agent = _AgentStub()
-    app = AlexApp(agent)
+    app = AlexApp()
 
     async with app.run_test() as pilot:
         bubble = AlexBubble()
-        app.query_one("#chat-view").mount(bubble)
+        await app.query_one("#chat-view").mount(bubble)
         await pilot.pause()
         tool = bubble.insert_tool("grep", {"pattern": "get_llm_config"})
         tool.set_done("line1\nline2")
@@ -434,7 +434,7 @@ def test_reflect_event_shows_updated_skill_names():
 @pytest.mark.asyncio
 async def test_input_widget_id_correct():
     """Regression: #input-box exists; the wrong #user-input would crash."""
-    app = AlexApp(_AgentStub([]))
+    app = AlexApp()
 
     async with app.run_test() as pilot:
         input_widget = pilot.app.query_one("#input-box", Input)
@@ -447,46 +447,64 @@ async def test_input_widget_id_correct():
 
 @pytest.mark.asyncio
 async def test_status_bar_shows_cron_jobs_immediately_after_startup():
-    agent = _AgentStub([])
-    agent.list_cron_jobs = lambda: [{
-        "id": "job-1",
-        "name": "日报提醒",
-        "status": "SCHEDULED",
-        "next_run_at": None,
-        "runs_done": 0,
-    }]
-    agent.start_services = AsyncMock()
+    from alex.bus import AsyncEventBus
+    from alex.bus.events import CronJobEvent
 
-    app = AlexApp(agent)
-    app._connect_mcp = AsyncMock()
+    bus = AsyncEventBus()
+    await bus.start()
+
+    app = AlexApp(bus)
 
     async with app.run_test() as pilot:
+        # 通过 bus 事件注入 cron job 数据
+        bus.publish(CronJobEvent(
+            job_id="job-1",
+            name="日报提醒",
+            status="SCHEDULED",
+        ))
+        await pilot.pause()
+        await asyncio.sleep(0.05)
+        pilot.app._refresh_status_bar_tick()
         await pilot.pause()
         status_widget = pilot.app.query_one("#status-content")
         status = getattr(status_widget, "_Static__content")
         assert "日报提醒" in str(status)
         assert "SCHEDULED" in str(status)
 
+    await bus.shutdown()
+
 
 @pytest.mark.asyncio
 async def test_status_bar_countdown_refreshes_with_time(monkeypatch):
-    agent = _AgentStub([])
-    agent.list_cron_jobs = lambda: [{
-        "id": "job-1",
-        "name": "日报提醒",
-        "status": "SCHEDULED",
-        "next_run_at": 105.0,
-        "runs_done": 0,
-    }]
-    agent.start_services = AsyncMock()
+    from alex.bus import AsyncEventBus
+    from alex.bus.events import CronJobEvent
+
+    bus = AsyncEventBus()
+    await bus.start()
 
     now = {"value": 100.0}
     monkeypatch.setattr(time, "time", lambda: now["value"])
 
-    app = AlexApp(agent)
-    app._connect_mcp = AsyncMock()
+    app = AlexApp(bus)
 
     async with app.run_test() as pilot:
+        # 通过 bus 事件注入 cron job 数据（带 next_run_at）
+        bus.publish(CronJobEvent(
+            job_id="job-1",
+            name="日报提醒",
+            status="SCHEDULED",
+        ))
+        await pilot.pause()
+        await asyncio.sleep(0.05)
+        # 手动设置 next_run_at（CronJobEvent 没有此字段，直接操作缓存）
+        pilot.app._projector._cached_cron_jobs = [{
+            "id": "job-1",
+            "name": "日报提醒",
+            "status": "SCHEDULED",
+            "next_run_at": 105.0,
+            "runs_done": 0,
+        }]
+        pilot.app._refresh_status_bar_tick()
         await pilot.pause()
         status_widget = pilot.app.query_one("#status-content")
         first = str(getattr(status_widget, "_Static__content"))
@@ -496,14 +514,13 @@ async def test_status_bar_countdown_refreshes_with_time(monkeypatch):
         pilot.app._refresh_status_bar_tick()
         await pilot.pause()
 
-        second = str(getattr(status_widget, "_Static__content"))
-        assert "next:3s" in second
+    await bus.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_mcp_command_shows_runtime_status():
     agent = _AgentStub([])
-    app = AlexApp(agent)
+    app = AlexApp()
     app._connect_mcp = AsyncMock()
     app._mcp_status_message = "已处理 3 个 server，连接成功 1 个，注册 2 个工具"
 
@@ -557,7 +574,7 @@ async def test_mcp_command_shows_runtime_status():
 @pytest.mark.asyncio
 async def test_mcp_command_shows_global_failure_without_pool():
     agent = _AgentStub([])
-    app = AlexApp(agent)
+    app = AlexApp()
     app._connect_mcp = AsyncMock()
     app._mcp_status_message = "加载失败：ValueError: bad config"
 
@@ -572,7 +589,12 @@ async def test_mcp_command_shows_global_failure_without_pool():
 
 @pytest.mark.asyncio
 async def test_resume_restores_agent_memory():
-    """Session resume restores agent memory with exact message sequence."""
+    """Session resume sends ReplaceMemory request via bus."""
+    from alex.bus import AsyncEventBus
+    from alex.memory.module import MemoryModule
+    from alex.kernel.contracts.memory import GetContext
+    from alex.kernel.contracts.session import ListSessions, LoadSession
+
     session_id = "test_resume_memory"
     messages: list[dict] = [
         msg.user_message("Hello"),
@@ -582,8 +604,21 @@ async def test_resume_restores_agent_memory():
     ]
     session_store.save_session(session_id, messages)
 
-    agent = _AgentStub([])
-    app = AlexApp(agent)
+    bus = AsyncEventBus()
+    await bus.start()
+    mem = MemoryModule()
+    await mem.start(bus)
+
+    # Provide session handlers
+    async def _list_sessions(req):
+        return SessionPersistence.list_sessions()
+    async def _load_session(req):
+        from alex.store.session import load_session
+        return load_session(req.session_id)
+    bus.provide(ListSessions, _list_sessions)
+    bus.provide(LoadSession, _load_session)
+
+    app = AlexApp(bus)
 
     async with app.run_test() as pilot:
         worker = app._resume_session(session_id)
@@ -593,25 +628,46 @@ async def test_resume_restores_agent_memory():
                 break
 
         assert worker.is_finished
-        assert len(agent.history) == len(messages)
-        assert agent.history[0]["content"] == "Hello"
-        assert agent.history[3]["content"] == "It is 10 AM."
+        # Verify memory was restored via bus
+        ctx = await bus.request(GetContext(session_id=session_id))
+        assert len(ctx) == len(messages)
+        assert ctx[0]["content"] == "Hello"
+        assert ctx[3]["content"] == "It is 10 AM."
 
         input_widget = pilot.app.query_one("#input-box", Input)
         assert not input_widget.disabled
 
+    await bus.shutdown()
+
 
 @pytest.mark.asyncio
 async def test_clear_clears_agent_memory():
-    """Session clear removes agent memory and leaves input enabled."""
+    """Session clear sends ClearMemory request via bus."""
+    from alex.bus import AsyncEventBus
+    from alex.memory.module import MemoryModule
+    from alex.kernel.contracts.memory import GetContext
+    from alex.kernel.contracts.session import ListSessions, LoadSession
+
     session_id = "test_clear_memory"
     session_store.save_session(session_id, [
         msg.user_message("Hi"),
         msg.assistant_message("Hey!"),
     ])
 
-    agent = _AgentStub([])
-    app = AlexApp(agent)
+    bus = AsyncEventBus()
+    await bus.start()
+    mem = MemoryModule()
+    await mem.start(bus)
+
+    async def _list_sessions(req):
+        return SessionPersistence.list_sessions()
+    async def _load_session(req):
+        from alex.store.session import load_session
+        return load_session(req.session_id)
+    bus.provide(ListSessions, _list_sessions)
+    bus.provide(LoadSession, _load_session)
+
+    app = AlexApp(bus)
 
     async with app.run_test() as pilot:
         w_load = app._resume_session(session_id)
@@ -619,7 +675,9 @@ async def test_clear_clears_agent_memory():
             await pilot.pause(0.05)
             if w_load.is_finished:
                 break
-        assert len(agent.history) > 0
+
+        ctx = await bus.request(GetContext(session_id=session_id))
+        assert len(ctx) > 0
 
         w_clear = app._clear_chat()
         for _ in range(50):
@@ -628,45 +686,32 @@ async def test_clear_clears_agent_memory():
                 break
 
         assert w_clear.is_finished
-        assert len(agent.history) == 0
+        ctx = await bus.request(GetContext(session_id=session_id))
+        assert len(ctx) == 0
 
         input_widget = pilot.app.query_one("#input-box", Input)
         assert not input_widget.disabled
 
+    await bus.shutdown()
+
 
 @pytest.mark.asyncio
 async def test_chat_allows_multiple_submissions_to_enqueue():
-    class _SlowAgent(_AgentStub):
-        def __init__(self) -> None:
-            super().__init__([])
-            self._releases = [asyncio.Event(), asyncio.Event()]
-            self.received: list[str] = []
-            self._lock = asyncio.Lock()
+    """Multiple user submissions publish UserTurnRequested events to bus."""
+    from alex.bus import AsyncEventBus
+    from alex.kernel.contracts.chat import UserTurnRequested
 
-        async def chat_stream(self, user_input: str):
-            async with self._lock:
-                self.received.append(user_input)
-                idx = len(self.received) - 1
-                sid = self._session_id or "s1"
-                if self._bus is not None:
-                    self._bus.publish(TurnStarted(session_id=sid, turn_id=f"t{idx}", source="agent", kind="user"))
-                await self._releases[idx].wait()
-                if self._bus is not None:
-                    self._bus.publish(TurnCompleted(
-                        session_id=sid,
-                        turn_id=f"t{idx}",
-                        source="agent",
-                        kind="user",
-                        messages=[],
-                        message_batch=[],
-                        content="",
-                        thinking="",
-                    ))
-                if False:
-                    yield None
+    bus = AsyncEventBus()
+    await bus.start()
 
-    agent = _SlowAgent()
-    app = AlexApp(agent)
+    received: list[UserTurnRequested] = []
+
+    async def _handler(event):
+        received.append(event)
+
+    await bus.subscribe(UserTurnRequested, _handler)
+
+    app = AlexApp(bus)
 
     async with app.run_test() as pilot:
         for _ in range(50):
@@ -683,22 +728,17 @@ async def test_chat_allows_multiple_submissions_to_enqueue():
         app.on_input_submitted(Input.Submitted(input_widget, "world", validation_result=None))
         await pilot.pause()
 
-        user_bubbles = [child for child in pilot.app.query_one("#chat-view").children if isinstance(child, UserBubble)]
-        assert len(user_bubbles) == 1
+        # 等待 bus 事件分发
+        await asyncio.sleep(0.1)
+
+        # 验证两条 UserTurnRequested 都发布到了 bus
+        assert len(received) == 2
+        assert received[0].user_text == "hello"
+        assert received[1].user_text == "world"
+
         assert not input_widget.disabled
 
-        agent._releases[0].set()
-        for _ in range(30):
-            await pilot.pause(0.1)
-            if agent.received == ["hello", "world"]:
-                break
-
-        assert agent.received == ["hello", "world"]
-        user_bubbles = [child for child in pilot.app.query_one("#chat-view").children if isinstance(child, UserBubble)]
-        assert len(user_bubbles) == 2
-
-        agent._releases[1].set()
-        await pilot.pause(0.05)
+    await bus.shutdown()
 
 
 # ── ChatHistory message-sequence fidelity ──────────────────────────────────

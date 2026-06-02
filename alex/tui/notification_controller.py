@@ -1,37 +1,87 @@
-"""NotificationController — toast messages and feedback prompts.
+"""NotificationController — toast messages, feedback prompts, and permission confirmation.
 
 Extracted from ChatControllerMixin so the TUI controller no longer owns
 toast lifecycle, feedback widget state, or rating logic directly.
+
+权限确认流程（完全通过 bus 事件）：
+1. 订阅 ToolApprovalRequested 事件
+2. 收到后弹出确认弹窗
+3. 用户操作后发布 ToolApprovalResolved 事件到 bus
+4. 工具模块从 bus 获取确认结果
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
+from typing import Any
 
 from textual.app import App
 from textual.containers import VerticalScroll
+from textual.timer import Timer
 from textual.widgets import Static
 
-from alex.tools.permissions import ToolApprovalRequest
+from alex.kernel.contracts.tools import ToolApprovalRequested, ToolApprovalResolved
+from alex.kernel.dto.approval import ToolApprovalRequest
 from alex.tui.confirm_screen import PermissionConfirmScreen
 from alex.tui.view_state import SessionViewState
 
+logger = logging.getLogger(__name__)
+
 
 class NotificationController:
-    """Manages toast notifications, feedback prompts, and rating submission.
+    """Manages toast notifications, feedback prompts, and permission confirmation.
 
     Owns the toast widget (*_toast_widget*, *_toast_timer*) and the
     inline feedback widget (*_feedback_widget*).  Rating actions delegate
     here so the controller only needs to bind keys, not manage UI state.
+
+    权限确认通过 bus 事件驱动：
+    - 订阅 ToolApprovalRequested → 弹出确认弹窗
+    - 用户确认/拒绝后 → 发布 ToolApprovalResolved 到 bus
     """
 
     def __init__(self, app: App, view_state: SessionViewState) -> None:
         self._app = app
         self._view = view_state
+        self._bus: Any = None
         self._toast_widget: Static | None = None
-        self._toast_timer: object = None
+        self._toast_timer: Timer | None = None
         self._feedback_widget: Static | None = None
         self._confirm_lock: asyncio.Lock = asyncio.Lock()
+
+    async def bind_bus(self, bus: Any) -> None:
+        """绑定 bus 并订阅权限请求事件。"""
+        self._bus = bus
+        await bus.subscribe(ToolApprovalRequested, self._on_approval_requested)
+
+    async def _on_approval_requested(self, event: ToolApprovalRequested) -> None:
+        """收到权限请求事件 → 在 app worker 中弹出确认弹窗。
+
+        bus dispatch loop 中不能直接 await 弹窗（会阻塞），也不能用
+        asyncio.create_task（会丢失 Textual app context）。
+        使用 app.run_worker 确保在正确的上下文中执行。
+        """
+        logger.info("approval popup tool=%s perm=%s req_id=%s", event.tool_name, event.permission, event.req_id)
+        self._app.run_worker(self._handle_approval(event), exclusive=False)
+
+    async def _handle_approval(self, event: ToolApprovalRequested) -> None:
+        """在独立 task 中处理权限确认弹窗。"""
+        request = ToolApprovalRequest(
+            tool_name=event.tool_name,
+            permission=event.permission,
+            summary=event.preview,
+        )
+
+        granted, remember = await self._show_confirm_modal(request)
+        logger.info("approval result req_id=%s granted=%s remember=%s", event.req_id, granted, remember)
+
+        if self._bus:
+            self._bus.publish(ToolApprovalResolved(
+                req_id=event.req_id,
+                granted=granted,
+                remember=remember,
+            ))
 
     # ── toast ───────────────────────────────────────────────────────────
 
@@ -102,17 +152,12 @@ class NotificationController:
         self._feedback_widget = Static(label, classes="feedback-done")
         self._app.query_one("#chat-view", VerticalScroll).mount(self._feedback_widget)
 
-    # ── permission confirm ──────────────────────────────────────────────
+    # ── permission confirm（通过 bus 事件驱动）──────────────────────────
 
-    async def confirm_permission(self, request: ToolApprovalRequest) -> tuple[bool, bool]:
-        """Show a modal asking the user to approve *request*.
+    async def _show_confirm_modal(self, request: ToolApprovalRequest) -> tuple[bool, bool]:
+        """内部方法：弹出权限确认弹窗并等待用户操作。
 
-        Returns ``(granted, remember)``.  When the screen cannot be
-        pushed (e.g. the app is shutting down) the request is denied.
-
-        Concurrent permission requests are serialised via an internal
-        lock so a cron-driven tool call cannot race with a user-turn
-        modal — the second request waits for the first dialog to close.
+        并发权限请求通过锁串行化，避免多个弹窗同时出现。
         """
         async with self._confirm_lock:
             future: asyncio.Future[tuple[bool, bool]] = asyncio.get_event_loop().create_future()
@@ -126,14 +171,14 @@ class NotificationController:
                     future.set_result(result)
 
             try:
-                self._app.push_screen(
+                await self._app.push_screen(
                     PermissionConfirmScreen(request),
                     _on_result,
                 )
             except Exception:
-                return (False, False)
+                return False, False
 
             try:
                 return await future
             except asyncio.CancelledError:
-                return (False, False)
+                return False, False

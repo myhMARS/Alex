@@ -15,6 +15,7 @@ class TimeInput(BaseModel):
         description="Timezone name (e.g. 'Asia/Shanghai', 'US/Eastern', 'UTC') or 'local' for system local time",
     )
 
+
 _TZ_ALIASES: dict[str, str] = {
     "CHINA STANDARD TIME": "Asia/Shanghai",
     "BEIJING": "Asia/Shanghai",

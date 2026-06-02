@@ -3,7 +3,6 @@
 import os
 import threading
 import time
-from pathlib import Path
 
 import pytest
 
@@ -152,6 +151,7 @@ class TestSessionPersistence:
 
         sid = "test-subscribe-turn"
         messages = [msg.user_message("bus turn"), msg.assistant_message("ok")]
+        bus = None
         try:
             bus = AsyncEventBus()
             await bus.start()
@@ -168,7 +168,8 @@ class TestSessionPersistence:
             assert bundle is not None
             assert len(bundle["messages"]) == 2
         finally:
-            await bus.shutdown()
+            if bus is not None:
+                await bus.shutdown()
             SessionPersistence.delete(sid)
 
     @pytest.mark.asyncio
@@ -178,6 +179,7 @@ class TestSessionPersistence:
 
         sid = "test-subscribe-cron"
         messages = [msg.user_message("cron bus")]
+        bus = None
         try:
             SessionPersistence.save(sid, messages)
 
@@ -198,5 +200,6 @@ class TestSessionPersistence:
             assert len(cron) == 1
             assert cron[0]["execution_id"] == "exec-bus"
         finally:
-            await bus.shutdown()
+            if bus is not None:
+                await bus.shutdown()
             SessionPersistence.delete(sid)

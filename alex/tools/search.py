@@ -178,7 +178,7 @@ class _GrepOptions:
     before_context: int
     head_limit: int
     multiline: bool
-    type: str | None
+    file_type: str | None
 
 
 def _normalise_grep_args(
@@ -194,7 +194,7 @@ def _normalise_grep_args(
     before_context: int,
     head_limit: int,
     multiline: bool,
-    type: str | None,
+    file_type: str | None,
 ) -> _GrepOptions:
     output_mode = (output_mode or "files_with_matches").strip().lower()
     if output_mode not in ("files_with_matches", "content", "count"):
@@ -216,7 +216,7 @@ def _normalise_grep_args(
         before_context=before_context,
         head_limit=head_limit,
         multiline=multiline,
-        type=type,
+        file_type=file_type,
     )
 
 
@@ -230,8 +230,8 @@ def _build_rg_argv(opts: _GrepOptions) -> list[str]:
         argv.append("-i")
     if opts.glob:
         argv.extend(["-g", opts.glob])
-    if opts.type:
-        argv.extend(["-t", opts.type])
+    if opts.file_type:
+        argv.extend(["-t", opts.file_type])
     if opts.multiline:
         argv.extend(["-U", "--multiline-dotall"])
 
@@ -333,7 +333,7 @@ async def _run_rg_files_with_matches(opts: _GrepOptions) -> list[str] | None:
         before_context=0,
         head_limit=opts.head_limit,
         multiline=opts.multiline,
-        type=opts.type,
+        file_type=opts.file_type,
     )
     argv = _build_rg_argv(file_opts)
     try:
@@ -377,7 +377,7 @@ async def _run_grep_with_matches(opts: _GrepOptions) -> tuple[str, list[str] | N
 def _iter_candidate_files(opts: _GrepOptions) -> list[Path]:
     base = opts.path
     glob = opts.glob
-    type_exts = _TYPE_TO_EXTS.get(opts.type or "", ())
+    type_exts = _TYPE_TO_EXTS.get(opts.file_type or "", ())
 
     if base.is_file():
         files = [base]
@@ -582,7 +582,7 @@ def _make_grep(allowed_roots: list[Path]):
                 before_context=before_context,
                 head_limit=head_limit,
                 multiline=multiline,
-                type=type,
+                file_type=type,
             )
         except ValueError as e:
             return f"Error: {e}"

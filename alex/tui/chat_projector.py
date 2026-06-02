@@ -33,24 +33,19 @@ from alex.tui.presenter import AlexBubble, SystemBubble, UserBubble
 from alex.tui.stream_renderer import StreamRenderer
 
 if TYPE_CHECKING:
-    from alex.agent.ports import AgentFacade
     from alex.tui.notification_controller import NotificationController
     from alex.tui.view_models import ChatHistory
     from alex.tui.view_state import SessionViewState
 
 
 class _ProjectorHost(Protocol):
-    """Minimal interface ChatProjector requires from its host App.
+    """Minimal interface ChatProjector requires from its host App."""
 
-    AlexApp satisfies every attribute; the Protocol exists so
-    ChatProjector never reaches into a concrete App via duck typing.
-    """
-
-    _history: ChatHistory
-    _agent: AgentFacade
-    _notif: NotificationController
-    _tool_output_expanded: bool
-    _view_state: SessionViewState
+    chat_history: ChatHistory
+    message_bus: Any
+    notif: NotificationController
+    tool_output_expanded: bool
+    view_state: SessionViewState
 
     def query_one(self, selector: str, expect_type: type) -> Any: ...
 
@@ -68,6 +63,7 @@ class ChatProjector:
         self._active_renderers: dict[str, StreamRenderer] = {}
         self._user_inputs: dict[str, str] = {}
         self._pending_user_inputs: deque[str] = deque()
+        self._cached_cron_jobs: list[dict] = []
 
     # ── helpers ─────────────────────────────────────────────────────────
 
@@ -76,20 +72,8 @@ class ChatProjector:
         return self._active_renderers
 
     @property
-    def _history(self):
-        return self._app._history
-
-    @property
-    def _agent(self):
-        return self._app._agent
-
-    @property
-    def _notif(self):
-        return self._app._notif
-
-    @property
     def _current_session_id(self) -> str:
-        return self._history.session_id
+        return self._app.chat_history.session_id
 
     def note_user_submission(self, user_input: str) -> None:
         self._pending_user_inputs.append(str(user_input))
@@ -101,7 +85,7 @@ class ChatProjector:
         chat_view = self._app.query_one("#chat-view", VerticalScroll)
         if kind == "user":
             chat_view.mount(UserBubble(user_input))
-        bubble = AlexBubble(tool_output_expanded=self._app._tool_output_expanded)
+        bubble = AlexBubble(tool_output_expanded=self._app.tool_output_expanded)
         chat_view.mount(bubble)
         self.trim_chat_view(chat_view)
         chat_view.scroll_end()
@@ -182,22 +166,26 @@ class ChatProjector:
         if event.session_id and event.session_id != self._current_session_id:
             return
         self._handle_cron_job_event(event)
+        # 从 bus 获取最新的完整任务列表
+        await self._refresh_cron_cache()
         self.refresh_status_bar()
 
     async def on_cron_debug_event(self, event: CronDebugEvent) -> None:
         if event.message:
-            self._notif.show_toast(event.message, duration=3)
+            self._app.notif.show_toast(event.message, duration=3)
 
     async def on_skill_reflect_event(self, event: SkillReflectEvent) -> None:
+        chat_view = self._app.query_one("#chat-view", VerticalScroll)
         if event.new or event.updated or event.deprecated:
-            chat_view = self._app.query_one("#chat-view", VerticalScroll)
             chat_view.mount(SystemBubble(f"\U0001f3af {event.toast}"))
-        self._notif.show_toast(
-            self._notif.format_reflect_toast(event), duration=3
+        else:
+            chat_view.mount(SystemBubble("\U0001f3af 反思完成，未发现需要更新的技能"))
+        self._app.notif.show_toast(
+            self._app.notif.format_reflect_toast(event), duration=3
         )
 
     async def on_skill_reflect_error_event(self, event: SkillReflectErrorEvent) -> None:
-        self._notif.show_toast(f"反思失败：{event.error}", duration=4)
+        self._app.notif.show_toast(f"反思失败：{event.error}", duration=4)
 
     # ── unified turn stream typed-event handlers ────────────────────────
 
@@ -263,11 +251,13 @@ class ChatProjector:
                 turn.thinking = event.thinking
             renderer.on_batch(list(event.message_batch or []))
             renderer.finalize(turn)
-            self._history.add(turn, messages_delta=list(event.message_batch or []))
+            self._app.chat_history.add(turn, messages_delta=list(event.message_batch or []))
             if event.kind == "user":
-                self._app._view_state.pending_feedback_turn_id = event.turn_id
+                self._app.view_state.pending_feedback_turn_id = event.turn_id
+                # 用了 skill 才显示反馈提示（用于评价 skill 效果）
+                # 没用 skill 的对话由 AgentModule 自动触发反思
                 if renderer.skills:
-                    self._notif.show_feedback_prompt()
+                    self._app.notif.show_feedback_prompt()
         else:
             self._user_inputs.pop(event.turn_id, None)
         chat_view = self._app.query_one("#chat-view", VerticalScroll)
@@ -306,7 +296,7 @@ class ChatProjector:
         """
         if event.status not in ("SUCCESS", "FAILED"):
             return
-        target_session_id = event.session_id or self._history.session_id
+        target_session_id = event.session_id or self._app.chat_history.session_id
         record = {
             "execution_id": event.tool_call_id or f"cron:{event.job_id}:{event.runs_done}",
             "job_id": event.job_id,
@@ -321,24 +311,51 @@ class ChatProjector:
             "result": event.result,
             "error": event.error,
         }
-        if target_session_id == self._history.session_id:
-            self._history.add_cron_record(record)
-            self._agent.set_session_context(
-                self._history.session_id, self._history.cron_history
-            )
+        if target_session_id == self._app.chat_history.session_id:
+            self._app.chat_history.add_cron_record(record)
+            # session context 由 history 本地维护，不再需要通知 agent
 
     def _handle_cron_job_event(self, event: CronJobEvent) -> None:
         self.persist_cron_record(event)
+        # 更新本地 cron jobs 缓存
+        job_data = {
+            "id": event.job_id,
+            "name": event.name,
+            "status": event.status,
+            "prompt": event.prompt,
+            "recurring": event.recurring,
+            "durable": event.durable,
+        }
+        # 更新或添加
+        found = False
+        for i, j in enumerate(self._cached_cron_jobs):
+            if j.get("id") == event.job_id:
+                self._cached_cron_jobs[i].update(job_data)
+                found = True
+                break
+        if not found:
+            self._cached_cron_jobs.append(job_data)
+
         if event.status == "FAILED":
-            self._notif.show_toast(f"任务失败：{event.name}", duration=3)
+            self._app.notif.show_toast(f"任务失败：{event.name}", duration=3)
         elif event.status == "SUCCESS":
-            self._notif.show_toast(f"任务完成：{event.name}", duration=2)
+            self._app.notif.show_toast(f"任务完成：{event.name}", duration=2)
 
     # ── status bar ──────────────────────────────────────────────────────
 
+    async def _refresh_cron_cache(self) -> None:
+        """从 bus 获取最新的 cron 任务列表更新缓存。"""
+        try:
+            from alex.kernel.contracts.cron import ListCronJobs
+            bus = self._app.message_bus
+            if bus is not None:
+                self._cached_cron_jobs = await bus.request(ListCronJobs())
+        except Exception:
+            pass  # bus 未就绪或 CronModule 未启动
+
     def refresh_status_bar(self) -> None:
         try:
-            jobs = self._agent.list_cron_jobs()
+            jobs = self._cached_cron_jobs
         except Exception:
             jobs = []
         jobs = [j for j in jobs if str(j.get("status", "")) in ("RUNNING", "SCHEDULED")]

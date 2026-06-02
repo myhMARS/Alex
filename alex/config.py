@@ -1,13 +1,25 @@
 """Centralized environment-backed configuration for Alex."""
 
+import json as _json
 import os
-from typing import Iterable
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Iterable
 
 from dotenv import load_dotenv
 
 from alex.llm.base import LLMConfig
 
-load_dotenv()
+# Search .env in:  CWD first, then ~/.alex/.env, then default dotenv search
+_load_paths = [Path.cwd() / ".env", Path.home() / ".alex" / ".env"]
+_loaded = False
+for _p in _load_paths:
+    if _p.exists():
+        load_dotenv(dotenv_path=str(_p))
+        _loaded = True
+        break
+if not _loaded:
+    load_dotenv()
 
 _TRUTHY = {"1", "true", "yes", "on"}
 _FALSY = {"0", "false", "no", "off", ""}
@@ -120,3 +132,110 @@ def get_log_max_bytes(default: int) -> int:
 def get_log_backup_count(default: int) -> int:
     value = get_env_int("ALEX_LOG_BACKUP_COUNT", default)
     return value if value > 0 else default
+
+
+# ── MCP configuration (pure config, no MCP SDK dependency) ───────────────────
+
+MCP_CONFIG_PATH: Path = Path.home() / ".alex" / "mcp.json"
+
+
+@dataclass
+class MCPServerConfig:
+    """Configuration for a single MCP server — pure data, no SDK dependency."""
+
+    name: str
+    transport: str = "stdio"
+    command: str = ""
+    args: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
+    url: str = ""
+    headers: dict[str, str] = field(default_factory=dict)
+    timeout: float | None = None
+    sse_read_timeout: float | None = None
+    enabled: bool = True
+
+
+def _normalize_mcp_transport(raw: Any, *, has_command: bool, has_url: bool) -> str | None:
+    value = str(raw or "").strip().lower().replace("_", "-")
+    if not value:
+        if has_url:
+            return "streamable-http"
+        if has_command:
+            return "stdio"
+        return None
+    aliases = {
+        "stdio": "stdio",
+        "http": "streamable-http",
+        "streamable-http": "streamable-http",
+        "streamablehttp": "streamable-http",
+        "sse": "sse",
+        "http-sse": "sse",
+    }
+    return aliases.get(value)
+
+
+def load_mcp_config(path: Path | None = None) -> list[MCPServerConfig]:
+    """Parse ``~/.alex/mcp.json`` into a list of server configs.
+
+    Returns an empty list when the file does not exist; raises
+    :class:`ValueError` for malformed payloads.
+
+    This is a pure config loader — no MCP SDK dependency.  It lives in
+    ``alex.config`` so the TUI can read MCP server status without
+    importing from the ``alex.mcp`` module.
+    """
+    target = path or MCP_CONFIG_PATH
+    if not target.exists():
+        return []
+    try:
+        with open(target, encoding="utf-8") as f:
+            data = _json.load(f)
+    except (OSError, _json.JSONDecodeError) as e:
+        raise ValueError(f"failed to parse {target}: {e}") from e
+
+    raw_servers = data.get("mcpServers") if isinstance(data, dict) else None
+    if not isinstance(raw_servers, dict):
+        return []
+
+    configs: list[MCPServerConfig] = []
+    for name, payload in raw_servers.items():
+        if not isinstance(payload, dict):
+            continue
+        command = str(payload.get("command", "")).strip()
+        url = str(payload.get("url", "")).strip()
+        transport = _normalize_mcp_transport(
+            payload.get("transport"),
+            has_command=bool(command),
+            has_url=bool(url),
+        )
+        if not transport:
+            continue
+        if transport == "stdio" and not command:
+            continue
+        if transport in {"streamable-http", "sse"} and not url:
+            continue
+        args = payload.get("args", [])
+        if not isinstance(args, list):
+            args = []
+        env = payload.get("env", {})
+        if not isinstance(env, dict):
+            env = {}
+        headers = payload.get("headers", {})
+        if not isinstance(headers, dict):
+            headers = {}
+        enabled = payload.get("disabled") is not True
+        timeout = payload.get("timeout")
+        sse_read_timeout = payload.get("sse_read_timeout")
+        configs.append(MCPServerConfig(
+            name=name,
+            transport=transport,
+            command=command,
+            args=[str(a) for a in args],
+            env={str(k): str(v) for k, v in env.items()},
+            url=url,
+            headers={str(k): str(v) for k, v in headers.items()},
+            timeout=float(timeout) if isinstance(timeout, (int, float)) else None,
+            sse_read_timeout=float(sse_read_timeout) if isinstance(sse_read_timeout, (int, float)) else None,
+            enabled=enabled,
+        ))
+    return configs

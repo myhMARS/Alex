@@ -1,145 +1,193 @@
 """ChatAppService — owns the user-turn chat lifecycle.
 
-Uses :class:`ChatClient` for LLM calls and a custom agent loop
-(replacing LangGraph's ``create_agent`` / ``astream_events``).
+All cross-module operations go through the :class:`MessageBus` using
+kernel contracts.  The service holds NO direct references to memory,
+skills, or tools objects — everything is bus-mediated.
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import logging
 from datetime import datetime
+from typing import Any
 
-from pydantic import BaseModel, Field
-
-from alex.agent.prompt import PromptAssembler
 from alex.agent.turn_processor import TurnProcessor
 from alex.bus import AsyncEventBus
-from alex.bus.events import UserTurnRequested
 from alex.llm.client import ChatClient
-from alex.memory.base import MemoryBase
-from alex.skill import SkillService
-from alex.tools.executor import ToolExecutor
-from alex.tools.models import AlexTool
-from alex.tools.permissions import (
-    PermissionPolicy,
-    gate_tool_with_policy,
-    gate_tools_with_policy,
-)
-from alex.tools.registry import ToolRegistry
+from alex.kernel.bus import MessageBus
+from alex.kernel.contracts.memory import AppendMessages, GetContext, ReplaceMemory
+from alex.kernel.contracts.skills import LoadSkill, RetrieveSkills
+from alex.kernel.contracts.tools import ExecuteTool, GetToolCatalog, RegisterTool, UnregisterTool
+from alex.kernel.dto.skill import SkillCard
+from alex.kernel.dto.tool import ToolExecutionContext, ToolResult, ToolSpec
+
+_logger = logging.getLogger(__name__)
 
 
-class LoadSkillInput(BaseModel):
-    skill_name: str = Field(description="Name of the skill to load from the directory")
+class _BusTurnServices:
+    """TurnServices 的 bus 实现 — 将 TurnProcessor 的服务调用转为 bus request。"""
+
+    def __init__(self, bus: MessageBus) -> None:
+        self._bus = bus
+
+    async def get_memory_context(self, session_id: str) -> list[dict[str, Any]]:
+        return await self._bus.request(GetContext(session_id=session_id))
+
+    async def append_memory(self, session_id: str, messages: list[dict[str, Any]]) -> None:
+        await self._bus.request(AppendMessages(session_id=session_id, messages=messages))
+
+    async def get_skill_by_name(self, skill_name: str) -> SkillCard | None:
+        try:
+            return await self._bus.request(LoadSkill(skill_name=skill_name))
+        except Exception:
+            _logger.debug("LoadSkill failed for '%s'", skill_name, exc_info=True)
+            return None
+
+    async def retrieve_skills(self, query: str, top_k: int = 3) -> list[SkillCard]:
+        return await self._bus.request(RetrieveSkills(query=query, top_k=top_k))
+
+    async def get_tool_catalog(self) -> list[ToolSpec]:
+        return await self._bus.request(GetToolCatalog())
+
+    async def execute_tool(self, ctx: Any, tool_name: str, tool_args: dict[str, Any]) -> ToolResult:
+        from alex.kernel.errors import CapabilityTimeout, HandlerError, CapabilityUnavailable
+        req = ExecuteTool(
+            session_id=getattr(ctx, "session_id", ""),
+            turn_id=getattr(ctx, "turn_id", "") or "",
+            name=tool_name,
+            args=tool_args,
+            ctx=ctx,
+        )
+        try:
+            return await self._bus.request(req, timeout=req.timeout)
+        except CapabilityTimeout:
+            return ToolResult(
+                name=tool_name,
+                error=f"Error: tool '{tool_name}' timed out after {req.timeout}s",
+            )
+        except CapabilityUnavailable:
+            return ToolResult(
+                name=tool_name,
+                error=f"Error: tool '{tool_name}' unavailable (no handler registered)",
+            )
+        except HandlerError as e:
+            return ToolResult(
+                name=tool_name,
+                error=f"Error: tool '{tool_name}' failed: {e}",
+            )
+        except Exception as e:
+            return ToolResult(
+                name=tool_name,
+                error=f"Error: tool '{tool_name}' raised {type(e).__name__}: {e}",
+            )
 
 
-class CronJobsInput(BaseModel):
-    query: str = Field(default="", description="Optional job id, status, cron expression, or partial prompt/name")
-    limit: int = Field(default=10, ge=1, le=50, description="Maximum number of cron jobs to return")
+class _PromptAssembler:
+    """Builds the system prompt with skill instructions injected via bus."""
+
+    def __init__(self, system_prompt: str, bus: MessageBus) -> None:
+        self._system_prompt = system_prompt
+        self._bus = bus
+        self._current = system_prompt
+
+    @property
+    def augmented_prompt(self) -> str:
+        return self._current
+
+    async def ensure_skills_prompt(self, query: str) -> bool:
+        try:
+            skills = await self._bus.request(RetrieveSkills(query=query, top_k=3))
+        except Exception:
+            return False
+        if not skills:
+            return False
+        from alex.prompts import get_skills_section
+        text = get_skills_section(skills=[{"name": s.name, "pattern": s.pattern} for s in skills])
+        augmented = self._system_prompt + text if text else self._system_prompt
+        if augmented != self._current:
+            self._current = augmented
+            return True
+        return False
 
 
 class ChatAppService:
     """Application service for user-turn chat streaming and tool execution.
 
-    Owns the custom agent loop, unified turn processor, and tool registry.
-    Uses ``ChatClient`` (OpenAI SDK) instead of LangGraph for LLM calls.
+    All external operations (memory, skills, tool registration, tool
+    execution) go through the bus.  No direct references to other modules.
     """
 
     def __init__(
         self,
         llm: ChatClient | None,
-        memory: MemoryBase,
-        skill_manager: SkillService,
+        bus: AsyncEventBus,
         system_prompt: str,
         max_iterations: int = 5,
         callbacks: list | None = None,
-        event_bus: AsyncEventBus | None = None,
-        permissions: PermissionPolicy | None = None,
     ) -> None:
         self._llm: ChatClient | None = llm
-        self._memory = memory
-        self._skills = skill_manager
+        self._bus: MessageBus = bus
         self._system_prompt = system_prompt
         self._max_iterations = max_iterations
         self._callbacks = callbacks or []
         self._session_id: str = ""
         self._cron_history: list[dict] = []
-        self._bus = event_bus
-        self._tool_registry = ToolRegistry()
-        self._permissions = permissions or PermissionPolicy.from_env()
-        self._tool_executor = ToolExecutor(self._tool_registry, permissions=self._permissions)
-        self._prompt = PromptAssembler(system_prompt, skill_manager)
+        self._prompt = _PromptAssembler(system_prompt, bus)
 
         self._turn_processor = TurnProcessor(
             llm=llm,
-            memory=memory,
-            skill_manager=skill_manager,
-            tool_registry=self._tool_registry,
-            tool_executor=self._tool_executor,
             push_notification=self.push_notification,
-            get_bus=lambda: self._bus,
+            services=_BusTurnServices(bus),
             get_system_prompt=lambda: self._prompt.augmented_prompt,
             max_iterations=max_iterations,
             callbacks=self._callbacks,
         )
 
-    # ── tools ─────────────────────────────────────────────────────────────
+    # ── bus ────────────────────────────────────────────────────────────
 
-    @property
-    def tools(self) -> list[AlexTool]:
-        return self._tool_registry.list()
+    def set_event_bus(self, bus: AsyncEventBus | None) -> None:
+        if bus is not None:
+            self._bus = bus
 
-    def register_tool(self, tool: AlexTool) -> None:
-        gate_tool_with_policy(tool, self._permissions)
-        self._tool_registry.register(tool)
+    async def push_notification(self, event) -> None:
+        self._bus.publish(event)
 
-    def register_tools_batch(self, tools: list[AlexTool]) -> None:
-        gate_tools_with_policy(tools, self._permissions)
-        for t in tools:
-            self._tool_registry.register(t)
+    # ── tool registration (all via bus) ────────────────────────────────
 
-    def register_builtin_tools(
-        self,
-        load_skill_fn: callable,
-        cron_jobs_fn: callable,
+    async def register_tool(
+        self, *, name: str, description: str,
+        json_schema: dict[str, Any] | None = None,
+        callable_ref: Any = None, metadata: dict[str, Any] | None = None,
     ) -> None:
-        """Register the built-in load_skill and cron_jobs tools."""
-        self._tool_registry.register(AlexTool.from_function(
-            name="load_skill",
-            description=(
-                "Load the full execution methodology for a skill from the skill directory. "
-                "Use this when a skill's pattern matches the user's request and you need "
-                "the step-by-step execution guide to properly handle this type of task."
-            ),
-            coroutine=load_skill_fn,
-            args_schema=LoadSkillInput,
-        ))
-        self._tool_registry.register(AlexTool.from_function(
-            name="cron_jobs",
-            description=(
-                "List current cron jobs, including durable jobs restored from disk. "
-                "Returns job id, schedule, status, prompt, and next run time."
-            ),
-            coroutine=cron_jobs_fn,
-            args_schema=CronJobsInput,
+        """Register a tool via the bus — tools module stores it."""
+        await self._bus.request(RegisterTool(
+            name=name,
+            description=description,
+            json_schema=json_schema or {},
+            callable_ref=callable_ref,
+            metadata=metadata or {},
         ))
 
-    def unregister_tool(self, name: str) -> None:
-        self._tool_registry.unregister(name)
+    async def unregister_tool(self, name: str) -> None:
+        """Remove a tool via the bus."""
+        await self._bus.request(UnregisterTool(name=name))
 
-    def get_tool(self, name: str) -> AlexTool | None:
-        return self._tool_registry.get(name)
+    # ── tool execution (via bus) ───────────────────────────────────────
 
-    @property
-    def permissions(self) -> PermissionPolicy:
-        return self._permissions
+    async def execute_tool_action(self, session_id: str, action: str, params: dict) -> str:
+        action = (action or "").strip()
+        params = params or {}
+        if action == "notify":
+            return str(params.get("message", ""))
+        ctx = ToolExecutionContext(session_id=session_id, source="cron")
+        result: ToolResult = await self._bus.request(ExecuteTool(
+            session_id=session_id, name=action, args=params, ctx=ctx,
+        ))
+        if result.error:
+            raise ValueError(result.error)
+        return result.output
 
-    def set_permissions(self, policy: PermissionPolicy) -> None:
-        self._permissions = policy
-        self._tool_executor.set_permissions(policy)
-        for tool in self._tool_registry.list():
-            gate_tool_with_policy(tool, policy)
-
-    # ── session context ───────────────────────────────────────────────────
+    # ── session context ───────────────────────────────────────────────
 
     def set_session_context(self, session_id: str, cron_history: list[dict] | None = None) -> None:
         self._session_id = session_id
@@ -150,91 +198,62 @@ class ChatAppService:
     def session_id(self) -> str:
         return self._session_id
 
-    # ── bus ────────────────────────────────────────────────────────────────
-
-    def set_llm(self, llm: ChatClient) -> None:
-        """Inject the LLM client after construction (deferred init)."""
-        self._llm = llm
-        self._turn_processor.set_llm(llm)
-
-    def set_event_bus(self, bus: AsyncEventBus | None) -> None:
-        self._bus = bus
-
-    async def push_notification(self, event) -> None:
-        if self._bus is not None:
-            self._bus.publish(event)
-
-    async def shutdown(self) -> None:
-        await self._turn_processor.shutdown()
+    # ── cron ──────────────────────────────────────────────────────────
 
     async def _ensure_session_loaded(self, session_id: str) -> None:
         if not session_id:
             return
-        if await self._memory.get_context(session_id=session_id):
+        history = await self._bus.request(GetContext(session_id=session_id))
+        if history:
             return
         from alex.store.session import load_session
         saved = load_session(session_id)
         if saved:
-            await self._memory.replace(session_id, saved)
-
-    # ── tool execution (public for cron) ───────────────────────────────────
-
-    async def execute_tool_action(self, session_id: str, action: str, params: dict) -> str:
-        action = (action or "").strip()
-        params = params or {}
-        if action == "notify":
-            return str(params.get("message", ""))
-        from alex.tools.ports import ToolExecutionContext
-        ctx = ToolExecutionContext(session_id=session_id, source="cron")
-        result = await self._tool_executor.execute(ctx, action, params)
-        if result.startswith("Error:"):
-            raise ValueError(result)
-        return result
+            await self._bus.request(ReplaceMemory(session_id=session_id, messages=saved))
 
     async def execute_cron_prompt(
-        self,
-        *,
-        session_id: str,
-        job_id: str,
-        name: str,
-        prompt: str,
-        stream_id: str,
-        wait_until_done: bool = True,
+        self, *, session_id: str, job_id: str, name: str,
+        prompt: str, stream_id: str, wait_until_done: bool = True,
     ) -> str:
         await self._ensure_session_loaded(session_id)
         return await self._turn_processor.run_cron_turn(
-            session_id=session_id,
-            job_id=job_id,
-            name=name,
-            prompt=prompt,
-            stream_id=stream_id,
-            wait_until_done=wait_until_done,
+            session_id=session_id, job_id=job_id, name=name,
+            prompt=prompt, stream_id=stream_id, wait_until_done=wait_until_done,
         )
 
-    # ── chat stream ───────────────────────────────────────────────────────
+    # ── LLM ───────────────────────────────────────────────────────────
+
+    def has_llm(self) -> bool:
+        return self._llm is not None
+
+    def set_llm(self, llm: ChatClient) -> None:
+        self._llm = llm
+        self._turn_processor.set_llm(llm)
+
+    async def shutdown(self) -> None:
+        await self._turn_processor.shutdown()
+
+    # ── chat stream ───────────────────────────────────────────────────
 
     @property
     def last_turn_result(self):
         return self._turn_processor.last_result
 
-    @property
-    def prompt(self) -> PromptAssembler:
-        return self._prompt
+    async def chat_stream(self, user_message: str) -> None:
+        """执行用户 turn — 事件通过 bus 广播。"""
+        try:
+            await self._bus.start()
+        except Exception:
+            pass
+        try:
+            await self._prompt.ensure_skills_prompt(user_message)
+        except Exception:
+            _logger.debug("ensure_skills_prompt failed", exc_info=True)
+        await self._turn_processor.run_user_turn(
+            user_message, session_id=self._session_id,
+        )
 
-    async def chat_stream(self, user_message: str) -> AsyncIterator:
-        await self.push_notification(UserTurnRequested(
-            session_id=self._session_id, user_text=user_message,
-        ))
-        if self._prompt.ensure_skills_prompt(user_message):
-            pass  # prompt is rebuilt on each turn by PromptAssembler.augmented_prompt()
-
-        async for event in self._turn_processor.stream_user_turn(
-            user_message,
-            session_id=self._session_id,
-        ):
-            yield event
-
-    # ── cron history ──────────────────────────────────────────────────────
+    # ── cron history ──────────────────────────────────────────────────
 
     def list_session_cron_history(self, query: str = "", limit: int = 20) -> list[dict]:
         records = list(self._cron_history)

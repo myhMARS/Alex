@@ -6,7 +6,10 @@ import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
+
+if TYPE_CHECKING:
+    from apscheduler.triggers.cron import CronTrigger
 
 from alex.bus.events import CronDebugEvent, CronJobEvent
 from alex.config import is_cron_debug_enabled
@@ -19,7 +22,7 @@ class CronParseError(ValueError):
     pass
 
 
-def _build_cron_trigger(cron_expr: str, tzinfo) -> object:
+def _build_cron_trigger(cron_expr: str, tzinfo) -> CronTrigger:
     cron_expr = (cron_expr or "").strip()
     if not cron_expr:
         raise CronParseError("Empty cron expression")
@@ -99,7 +102,7 @@ class CronManager:
     execution to :class:`CronExecutor`.
     """
 
-    def __init__(self, notify: callable, storage_dir: Path | None = None) -> None:
+    def __init__(self, notify: Callable[..., Any], storage_dir: Path | None = None) -> None:
         from alex.scheduler.cron_executor import CronExecutor
         from alex.scheduler.cron_store import CronStore
 
@@ -108,7 +111,7 @@ class CronManager:
         self._executor = CronExecutor()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._jobs: dict[str, CronJob] = {}
-        self._runners: dict[str, callable] = {}
+        self._runners: dict[str, Callable[..., Any]] = {}
         self._aps_job_ids: dict[str, object] = {}
         self._scheduler = None
 
@@ -180,7 +183,7 @@ class CronManager:
 
     # ── durable job restore ─────────────────────────────────────────────
 
-    async def restore_durable_jobs(self, *, runner: callable, session_id: str = "") -> None:
+    async def restore_durable_jobs(self, *, runner: Callable[..., Any], session_id: str = "") -> None:
         """Restore durable jobs from disk and register *runner* for each."""
         normalized_runner = self._executor.normalize_runner(runner)
         for job in self._store.restore_all():
@@ -287,7 +290,7 @@ class CronManager:
         prompt: str,
         recurring: bool,
         durable: bool,
-        runner: callable,
+        runner: Callable[..., Any],
     ) -> str:
         return await self._run_on_bound_loop(self._schedule_inner(
             session_id=session_id,
@@ -306,7 +309,7 @@ class CronManager:
         prompt: str,
         recurring: bool,
         durable: bool,
-        runner: callable,
+        runner: Callable[..., Any],
     ) -> str:
         await self._ensure_scheduler_inner()
         cron_str = str(cron or "").strip()
@@ -433,5 +436,6 @@ class CronManager:
             pass
         return aps_job.id
 
-    def _next_run_at(self, job: CronJob, after_ts: float) -> float:
+    @staticmethod
+    def _next_run_at(job: CronJob, after_ts: float) -> float:
         return _next_cron_time(after_ts, job.cron)

@@ -1,14 +1,12 @@
 """TUI ports — structural subtyping contracts for type-safe mixin composition.
 
-Protocols defined here let ChatControllerMixin and ChatProjector declare
-exactly what they need from the host Textual App without importing it.
+TUI 直接通过 bus 与其他模块通信，不再依赖 AgentFacade 中间层。
 """
 
 from __future__ import annotations
 
 from typing import Any, Protocol
 
-from alex.agent.ports import AgentFacade
 from alex.tui.chat_projector import ChatProjector
 from alex.tui.notification_controller import NotificationController
 from alex.tui.view_models import ChatHistory
@@ -23,7 +21,7 @@ class _ControllerHost(Protocol):
     """
 
     # Alex-specific attributes set up by AlexApp.__init__
-    _agent: AgentFacade
+    _bus: Any  # MessageBus
     _history: ChatHistory
     _view_state: SessionViewState
     _projector: ChatProjector
@@ -35,6 +33,11 @@ class _ControllerHost(Protocol):
     # Optional MCP state
     _mcp_status_message: str
     _mcp_pool: Any  # MCPClientPool | None — avoid import for optional dep
+
+    # Mixin methods called within the mixin itself via self
+    def _show_page(self, title: str, content: str, *, mode: str) -> None: ...
+    def _dismiss_panels(self) -> None: ...
+    def _resume_session(self, session_id: str) -> None: ...
 
     # Textual App methods used by the mixin
     def query_one(self, selector: str, expect_type: type) -> Any: ...

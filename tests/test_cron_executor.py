@@ -1,7 +1,6 @@
 """Unit tests for CronExecutor — runner normalisation and execute lifecycle."""
 
 import asyncio
-import time
 
 import pytest
 

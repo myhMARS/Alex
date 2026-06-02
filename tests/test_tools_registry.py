@@ -3,7 +3,7 @@
 import pytest
 from pydantic import BaseModel, Field
 
-from alex.tools.ports import ToolExecutionContext
+from alex.kernel.dto.tool import ToolExecutionContext
 from alex.tools.models import AlexTool
 from alex.tools.registry import ToolRegistry
 from alex.tools.executor import ToolExecutor

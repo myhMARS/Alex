@@ -74,34 +74,13 @@ DEFAULT_ALLOWED = frozenset({PERMISSION_READ, PERMISSION_NETWORK})
 DEFAULT_AUDIT_PATH = Path.home() / ".alex" / "audit" / "permissions.jsonl"
 
 
-# ── approval request shape ────────────────────────────────────────────
+# ── approval request shape (re-exported from kernel) ──────────────────
 
+from alex.kernel.dto.approval import PreviewBlock, ToolApprovalRequest  # noqa: F401 — re-export
 
-@dataclass
-class PreviewBlock:
-    """A titled preview chunk shown in the permission confirm modal.
-
-    ``kind`` controls how the body is rendered:
-
-    - ``text`` — plain text (default)
-    - ``diff`` — unified diff with syntax highlighting
-    - ``code`` — fixed-width body, no syntax highlighting
-    """
-
-    title: str
-    body: str
-    kind: str = "text"
-
-
-@dataclass
-class ToolApprovalRequest:
-    """Everything the confirm hook needs to render a meaningful prompt."""
-
-    tool_name: str
-    permission: str
-    args: dict[str, Any] = field(default_factory=dict)
-    summary: str = ""
-    preview: list[PreviewBlock] = field(default_factory=list)
+# Keep local references for Callable type aliases below
+_PreviewBlock = PreviewBlock
+_ToolApprovalRequest = ToolApprovalRequest
 
 
 # Summarisers are async because some (notably ``write``) need to read

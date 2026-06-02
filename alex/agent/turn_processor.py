@@ -1,7 +1,7 @@
 """Unified turn processor — single FIFO queue for user and cron turns.
 
-Uses a custom agent loop (OpenAI SDK) instead of LangGraph's
-``create_agent`` / ``astream_events``.
+Uses a custom agent loop (OpenAI SDK). 不直接依赖 bus，
+所有外部交互通过注入的 TurnServices 回调完成。
 """
 
 from __future__ import annotations
@@ -9,9 +9,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
+
+import json as _json
 
 from alex import messages as msg
 from alex.bus.events import (
@@ -34,15 +36,25 @@ from alex.llm.client import (
     ThinkingDelta,
     ToolCallRequest,
 )
-from alex.memory.base import MemoryBase
-from alex.skill import SkillService
-from alex.tools.executor import ToolExecutor
-from alex.tools.models import AlexTool
-from alex.tools.registry import ToolRegistry
+from alex.kernel.dto.skill import SkillCard
+from alex.kernel.dto.tool import ToolExecutionContext, ToolResult, ToolSpec
 
 logger = logging.getLogger(__name__)
 
-_QUEUE_END = object()
+
+class TurnServices(Protocol):
+    """TurnProcessor 所需的外部服务接口。
+
+    由 AgentModule 实现，内部通过 bus request 完成实际调用。
+    TurnProcessor 不直接依赖 bus。
+    """
+
+    async def get_memory_context(self, session_id: str) -> list[dict[str, Any]]: ...
+    async def append_memory(self, session_id: str, messages: list[dict[str, Any]]) -> None: ...
+    async def get_skill_by_name(self, skill_name: str) -> SkillCard | None: ...
+    async def retrieve_skills(self, query: str, top_k: int = 3) -> list[SkillCard]: ...
+    async def get_tool_catalog(self) -> list[ToolSpec]: ...
+    async def execute_tool(self, ctx: Any, tool_name: str, tool_args: dict[str, Any]) -> ToolResult: ...
 
 
 @dataclass
@@ -67,47 +79,32 @@ class _QueuedTurn:
     turn_id: str = ""
     user_message: str = ""
     stream_id: str = ""
-    event_queue: asyncio.Queue | None = None
     result_future: asyncio.Future | None = None
     on_started: Callable[[str, str], Awaitable[None]] | None = None
     on_completed: Callable[[str, str, TurnResult], Awaitable[None]] | None = None
     on_failed: Callable[[str, str, Exception], Awaitable[None]] | None = None
 
 
-@dataclass
-class _QueuedTurnError:
-    error: Exception
-
-
 class TurnProcessor:
     """Single-consumer FIFO processor for both user and cron turns.
 
-    Uses a custom agent loop that calls the LLM via :class:`ChatClient`,
-    executes tools via :class:`ToolExecutor`, and loops until the LLM
-    produces a final answer or ``max_iterations`` is reached.
+    不直接依赖 bus。所有外部交互通过 TurnServices 回调完成，
+    由 AgentModule 在构造时注入 bus 实现。
     """
 
     def __init__(
         self,
         llm: ChatClient | None,
-        memory: MemoryBase,
-        skill_manager: SkillService,
-        tool_registry: ToolRegistry,
-        tool_executor: ToolExecutor,
         push_notification,
-        get_bus: Callable[[], Any | None],
+        services: TurnServices,
         get_system_prompt: Callable[[], str] | None = None,
         max_iterations: int = 5,
         callbacks: list | None = None,
         session_id: str = "",
     ) -> None:
         self._llm: ChatClient | None = llm
-        self._memory = memory
-        self._skills = skill_manager
-        self._tool_registry = tool_registry
-        self._tool_executor = tool_executor
         self._push_notification = push_notification
-        self._get_bus = get_bus
+        self._services = services
         self._get_system_prompt = get_system_prompt or (lambda: "")
         self._max_iterations = max_iterations
         self._callbacks = callbacks or []
@@ -115,14 +112,12 @@ class TurnProcessor:
         self._queue: asyncio.Queue[_QueuedTurn] = asyncio.Queue()
         self._worker_task: asyncio.Task | None = None
         self._last_result: TurnResult | None = None
-        self._user_turn_queues: dict[str, asyncio.Queue] = {}
-        self._user_bus_subscribed = False
 
     def set_session_id(self, session_id: str) -> None:
         self._session_id = session_id
 
     def set_llm(self, llm: ChatClient) -> None:
-        """Inject the LLM client after construction (deferred init)."""
+        """Replace the LLM client (e.g. after deferred init in start_services)."""
         self._llm = llm
 
     @property
@@ -131,20 +126,22 @@ class TurnProcessor:
 
     # ── public API ────────────────────────────────────────────────────────
 
-    async def stream_user_turn(self, user_message: str, *, session_id: str) -> AsyncIterator:
+    async def run_user_turn(self, user_message: str, *, session_id: str) -> None:
+        """将用户 turn 入队并等待执行完成。"""
+        logger.info("user turn enqueued sid=%s msg=%s", session_id, user_message[:50])
         turn_id = uuid.uuid4().hex[:12]
-        queue = await self._subscribe_user_turn(turn_id)
-        await self._enqueue_user_turn(
+        loop = asyncio.get_running_loop()
+        result_future: asyncio.Future = loop.create_future()
+        req = _QueuedTurn(
+            kind="user", source="agent",
+            session_id=session_id or self._session_id,
             turn_id=turn_id,
             user_message=user_message,
-            session_id=session_id or self._session_id,
-            queue=queue,
+            result_future=result_future,
         )
-        try:
-            async for event in self._consume_user_turn(turn_id, queue):
-                yield event
-        finally:
-            self._user_turn_queues.pop(turn_id, None)
+        self._ensure_worker()
+        await self._queue.put(req)
+        await result_future
 
     async def run_cron_turn(
         self,
@@ -156,6 +153,7 @@ class TurnProcessor:
         stream_id: str,
         wait_until_done: bool = True,
     ) -> str:
+        logger.info("cron turn enqueued sid=%s job=%s", session_id, job_id)
         result_future = None
         if wait_until_done:
             loop = asyncio.get_running_loop()
@@ -179,7 +177,6 @@ class TurnProcessor:
         return await result_future
 
     async def shutdown(self) -> None:
-        self._user_turn_queues.clear()
         if self._worker_task is None:
             return
         self._worker_task.cancel()
@@ -200,68 +197,21 @@ class TurnProcessor:
             req = await self._queue.get()
             try:
                 await self._process_turn(req)
+            except Exception as e:
+                # 确保 future 不会永远挂起
+                if req.result_future is not None and not req.result_future.done():
+                    req.result_future.set_exception(e)
+                logger.warning("Worker turn failed unexpectedly", exc_info=True)
             finally:
                 self._queue.task_done()
-
-    async def _subscribe_user_turn(self, turn_id: str) -> asyncio.Queue:
-        queue: asyncio.Queue = asyncio.Queue()
-        self._user_turn_queues[turn_id] = queue
-        await self._ensure_user_bus_subscriptions()
-        return queue
-
-    async def _ensure_user_bus_subscriptions(self) -> None:
-        bus = self._get_bus()
-        if bus is None or self._user_bus_subscribed:
-            return
-        for event_type in (
-            TurnStarted, ThinkingUpdated, TokenEmitted, SkillLoaded,
-            ToolStarted, ToolFinished, TurnCompleted, TurnFailed,
-        ):
-            await bus.subscribe(event_type, self._route_user_turn_event)
-        self._user_bus_subscribed = True
-
-    async def _route_user_turn_event(self, event) -> None:
-        queue = self._user_turn_queues.get(getattr(event, "turn_id", ""))
-        if queue is None:
-            return
-        if isinstance(event, TurnCompleted):
-            await queue.put(_QUEUE_END)
-            return
-        if isinstance(event, TurnFailed):
-            await queue.put(_QueuedTurnError(RuntimeError(event.error or "Turn failed")))
-            await queue.put(_QUEUE_END)
-            return
-        await queue.put(event)
-
-    async def _enqueue_user_turn(
-        self, *, turn_id: str, user_message: str, session_id: str, queue: asyncio.Queue,
-    ) -> None:
-        req = _QueuedTurn(
-            kind="user", source="agent",
-            session_id=session_id, turn_id=turn_id,
-            user_message=user_message,
-            event_queue=None if self._get_bus() is not None else queue,
-        )
-        self._ensure_worker()
-        await self._queue.put(req)
-
-    async def _consume_user_turn(self, turn_id: str, queue: asyncio.Queue) -> AsyncIterator:
-        while True:
-            item = await queue.get()
-            if item is _QUEUE_END:
-                break
-            if isinstance(item, _QueuedTurnError):
-                raise item.error
-            yield item
 
     async def _process_turn(self, req: _QueuedTurn) -> None:
         sid = req.session_id or self._session_id
         turn_id = req.turn_id or uuid.uuid4().hex[:12]
+        logger.info("processing turn kind=%s sid=%s turn_id=%s", req.kind, sid, turn_id)
         emit = self._push_notification
-        direct_queue = req.event_queue
-        turn_emit = self._compose_turn_emit(direct_queue, emit)
         started = TurnStarted(session_id=sid, turn_id=turn_id, source=req.source, kind=req.kind)
-        await turn_emit(started)
+        await emit(started)
         if req.on_started is not None:
             await req.on_started(sid, turn_id)
 
@@ -270,12 +220,12 @@ class TurnProcessor:
                 sid=sid,
                 turn_id=turn_id,
                 user_message=req.user_message,
-                emit=turn_emit,
+                emit=emit,
                 stream_id=req.stream_id,
             )
             if req.kind == "user":
                 self._last_result = result
-            await turn_emit(TurnCompleted(
+            await emit(TurnCompleted(
                 session_id=sid, turn_id=turn_id,
                 source=req.source, kind=req.kind,
                 messages=result.messages,
@@ -285,8 +235,6 @@ class TurnProcessor:
             ))
             if req.on_completed is not None:
                 await req.on_completed(sid, turn_id, result)
-            if direct_queue is not None:
-                await direct_queue.put(_QUEUE_END)
             if req.result_future is not None and not req.result_future.done():
                 req.result_future.set_result(result.content)
         except Exception as e:
@@ -296,13 +244,28 @@ class TurnProcessor:
             ))
             if req.on_failed is not None:
                 await req.on_failed(sid, turn_id, e)
-            if direct_queue is not None:
-                await direct_queue.put(_QueuedTurnError(e))
-                await direct_queue.put(_QUEUE_END)
             if req.result_future is not None and not req.result_future.done():
                 req.result_future.set_exception(e)
 
-    # ── custom agent loop ─────────────────────────────────────────────────
+    # ── external service calls (delegated to TurnServices) ──────────────
+
+    async def _get_memory_context(self, sid: str) -> list[dict[str, Any]]:
+        return await self._services.get_memory_context(sid)
+
+    async def _append_memory(self, sid: str, messages: list[dict[str, Any]]) -> None:
+        await self._services.append_memory(sid, messages)
+
+    async def _get_skill_by_name(self, skill_name: str) -> SkillCard | None:
+        return await self._services.get_skill_by_name(skill_name)
+
+    async def _retrieve_skills(self, query: str, top_k: int = 3) -> list[SkillCard]:
+        return await self._services.retrieve_skills(query, top_k)
+
+    async def _get_tool_catalog(self) -> list[ToolSpec]:
+        return await self._services.get_tool_catalog()
+
+    async def _execute_tool(self, ctx: Any, tool_name: str, tool_args: dict[str, Any]) -> ToolResult:
+        return await self._services.execute_tool(ctx, tool_name, tool_args)
 
     async def _run_agent_loop(
         self,
@@ -320,7 +283,7 @@ class TurnProcessor:
         2. If LLM returns tool calls → execute them → add results → goto 1
         3. If LLM returns final text → done
         """
-        prev_msgs = await self._memory.get_context(session_id=sid)
+        prev_msgs = await self._get_memory_context(sid)
         _ensure_reasoning_roundtrip(prev_msgs)
         messages: list[dict[str, Any]] = [*prev_msgs, msg.user_message(user_message)]
 
@@ -330,20 +293,16 @@ class TurnProcessor:
         tool_names: list[str] = []
         intermediate_msgs: list[dict[str, Any]] = []
 
-        tools = self._tool_registry.list()
+        tools = await self._get_tool_catalog()
         tool_schemas = [t.to_openai_schema() for t in tools] if tools else None
+        logger.info("agent loop start sid=%s iteration_max=%d tools=%d", sid, self._max_iterations, len(tools) if tools else 0)
 
-        # Deferred init fallback: create LLM on first use if start_services
-        # hasn't run yet (e.g., in tests that bypass the full startup path).
         llm = self._llm
-        if llm is None:
-            from alex.agent.composition import create_default_llm
-            llm = create_default_llm()
-            self._llm = llm
 
+        iteration = -1
         for iteration in range(self._max_iterations):
             # Build the system prompt with skills injected for the first iteration
-            system_prompt = self._get_system_prompt_for_iteration(iteration, user_message)
+            system_prompt = self._get_system_prompt_for_iteration()
 
             collected_content = ""
             collected_thinking = ""
@@ -402,7 +361,6 @@ class TurnProcessor:
                 tool_name = fn.get("name", "")
                 tool_args_str = fn.get("arguments", "{}")
                 try:
-                    import json as _json
                     tool_args = _json.loads(tool_args_str) if isinstance(tool_args_str, str) else tool_args_str
                 except Exception:
                     tool_args = {}
@@ -412,7 +370,7 @@ class TurnProcessor:
                 # Emit skill-loaded for load_skill calls
                 if tool_name == "load_skill" and not stream_id:
                     skill_name = tool_args.get("skill_name", "") if isinstance(tool_args, dict) else ""
-                    skill = self._skills.get_skill_by_name(skill_name)
+                    skill = await self._get_skill_by_name(skill_name)
                     if skill:
                         loaded_skill_ids.append(skill.id)
                         await emit(SkillLoaded(
@@ -421,27 +379,18 @@ class TurnProcessor:
                         ))
 
                 run_id = tc.get("id", uuid.uuid4().hex[:12])
-                await emit(ToolStarted(
-                    session_id=sid, turn_id=turn_id,
-                    tool_id=run_id, tool_name=tool_name,
-                    tool_input=tool_args,
-                    is_cron=bool(stream_id), stream_id=stream_id or "",
-                ))
 
-                from alex.tools.ports import ToolExecutionContext
                 ctx = ToolExecutionContext(
                     session_id=sid, turn_id=turn_id,
                     source="cron" if stream_id else "user",
                 )
-                result = await self._tool_executor.execute(ctx, tool_name, tool_args)
+                tool_result = await self._execute_tool(ctx, tool_name, tool_args)
+                logger.info("tool executed name=%s ok=%s", tool_name, tool_result.ok)
 
-                await emit(ToolFinished(
-                    session_id=sid, turn_id=turn_id,
-                    tool_id=run_id, output=result,
-                    is_cron=bool(stream_id), stream_id=stream_id or "",
-                ))
+                # Convert ToolResult to string for backward compatibility
+                result_str = tool_result.output if tool_result.ok else tool_result.error
 
-                tool_msg = msg.tool_message(result, tool_call_id=run_id)
+                tool_msg = msg.tool_message(result_str, tool_call_id=run_id)
                 messages.append(tool_msg)
                 intermediate_msgs.append(tool_msg)
 
@@ -455,9 +404,10 @@ class TurnProcessor:
             intermediate_msgs.append(assistant_msg)
 
         # ── persist and return ────────────────────────────────────────
+        logger.info("agent loop done sid=%s iterations=%d content_len=%d", sid, iteration + 1, len(collected_content))
         batch: list[dict[str, Any]] = [msg.user_message(user_message), *intermediate_msgs]
-        await self._memory.add_messages(batch, session_id=sid)
-        full_history = await self._memory.get_context(session_id=sid)
+        await self._append_memory(sid, batch)
+        full_history = await self._get_memory_context(sid)
         return TurnResult(
             turn_id=turn_id,
             messages=full_history,
@@ -469,7 +419,7 @@ class TurnProcessor:
             last_query_matched=len(loaded_skill_ids) > 0,
         )
 
-    def _get_system_prompt_for_iteration(self, iteration: int, user_message: str) -> str:
+    def _get_system_prompt_for_iteration(self) -> str:
         """Return the system prompt (with skills injected) from PromptAssembler.
 
         The prompt is injected on every LLM call so that the model remembers
@@ -518,18 +468,6 @@ class TurnProcessor:
                 error=f"{type(error).__name__}: {error}",
             ))
         return _hook
-
-    @staticmethod
-    def _compose_turn_emit(
-        queue: asyncio.Queue | None,
-        publish_emit: Callable[[Any], Awaitable[None]],
-    ) -> Callable[[Any], Awaitable[None]]:
-        if queue is None:
-            return publish_emit
-        async def _emit(event) -> None:
-            await publish_emit(event)
-            await queue.put(event)
-        return _emit
 
 
 def _ensure_reasoning_roundtrip(messages: list[dict[str, Any]]) -> None:

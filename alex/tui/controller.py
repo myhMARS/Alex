@@ -1,45 +1,62 @@
 """TUI controller — mixin with command handlers, session lifecycle, toggles.
 
-Delegates bus→widget projection to ChatProjector and toast/feedback to
-NotificationController.  The controller now focuses on command dispatch,
-page/session management, and key-binding actions.
+所有与其他模块的通信都通过 bus 完成，不再依赖 AgentFacade。
 """
 
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from textual import work
 from textual.containers import VerticalScroll
 from textual.widgets import Input, Static
 
+from alex.kernel.contracts.cron import ListCronJobs
+from alex.kernel.contracts.memory import ClearMemory, ReplaceMemory
+from alex.kernel.contracts.session import ListSessions, LoadSession
+from alex.kernel.contracts.skills import (
+    DeleteSkill,
+    DeprecateSkill,
+    ListSkills,
+    MergeSkills,
+    ReflectSkills,
+)
 from alex.tui.chat_projector import ChatProjector
 from alex.tui.view_models import ChatHistory
 from alex.tui.presenter import AlexBubble, render_turn
-from alex.tui.ports import _ControllerHost
 
 
 class ChatControllerMixin:
     """Command dispatch, session lifecycle, and UI toggles for AlexApp.
 
-    Designed as a mixin for textual.app.App subclasses.  The concrete App
-    must satisfy the :class:`_ControllerHost` Protocol, which declares the
-    attributes the mixin accesses (``_agent``, ``_history``, ``_view_state``,
-    ``_projector``, ``_notif``, ``_thinking_expanded``, etc.).
-
-    Type annotations on ``self`` use ``_ControllerHost`` so that static
-    checkers can verify host compatibility without importing AlexApp.
+    所有跨模块操作通过 self._bus 的 publish/request 完成。
     """
+
+    # Injected by AlexApp host
+    _bus: Any = None  # type: ignore[assignment]
+    _history: ChatHistory = None  # type: ignore[assignment]
+    _view_state: Any = None  # type: ignore[assignment]
+    _projector: ChatProjector = None  # type: ignore[assignment]
+    _notif: Any = None  # type: ignore[assignment]
+    _thinking_expanded: bool = False
+    _skills_expanded: bool = False
+    _tool_output_expanded: bool = False
+    _mcp_status_message: str = ""
+    _mcp_pool: Any = None
+    _mcp_configs: list[Any] = []
+
+    # Textual App methods (resolved via MRO at runtime)
+    query_one: Any  # type: ignore[assignment]
+    query: Any  # type: ignore[assignment]
 
     # ── page / overlay management ───────────────────────────────────────
 
-    def _dismiss_overlay(self: _ControllerHost) -> None:
-        """Remove overlay blocks (help, skills list, session list) and toast."""
+    def _dismiss_overlay(self) -> None:
         self._dismiss_panels()
         self._notif.dismiss_toast()
 
-    def _dismiss_panels(self: _ControllerHost) -> None:
-        """Remove overlay blocks (help, skills list, session list)."""
+    def _dismiss_panels(self) -> None:
         vs = self._view_state
         chat_view = self.query_one("#chat-view", VerticalScroll)
         page_view = self.query_one("#page-view", VerticalScroll)
@@ -51,7 +68,7 @@ class ChatControllerMixin:
         vs.page_mode = None
         chat_view.scroll_end()
 
-    def _show_page(self: _ControllerHost, title: str, content: str, *, mode: str) -> None:
+    def _show_page(self, title: str, content: str, *, mode: str) -> None:
         self._view_state.page_mode = mode
         chat_view = self.query_one("#chat-view", VerticalScroll)
         page_view = self.query_one("#page-view", VerticalScroll)
@@ -63,7 +80,7 @@ class ChatControllerMixin:
 
     # ── help ────────────────────────────────────────────────────────────
 
-    def _show_help(self: _ControllerHost) -> None:
+    def _show_help(self) -> None:
         help_text = """  \U0001f4d6 Commands:
     /help             Show this help
     /skills           List all skills
@@ -89,38 +106,44 @@ class ChatControllerMixin:
 
     # ── toggles ─────────────────────────────────────────────────────────
 
-    def action_toggle_thinking(self: _ControllerHost) -> None:
+    def action_toggle_thinking(self) -> None:
         self._thinking_expanded = not self._thinking_expanded
         for bubble in self.query(AlexBubble):
             bubble.set_thinking_expanded(self._thinking_expanded)
 
-    def action_toggle_skills(self: _ControllerHost) -> None:
+    def action_toggle_skills(self) -> None:
         self._skills_expanded = not self._skills_expanded
         for bubble in self.query(AlexBubble):
             bubble.set_skills_expanded(self._skills_expanded)
 
-    def action_toggle_tool_output(self: _ControllerHost) -> None:
+    def action_toggle_tool_output(self) -> None:
         self._tool_output_expanded = not self._tool_output_expanded
         for bubble in self.query(AlexBubble):
             bubble.set_tool_output_expanded(self._tool_output_expanded)
         state = "已展开完整工具输出" if self._tool_output_expanded else "已收起工具输出"
         self._notif.show_toast(state, duration=2)
 
-    # ── commands ────────────────────────────────────────────────────────
+    # ── commands（全部通过 bus）──────────────────────────────────────────
 
     @work(exclusive=True)
-    async def _run_force_reflection(self: _ControllerHost) -> None:
+    async def _run_force_reflection(self) -> None:
         self._notif.show_toast("正在反思…", duration=2)
-        await self._agent.reflect()
+        self._bus.publish(ReflectSkills(session_id=self._history.session_id))
         self._projector.refresh_status_bar()
         chat_view = self.query_one("#chat-view", VerticalScroll)
         self._projector.trim_chat_view(chat_view)
         chat_view.scroll_end()
 
-    def _handle_skills_cmd(self: _ControllerHost, args: str) -> None:
+    @work(exclusive=True)
+    async def _handle_skills_cmd(self, args: str) -> None:
         """Handle /skills [del|dep] [id]"""
         if not args:
-            all_skills = self._agent.list_skills()
+            try:
+                all_skills = await self._bus.request(
+                    ListSkills(session_id=self._history.session_id)
+                )
+            except Exception:
+                all_skills = []
             if not all_skills:
                 content = "  [No skills]"
             else:
@@ -141,13 +164,23 @@ class ChatControllerMixin:
         target = parts[1] if len(parts) > 1 else ""
 
         if action in ("del", "delete") and target:
-            name = self._agent.delete_skill(target)
+            try:
+                name = await self._bus.request(
+                    DeleteSkill(session_id=self._history.session_id, target=target)
+                )
+            except Exception:
+                name = None
             if name:
                 self._notif.show_toast(f"已删除技能：{name}", duration=2)
             else:
                 self._notif.show_toast(f"未找到技能：{target}", duration=2)
         elif action in ("dep", "deprecate") and target:
-            name = self._agent.deprecate_skill(target)
+            try:
+                name = await self._bus.request(
+                    DeprecateSkill(session_id=self._history.session_id, target=target)
+                )
+            except Exception:
+                name = None
             if name:
                 self._notif.show_toast(f"已废弃技能：{name}", duration=2)
             else:
@@ -155,9 +188,15 @@ class ChatControllerMixin:
         else:
             self._notif.show_toast(f"未知命令: /skills {args}", duration=2)
 
-    def _handle_cron_cmd(self: _ControllerHost, args: str) -> None:
+    @work(exclusive=True)
+    async def _handle_cron_cmd(self, args: str) -> None:
         """Show current cron jobs."""
-        jobs = self._agent.list_cron_jobs()
+        try:
+            jobs = await self._bus.request(
+                ListCronJobs(session_id=self._history.session_id)
+            )
+        except Exception:
+            jobs = []
         q = (args or "").strip().lower()
         if q:
             jobs = [
@@ -171,7 +210,7 @@ class ChatControllerMixin:
         content = ChatProjector.format_cron_jobs_page(jobs[:50], query=args)
         self._show_page("Cron 任务", content, mode="cron")
 
-    def _handle_mcp_cmd(self: _ControllerHost) -> None:
+    def _handle_mcp_cmd(self) -> None:
         """Show current MCP runtime status."""
         lines = ["  🔌 MCP 状态", ""]
         status = str(getattr(self, "_mcp_status_message", "") or "未开始加载")
@@ -180,7 +219,6 @@ class ChatControllerMixin:
         pool = getattr(self, "_mcp_pool", None)
         connections = list(getattr(pool, "connections", []) or [])
 
-        # ── pool not yet available → show config list with LOADING state ──
         if not connections:
             configs = list(getattr(self, "_mcp_configs", []) or [])
             if configs:
@@ -208,7 +246,6 @@ class ChatControllerMixin:
             self._show_page("MCP 状态", "\n".join(lines), mode="mcp")
             return
 
-        # ── pool available → show live connection status ──────────────────
         lines.append("")
         for conn in connections:
             cfg = conn.config
@@ -230,11 +267,17 @@ class ChatControllerMixin:
 
         self._show_page("MCP 状态", "\n".join(lines), mode="mcp")
 
-    # ── session management ──────────────────────────────────────────────
+    # ── session management（通过 bus）──────────────────────────────────
 
-    def _show_session_list(self: _ControllerHost) -> None:
+    @work(exclusive=True)
+    async def _show_session_list(self) -> None:
         """Show a list of saved sessions for the user to pick from."""
-        sessions = self._agent.list_sessions()
+        try:
+            sessions = await self._bus.request(
+                ListSessions(session_id=self._history.session_id)
+            )
+        except Exception:
+            sessions = []
 
         if not sessions:
             self._show_page("会话列表", "  [No saved sessions found]", mode="resume")
@@ -245,18 +288,20 @@ class ChatControllerMixin:
 
         lines = ["\U0001f4cb Saved sessions (type number to resume, or anything else to cancel):", ""]
         for i, s in enumerate(sessions, 1):
-            created = s.get("created_at", "")
+            created = getattr(s, "created_at", "") or ""
             try:
                 dt = datetime.fromisoformat(created)
                 time_str = dt.strftime("%Y-%m-%d %H:%M")
             except (ValueError, TypeError):
                 time_str = created[:16] if created else "unknown"
-            preview = s.get("first_message", "") or "(empty)"
-            lines.append(f"  {i}. [{time_str}] {preview}  ({s.get('message_count', 0)} msgs)")
+            preview = getattr(s, "first_message", "") or "(empty)"
+            msg_count = getattr(s, "message_count", 0)
+            _sid = getattr(s, "session_id", "")
+            lines.append(f"  {i}. [{time_str}] {preview}  ({msg_count} msgs)")
 
         self._show_page("会话列表", "\n".join(lines), mode="resume")
 
-    def _handle_session_selection(self: _ControllerHost, user_input: str) -> None:
+    def _handle_session_selection(self, user_input: str) -> None:
         """Handle user's session selection."""
         vs = self._view_state
         vs.showing_session_list = False
@@ -265,7 +310,8 @@ class ChatControllerMixin:
             idx = int(user_input) - 1
             if 0 <= idx < len(vs.session_options):
                 session = vs.session_options[idx]
-                self._resume_session(session["session_id"])
+                sid = getattr(session, "session_id", None) or session.get("session_id") if isinstance(session, dict) else getattr(session, "session_id", "")
+                self._resume_session(sid)
                 return
         except (ValueError, AttributeError):
             pass
@@ -274,17 +320,26 @@ class ChatControllerMixin:
         self._notif.show_toast("已取消恢复会话", duration=2)
 
     @work(exclusive=True)
-    async def _resume_session(self: _ControllerHost, session_id: str) -> None:
-        """Resume a saved session — restore memory first, then render UI.
+    async def _resume_session(self, session_id: str) -> None:
+        """Resume a saved session — restore memory first, then render UI."""
+        try:
+            messages = await self._bus.request(
+                LoadSession(session_id=session_id)
+            )
+        except Exception:
+            messages = None
 
-        Uses @work(exclusive=True) to serialize with other lifecycle ops
-        (clear, merge).  Input is disabled during the operation to prevent
-        the user sending a message before agent memory is ready.
-        """
-        bundle = self._agent.load_session(session_id)
-        if bundle is None:
+        if messages is None:
             self._notif.show_toast(f"会话 {session_id} 加载失败", duration=2)
             return
+
+        # LoadSession 返回的是消息列表，构造 bundle 格式
+        bundle = {
+            "session_id": session_id,
+            "messages": messages,
+            "cron_history": [],
+        }
+
         self._history = ChatHistory(session_id=session_id)
         self._history.restore_from_bundle(bundle)
         self._projector.cron_renderers.clear()
@@ -294,8 +349,10 @@ class ChatControllerMixin:
         input_widget = self.query_one("#input-box", Input)
         input_widget.disabled = True
         try:
-            await self._agent.restore_history(self._history.loaded_messages)
-            self._agent.set_session_context(self._history.session_id, self._history.cron_history)
+            await self._bus.request(ReplaceMemory(
+                session_id=session_id,
+                messages=self._history.loaded_messages,
+            ))
 
             chat_view = self.query_one("#chat-view", VerticalScroll)
             chat_view.remove_children()
@@ -310,21 +367,16 @@ class ChatControllerMixin:
             input_widget.disabled = False
 
     @work(exclusive=True)
-    async def _clear_chat(self: _ControllerHost) -> None:
-        """Clear chat history and view — memory first, then UI.
-
-        Serialized via @work(exclusive=True); input is disabled during the
-        operation so the user cannot send a message against stale state.
-        """
+    async def _clear_chat(self) -> None:
+        """Clear chat history and view — memory first, then UI."""
         input_widget = self.query_one("#input-box", Input)
         input_widget.disabled = True
         try:
-            await self._agent.clear_history()
+            await self._bus.request(ClearMemory(session_id=self._history.session_id))
             self._history.clear()
             self._projector.cron_renderers.clear()
             self._view_state.reset()
             self._notif.dismiss_feedback()
-            self._agent.set_session_context(self._history.session_id, self._history.cron_history)
             chat_view = self.query_one("#chat-view", VerticalScroll)
             chat_view.remove_children()
             self._dismiss_panels()
@@ -332,18 +384,27 @@ class ChatControllerMixin:
             input_widget.disabled = False
 
     @work(exclusive=True)
-    async def _run_merge_skills(self: _ControllerHost) -> None:
+    async def _run_merge_skills(self) -> None:
         """Run LLM-based skill merging."""
         chat_view = self.query_one("#chat-view", VerticalScroll)
 
-        before_count = len([s for s in self._agent.list_skills() if s["status"] != "DEPRECATED"])
+        try:
+            all_skills = await self._bus.request(
+                ListSkills(session_id=self._history.session_id)
+            )
+            before_count = len([s for s in all_skills if s["status"] != "DEPRECATED"])
+        except Exception:
+            before_count = 0
+
         status_widget = Static(f"  \U0001f527 Merging skills... ({before_count} skills, this may take a moment)")
         chat_view.mount(status_widget)
         chat_view.scroll_end()
 
         try:
-            result = await self._agent.merge_skills()
-            status_widget.remove()
+            result = await self._bus.request(
+                MergeSkills(session_id=self._history.session_id)
+            )
+            await status_widget.remove()
 
             msg = (
                 f"  ✓ Skill merge complete:\n"
@@ -355,7 +416,7 @@ class ChatControllerMixin:
                 msg += f"\n    ⚠ {result['error']}"
             chat_view.mount(Static(msg))
         except Exception as e:
-            status_widget.remove()
+            await status_widget.remove()
             chat_view.mount(Static(f"  ✗ Merge failed: {e}"))
 
         chat_view.scroll_end()
