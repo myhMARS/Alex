@@ -29,10 +29,10 @@ import shlex
 import shutil
 from pathlib import Path
 
-from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from alex.tools._path import resolve_path_in_allowed_roots
+from alex.tools.models import AlexTool
 from alex.tools.permissions import (
     PERMISSION_SHELL,
     PreviewBlock,
@@ -158,8 +158,28 @@ def _bash_denylist_violation(command: str) -> str | None:
 
 
 def _resolve_bash() -> str | None:
-    """Return the path to a usable Bash, preferring the system bash."""
-    return shutil.which("bash")
+    """Return the path to Git Bash (not WSL bash).
+
+    On Windows, C:\\Windows\\system32\\bash.exe is WSL's bash.
+    We want Git Bash instead, typically at C:\\Program Files\\Git\\bin\\bash.exe.
+    """
+    import platform
+    if platform.system() == "Windows":
+        # 优先查找 Git Bash
+        git_bash_paths = [
+            Path(r"C:\Program Files\Git\bin\bash.exe"),
+            Path(r"C:\Program Files (x86)\Git\bin\bash.exe"),
+        ]
+        for p in git_bash_paths:
+            if p.exists():
+                return str(p)
+        # 如果没有 Git Bash，不返回 system32\bash.exe（那是 WSL）
+        found = shutil.which("bash")
+        if found and "system32" not in found.lower():
+            return str(found)
+        return None
+    found = shutil.which("bash")
+    return str(found) if found is not None else None
 
 
 def _make_bash(allowed_roots: list[Path]):
@@ -230,9 +250,9 @@ async def _summarise_bash(args: dict) -> tuple[str, list[PreviewBlock]]:
     return summary, [PreviewBlock(title="bash command", body=body, kind="code")]
 
 
-def create_bash_tool(*, allowed_roots: list[Path] | None = None) -> StructuredTool:
+def create_bash_tool(*, allowed_roots: list[Path] | None = None) -> AlexTool:
     roots = allowed_roots or [Path.cwd()]
-    tool = StructuredTool.from_function(
+    tool = AlexTool.from_function(
         coroutine=_make_bash(roots),
         name="bash",
         description=(
@@ -288,7 +308,7 @@ def _resolve_pwsh() -> str | None:
     for candidate in ("pwsh", "powershell"):
         path = shutil.which(candidate)
         if path is not None:
-            return path
+            return str(path)
     return None
 
 
@@ -373,9 +393,9 @@ async def _summarise_pwsh(args: dict) -> tuple[str, list[PreviewBlock]]:
     return summary, [PreviewBlock(title="pwsh command", body=body, kind="code")]
 
 
-def create_pwsh_tool(*, allowed_roots: list[Path] | None = None) -> StructuredTool:
+def create_pwsh_tool(*, allowed_roots: list[Path] | None = None) -> AlexTool:
     roots = allowed_roots or [Path.cwd()]
-    tool = StructuredTool.from_function(
+    tool = AlexTool.from_function(
         coroutine=_make_pwsh(roots),
         name="pwsh",
         description=(
@@ -408,23 +428,147 @@ def detect_available_shells() -> dict[str, str]:
     pwsh = _resolve_pwsh()
     if pwsh is not None:
         found["pwsh"] = pwsh
+    wsl = _resolve_wsl()
+    if wsl is not None:
+        found["bash_wsl"] = wsl
     return found
 
 
 def create_available_shell_tools(
     *,
     allowed_roots: list[Path] | None = None,
-) -> list[StructuredTool]:
-    """Build whichever of ``bash`` / ``pwsh`` the host actually supports.
-
-    Hosts can call this from ``main.py`` to register both shells when
-    available (e.g. WSL on Windows ships both) or fall back to a single
-    one without bothering with platform branches themselves.
-    """
+) -> list[AlexTool]:
+    """Build whichever of ``bash`` / ``pwsh`` / ``bash_wsl`` the host supports."""
     found = detect_available_shells()
-    tools: list[StructuredTool] = []
+    tools: list[AlexTool] = []
     if "bash" in found:
         tools.append(create_bash_tool(allowed_roots=allowed_roots))
     if "pwsh" in found:
         tools.append(create_pwsh_tool(allowed_roots=allowed_roots))
+    if "bash_wsl" in found:
+        tools.append(create_bash_wsl_tool(allowed_roots=allowed_roots))
     return tools
+
+
+# ── bash_wsl ──────────────────────────────────────────────────────────
+
+TOOL_HINT_BASH_WSL = (
+    "Use `bash_wsl` to run a Bash command inside WSL (Windows Subsystem "
+    "for Linux). Useful for running Linux tools, package managers, and "
+    "scripts in a full Linux environment. Subject to the shell permission "
+    "and the same hard deny list as `bash`."
+)
+
+
+class BashWslInput(BaseModel):
+    command: str = Field(
+        description=(
+            "Bash command to run inside WSL. May use pipes, redirection, "
+            "&&/||, subshells, and $VAR expansion."
+        ),
+    )
+    cwd: str | None = Field(
+        default=None,
+        description="Working directory (Windows path — automatically converted to WSL path)",
+    )
+    timeout_seconds: int = Field(
+        default=DEFAULT_TIMEOUT_SECONDS,
+        ge=1,
+        le=MAX_TIMEOUT_SECONDS,
+        description="Wall-clock timeout in seconds",
+    )
+
+
+def _resolve_wsl() -> str | None:
+    """Return the path to wsl.exe if available."""
+    found = shutil.which("wsl")
+    return str(found) if found is not None else None
+
+
+def _make_bash_wsl(allowed_roots: list[Path]):
+    async def _bash_wsl(
+        command: str,
+        cwd: str | None = None,
+        timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+    ) -> str:
+        if not isinstance(command, str):
+            return "Error: command must be a string"
+        if not command or not command.strip():
+            return "Error: command must not be empty"
+
+        violation = _bash_denylist_violation(command)
+        if violation is not None:
+            return f"Error: '{violation}' is on the hard deny list"
+
+        wsl_path = _resolve_wsl()
+        if wsl_path is None:
+            return "Error: 'wsl' not found in PATH (WSL is not installed)"
+
+        try:
+            workdir = _resolve_cwd(cwd, allowed_roots)
+        except ValueError as e:
+            return f"Error: {e}"
+
+        # wsl.exe -e bash -lc "command"
+        argv = [wsl_path, "-e", "bash", "-lc", command]
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                cwd=str(workdir),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except OSError as e:
+            return f"Error spawning wsl bash: {type(e).__name__}: {e}"
+
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            await proc.wait()
+            return f"Error: wsl bash command timed out after {timeout_seconds}s"
+
+        return _format_shell_result(
+            stdout=stdout,
+            stderr=stderr,
+            exit_code=int(proc.returncode or 0),
+        )
+
+    return _bash_wsl
+
+
+async def _summarise_bash_wsl(args: dict) -> tuple[str, list[PreviewBlock]]:
+    command = str(args.get("command") or "")
+    cwd = args.get("cwd") or "(working directory)"
+    timeout = args.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
+    summary = f"wsl bash: {command[:160]}"
+    body = (
+        f"command:\n  {command}\n"
+        f"cwd: {cwd}\n"
+        f"timeout: {timeout}s"
+    )
+    return summary, [PreviewBlock(title="wsl bash command", body=body, kind="code")]
+
+
+def create_bash_wsl_tool(*, allowed_roots: list[Path] | None = None) -> AlexTool:
+    roots = allowed_roots or [Path.cwd()]
+    tool = AlexTool.from_function(
+        coroutine=_make_bash_wsl(roots),
+        name="bash_wsl",
+        description=(
+            "Run a Bash command inside WSL (Windows Subsystem for Linux). "
+            "Provides a full Linux environment with apt, python, gcc, etc. "
+            "Output is captured and truncated. Subject to the shell "
+            "permission and a hard deny list of destructive primitives."
+        ),
+        args_schema=BashWslInput,
+        metadata={"required_permission": PERMISSION_SHELL},
+    )
+    attach_approval_summariser(tool, _summarise_bash_wsl)
+    return tool

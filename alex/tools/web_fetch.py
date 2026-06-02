@@ -2,12 +2,14 @@
 
 import re
 
-import httpx
-from bs4 import BeautifulSoup
-from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+from alex.tools.models import AlexTool
 from alex.tools.permissions import PERMISSION_NETWORK
+
+# ``httpx`` and ``bs4`` are imported lazily inside the tool body so they
+# don't sit on the startup critical path (they account for ~190ms of
+# import time and are only needed when the tool is actually invoked).
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -27,6 +29,8 @@ async def _web_fetch(url: str, max_length: int = 8000) -> str:
     """Fetch and extract readable content from a web page URL."""
     if not url:
         return "Error: URL is required."
+
+    import httpx
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -52,6 +56,8 @@ async def _web_fetch(url: str, max_length: int = 8000) -> str:
 
 def _extract_content(html: str, url: str) -> str:
     """Extract readable text content from HTML."""
+    from bs4 import BeautifulSoup
+
     soup = BeautifulSoup(html, "html.parser")
 
     for tag in soup(["script", "style", "nav", "footer", "header", "noscript", "iframe"]):
@@ -72,8 +78,8 @@ def _extract_content(html: str, url: str) -> str:
     return f"Title: {title}\nURL: {url}\n\n{cleaned}"
 
 
-def create_web_fetch_tool() -> StructuredTool:
-    return StructuredTool.from_function(
+def create_web_fetch_tool() -> AlexTool:
+    return AlexTool.from_function(
         coroutine=_web_fetch,
         name="web_fetch",
         description=(

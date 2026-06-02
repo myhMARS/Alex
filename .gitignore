@@ -5,3 +5,5 @@ __pycache__/
 alex.egg-info/
 .idea/
 .claude/
+build/
+check/

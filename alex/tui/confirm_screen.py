@@ -24,7 +24,7 @@ from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
-from alex.tools.permissions import PreviewBlock, ToolApprovalRequest
+from alex.kernel.dto.approval import PreviewBlock, ToolApprovalRequest
 
 
 class PermissionConfirmScreen(ModalScreen[tuple[bool, bool]]):

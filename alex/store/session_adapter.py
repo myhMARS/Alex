@@ -1,15 +1,9 @@
-"""Session persistence adapter — wraps alex.session for the store module.
-
-Listens for TurnCompleted events on the bus and auto-persists sessions,
-so TUI never calls save directly.
-"""
+"""SessionPersistence — event-driven session saving adapter."""
 
 from __future__ import annotations
 
 import logging
 from typing import Any
-
-from langchain_core.messages import BaseMessage
 
 from alex.store import session as _session
 
@@ -23,7 +17,7 @@ class SessionPersistence:
     """
 
     @staticmethod
-    def save(session_id: str, messages: list[BaseMessage]) -> None:
+    def save(session_id: str, messages: list[dict[str, Any]]) -> None:
         existing = _session.load_session_raw(session_id) or {}
         cron_history = list(existing.get("cron_history", []) or [])
         _session.save_session_bundle(session_id, messages, cron_history)

@@ -16,7 +16,6 @@ from alex.tools.fs import (
     create_read_tool,
     create_write_tool,
 )
-from alex.tools.git import TOOL_HINT as GIT_HINT, create_git_inspect_tool
 from alex.tools.permissions import (
     DEFAULT_ALLOWED,
     KNOWN_PERMISSIONS,
@@ -44,7 +43,7 @@ from alex.tools.plugin_loader import (
     install_plugins,
     load_plugins,
 )
-from alex.tools.ports import CronScheduler, ToolExecutionContext
+from alex.kernel.dto.tool import ToolExecutionContext
 from alex.tools.registry import ToolRegistry
 from alex.tools.search import (
     TOOL_HINT_GLOB,
@@ -54,9 +53,11 @@ from alex.tools.search import (
 )
 from alex.tools.shell import (
     TOOL_HINT_BASH,
+    TOOL_HINT_BASH_WSL,
     TOOL_HINT_PWSH,
     create_available_shell_tools,
     create_bash_tool,
+    create_bash_wsl_tool,
     create_pwsh_tool,
     detect_available_shells,
 )
@@ -84,8 +85,8 @@ TOOL_HINTS = [
     TOOL_HINT_EDIT,
     TOOL_HINT_GLOB,
     TOOL_HINT_GREP,
-    GIT_HINT,
     TOOL_HINT_BASH,
+    TOOL_HINT_BASH_WSL,
     TOOL_HINT_PWSH,
 ]
 
@@ -104,7 +105,6 @@ __all__ = [
     "create_edit_tool",
     "create_read_tool",
     "create_write_tool",
-    "create_git_inspect_tool",
     "create_glob_tool",
     "create_grep_tool",
     "create_pwsh_tool",
@@ -121,7 +121,6 @@ __all__ = [
     "TOOL_HINTS",
     "get_tool_hints",
     # Runtime
-    "CronScheduler",
     "ToolExecutionContext",
     "ToolExecutor",
     "ToolRegistry",

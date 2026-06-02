@@ -1,9 +1,13 @@
+"""Cron 工具 — 通过 bus request 与 CronModule 交互。"""
+
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
-from langchain_core.tools import StructuredTool
+from typing import Any
 
-from alex.tools.ports import CronScheduler
+from pydantic import BaseModel, Field
+
+from alex.kernel.contracts.cron import CancelCron, ScheduleCron
+from alex.tools.models import AlexTool
 
 
 TOOL_HINT = (
@@ -31,7 +35,9 @@ class CronCancelInput(BaseModel):
     job_id: str = Field(description="Cron job id to cancel and delete")
 
 
-def create_cron_tool(scheduler: CronScheduler) -> StructuredTool:
+def create_cron_tool(bus: Any) -> AlexTool:
+    """创建 cron 调度工具 — 通过 bus request(ScheduleCron) 与 CronModule 交互。"""
+
     async def _cron(
         cron: str = "",
         prompt: str = "",
@@ -45,15 +51,15 @@ def create_cron_tool(scheduler: CronScheduler) -> StructuredTool:
         if not prompt_text:
             return "Error: prompt is required"
 
-        job_id = await scheduler.schedule_cron_job(
+        job_id = await bus.request(ScheduleCron(
             cron=cron_str,
             prompt=prompt_text,
             recurring=bool(recurring),
             durable=bool(durable),
-        )
+        ))
         return f"Scheduled: {job_id}"
 
-    return StructuredTool.from_function(
+    return AlexTool.from_function(
         coroutine=_cron,
         name="cron",
         description=(
@@ -67,18 +73,20 @@ def create_cron_tool(scheduler: CronScheduler) -> StructuredTool:
     )
 
 
-def create_cron_cancel_tool(scheduler: CronScheduler) -> StructuredTool:
+def create_cron_cancel_tool(bus: Any) -> AlexTool:
+    """创建 cron 取消工具 — 通过 bus request(CancelCron) 与 CronModule 交互。"""
+
     async def _cron_cancel(job_id: str = "") -> str:
         target = str(job_id or "").strip()
         if not target:
             return "Error: job_id is required"
 
-        cancelled = await scheduler.cancel_cron_job(target)
+        cancelled = await bus.request(CancelCron(job_id=target))
         if not cancelled:
             return f"Error: cron job not found: {target}"
         return f"Cancelled: {target}"
 
-    return StructuredTool.from_function(
+    return AlexTool.from_function(
         coroutine=_cron_cancel,
         name="cron_cancel",
         description=(

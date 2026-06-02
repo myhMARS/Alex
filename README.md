@@ -13,7 +13,7 @@
   <a href="#license"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License" /></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.12+-blue.svg" alt="Python 3.12+" /></a>
   <a href="#"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey" alt="Platform" /></a>
-  <a href="#"><img src="https://img.shields.io/badge/tests-319%20passed-success" alt="Tests" /></a>
+  <a href="#"><img src="https://img.shields.io/badge/tests-325%20passed-success" alt="Tests" /></a>
 </p>
 
 ---
@@ -337,10 +337,9 @@ alex/
 │   ├── markdown.py             # Rich Markdown rendering layer
 │   └── alex.tcss               # externalized TUI stylesheet
 ├── llm/                        # Multi-provider LLM layer
-│   ├── factory.py              # LLMFactory — provider dispatch
+│   ├── factory.py              # LLMFactory — ChatClient construction
 │   ├── base.py                 # LLMConfig
-│   ├── openai.py / deepseek.py / anthropic.py
-│   └── json_client.py          # JSON-mode client with digest-based caching
+│   └── client.py               # ChatClient (streaming + JSON-mode)
 ├── prompts/                    # Jinja2 templates
 ├── config.py
 └── prompts/                    # Jinja2 prompt templates (system, skills, reflection)
@@ -383,7 +382,7 @@ Full module docs in [`docs/`](docs/):
 uv run pytest -q
 ```
 
-319 tests covering the agent core, TUI rendering, tool gating, permission policy, audit log, plugin loader, MCP client, Markdown layer, and contract/state/event semantics across port boundaries. Tests dependent on optional binaries (`bash`, `pwsh`, `git`, `rg`) skip gracefully when those aren't installed.
+325 tests covering the agent core, TUI rendering, tool gating, permission policy, audit log, plugin loader, MCP client, Markdown layer, contract/state/event semantics across port boundaries, and CronStore/CronExecutor unit tests. Tests dependent on optional binaries (`bash`, `pwsh`, `git`, `rg`) skip gracefully when those aren't installed.
 
 ## Contributing
 

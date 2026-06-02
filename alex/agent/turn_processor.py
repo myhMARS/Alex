@@ -1,18 +1,21 @@
-"""Unified turn processor — single FIFO queue for user and cron turns."""
+"""Unified turn processor — single FIFO queue for user and cron turns.
+
+Uses a custom agent loop (OpenAI SDK). 不直接依赖 bus，
+所有外部交互通过注入的 TurnServices 回调完成。
+"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
-from langchain_core.callbacks import BaseCallbackHandler
-from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+import json as _json
 
+from alex import messages as msg
 from alex.bus.events import (
     CronBatch,
     CronDone,
@@ -26,12 +29,32 @@ from alex.bus.events import (
     TurnFailed,
     TurnStarted,
 )
-from alex.memory.base import MemoryBase
-from alex.skill import SkillService
+from alex.llm.client import (
+    ChatClient,
+    ContentDelta,
+    StreamEnd,
+    ThinkingDelta,
+    ToolCallRequest,
+)
+from alex.kernel.dto.skill import SkillCard
+from alex.kernel.dto.tool import ToolExecutionContext, ToolResult, ToolSpec
 
 logger = logging.getLogger(__name__)
 
-_QUEUE_END = object()
+
+class TurnServices(Protocol):
+    """TurnProcessor 所需的外部服务接口。
+
+    由 AgentModule 实现，内部通过 bus request 完成实际调用。
+    TurnProcessor 不直接依赖 bus。
+    """
+
+    async def get_memory_context(self, session_id: str) -> list[dict[str, Any]]: ...
+    async def append_memory(self, session_id: str, messages: list[dict[str, Any]]) -> None: ...
+    async def get_skill_by_name(self, skill_name: str) -> SkillCard | None: ...
+    async def retrieve_skills(self, query: str, top_k: int = 3) -> list[SkillCard]: ...
+    async def get_tool_catalog(self) -> list[ToolSpec]: ...
+    async def execute_tool(self, ctx: Any, tool_name: str, tool_args: dict[str, Any]) -> ToolResult: ...
 
 
 @dataclass
@@ -39,8 +62,8 @@ class TurnResult:
     """Outcome of a single conversation turn — returned after streaming completes."""
 
     turn_id: str = ""
-    messages: list[BaseMessage] = field(default_factory=list)
-    message_batch: list[BaseMessage] = field(default_factory=list)
+    messages: list[dict[str, Any]] = field(default_factory=list)
+    message_batch: list[dict[str, Any]] = field(default_factory=list)
     content: str = ""
     thinking: str = ""
     loaded_skill_ids: list[str] = field(default_factory=list)
@@ -56,69 +79,69 @@ class _QueuedTurn:
     turn_id: str = ""
     user_message: str = ""
     stream_id: str = ""
-    event_queue: asyncio.Queue | None = None
     result_future: asyncio.Future | None = None
     on_started: Callable[[str, str], Awaitable[None]] | None = None
     on_completed: Callable[[str, str, TurnResult], Awaitable[None]] | None = None
     on_failed: Callable[[str, str, Exception], Awaitable[None]] | None = None
 
 
-@dataclass
-class _QueuedTurnError:
-    error: Exception
-
-
 class TurnProcessor:
-    """Single-consumer FIFO processor for both user and cron turns."""
+    """Single-consumer FIFO processor for both user and cron turns.
+
+    不直接依赖 bus。所有外部交互通过 TurnServices 回调完成，
+    由 AgentModule 在构造时注入 bus 实现。
+    """
 
     def __init__(
         self,
-        llm: BaseChatModel,
-        memory: MemoryBase,
-        skill_manager: SkillService,
+        llm: ChatClient | None,
         push_notification,
-        get_bus: Callable[[], Any | None],
-        graph_getter: Callable[[], Any],
-        max_iterations: int = 5,
-        callbacks: list[BaseCallbackHandler] | None = None,
+        services: TurnServices,
+        get_system_prompt: Callable[[], str] | None = None,
+        max_iterations: int = 15,
+        callbacks: list | None = None,
         session_id: str = "",
     ) -> None:
-        self._llm = llm
-        self._memory = memory
-        self._skills = skill_manager
+        self._llm: ChatClient | None = llm
         self._push_notification = push_notification
-        self._get_bus = get_bus
-        self._graph_getter = graph_getter
+        self._services = services
+        self._get_system_prompt = get_system_prompt or (lambda: "")
         self._max_iterations = max_iterations
         self._callbacks = callbacks or []
         self._session_id = session_id
         self._queue: asyncio.Queue[_QueuedTurn] = asyncio.Queue()
         self._worker_task: asyncio.Task | None = None
         self._last_result: TurnResult | None = None
-        self._user_turn_queues: dict[str, asyncio.Queue] = {}
-        self._user_bus_subscribed = False
 
     def set_session_id(self, session_id: str) -> None:
         self._session_id = session_id
+
+    def set_llm(self, llm: ChatClient) -> None:
+        """Replace the LLM client (e.g. after deferred init in start_services)."""
+        self._llm = llm
 
     @property
     def last_result(self) -> TurnResult | None:
         return self._last_result
 
-    async def stream_user_turn(self, user_message: str, *, session_id: str) -> AsyncIterator:
+    # ── public API ────────────────────────────────────────────────────────
+
+    async def run_user_turn(self, user_message: str, *, session_id: str) -> None:
+        """将用户 turn 入队并等待执行完成。"""
+        logger.info("user turn enqueued sid=%s msg=%s", session_id, user_message[:50])
         turn_id = uuid.uuid4().hex[:12]
-        queue = await self._subscribe_user_turn(turn_id)
-        await self._enqueue_user_turn(
+        loop = asyncio.get_running_loop()
+        result_future: asyncio.Future = loop.create_future()
+        req = _QueuedTurn(
+            kind="user", source="agent",
+            session_id=session_id or self._session_id,
             turn_id=turn_id,
             user_message=user_message,
-            session_id=session_id or self._session_id,
-            queue=queue,
+            result_future=result_future,
         )
-        try:
-            async for event in self._consume_user_turn(turn_id, queue):
-                yield event
-        finally:
-            self._user_turn_queues.pop(turn_id, None)
+        self._ensure_worker()
+        await self._queue.put(req)
+        await result_future
 
     async def run_cron_turn(
         self,
@@ -130,6 +153,7 @@ class TurnProcessor:
         stream_id: str,
         wait_until_done: bool = True,
     ) -> str:
+        logger.info("cron turn enqueued sid=%s job=%s", session_id, job_id)
         result_future = None
         if wait_until_done:
             loop = asyncio.get_running_loop()
@@ -153,7 +177,6 @@ class TurnProcessor:
         return await result_future
 
     async def shutdown(self) -> None:
-        self._user_turn_queues.clear()
         if self._worker_task is None:
             return
         self._worker_task.cancel()
@@ -162,6 +185,8 @@ class TurnProcessor:
         except asyncio.CancelledError:
             pass
         self._worker_task = None
+
+    # ── queue management ──────────────────────────────────────────────────
 
     def _ensure_worker(self) -> None:
         if self._worker_task is None or self._worker_task.done():
@@ -172,93 +197,37 @@ class TurnProcessor:
             req = await self._queue.get()
             try:
                 await self._process_turn(req)
+            except Exception as e:
+                # 确保 future 不会永远挂起
+                if req.result_future is not None and not req.result_future.done():
+                    req.result_future.set_exception(e)
+                logger.warning("Worker turn failed unexpectedly", exc_info=True)
             finally:
                 self._queue.task_done()
-
-    async def _subscribe_user_turn(self, turn_id: str) -> asyncio.Queue:
-        queue: asyncio.Queue = asyncio.Queue()
-        self._user_turn_queues[turn_id] = queue
-        await self._ensure_user_bus_subscriptions()
-        return queue
-
-    async def _ensure_user_bus_subscriptions(self) -> None:
-        bus = self._get_bus()
-        if bus is None or self._user_bus_subscribed:
-            return
-        for event_type in (
-            TurnStarted, ThinkingUpdated, TokenEmitted, SkillLoaded,
-            ToolStarted, ToolFinished, TurnCompleted, TurnFailed,
-        ):
-            await bus.subscribe(event_type, self._route_user_turn_event)
-        self._user_bus_subscribed = True
-
-    async def _route_user_turn_event(self, event) -> None:
-        queue = self._user_turn_queues.get(getattr(event, "turn_id", ""))
-        if queue is None:
-            return
-        if isinstance(event, TurnCompleted):
-            await queue.put(_QUEUE_END)
-            return
-        if isinstance(event, TurnFailed):
-            await queue.put(_QueuedTurnError(RuntimeError(event.error or "Turn failed")))
-            await queue.put(_QUEUE_END)
-            return
-        await queue.put(event)
-
-    async def _enqueue_user_turn(
-        self,
-        *,
-        turn_id: str,
-        user_message: str,
-        session_id: str,
-        queue: asyncio.Queue,
-    ) -> None:
-        req = _QueuedTurn(
-            kind="user",
-            source="agent",
-            session_id=session_id,
-            turn_id=turn_id,
-            user_message=user_message,
-            event_queue=None if self._get_bus() is not None else queue,
-        )
-        self._ensure_worker()
-        await self._queue.put(req)
-
-    async def _consume_user_turn(self, turn_id: str, queue: asyncio.Queue) -> AsyncIterator:
-        while True:
-            item = await queue.get()
-            if item is _QUEUE_END:
-                break
-            if isinstance(item, _QueuedTurnError):
-                raise item.error
-            yield item
 
     async def _process_turn(self, req: _QueuedTurn) -> None:
         sid = req.session_id or self._session_id
         turn_id = req.turn_id or uuid.uuid4().hex[:12]
+        logger.info("processing turn kind=%s sid=%s turn_id=%s", req.kind, sid, turn_id)
         emit = self._push_notification
-        direct_queue = req.event_queue
-        turn_emit = self._compose_turn_emit(direct_queue, emit)
         started = TurnStarted(session_id=sid, turn_id=turn_id, source=req.source, kind=req.kind)
-        await turn_emit(started)
+        await emit(started)
         if req.on_started is not None:
             await req.on_started(sid, turn_id)
 
         try:
-            result = await self._run_llm_turn(
+            result = await self._run_agent_loop(
                 sid=sid,
                 turn_id=turn_id,
                 user_message=req.user_message,
-                emit=turn_emit,
+                emit=emit,
                 stream_id=req.stream_id,
             )
             if req.kind == "user":
                 self._last_result = result
-            await turn_emit(TurnCompleted(
-                session_id=sid,
-                turn_id=turn_id,
-                source=req.source,
-                kind=req.kind,
+            await emit(TurnCompleted(
+                session_id=sid, turn_id=turn_id,
+                source=req.source, kind=req.kind,
                 messages=result.messages,
                 message_batch=result.message_batch,
                 content=result.content,
@@ -266,8 +235,6 @@ class TurnProcessor:
             ))
             if req.on_completed is not None:
                 await req.on_completed(sid, turn_id, result)
-            if direct_queue is not None:
-                await direct_queue.put(_QUEUE_END)
             if req.result_future is not None and not req.result_future.done():
                 req.result_future.set_result(result.content)
         except Exception as e:
@@ -277,13 +244,30 @@ class TurnProcessor:
             ))
             if req.on_failed is not None:
                 await req.on_failed(sid, turn_id, e)
-            if direct_queue is not None:
-                await direct_queue.put(_QueuedTurnError(e))
-                await direct_queue.put(_QUEUE_END)
             if req.result_future is not None and not req.result_future.done():
                 req.result_future.set_exception(e)
 
-    async def _run_llm_turn(
+    # ── external service calls (delegated to TurnServices) ──────────────
+
+    async def _get_memory_context(self, sid: str) -> list[dict[str, Any]]:
+        return await self._services.get_memory_context(sid)
+
+    async def _append_memory(self, sid: str, messages: list[dict[str, Any]]) -> None:
+        await self._services.append_memory(sid, messages)
+
+    async def _get_skill_by_name(self, skill_name: str) -> SkillCard | None:
+        return await self._services.get_skill_by_name(skill_name)
+
+    async def _retrieve_skills(self, query: str, top_k: int = 3) -> list[SkillCard]:
+        return await self._services.retrieve_skills(query, top_k)
+
+    async def _get_tool_catalog(self) -> list[ToolSpec]:
+        return await self._services.get_tool_catalog()
+
+    async def _execute_tool(self, ctx: Any, tool_name: str, tool_args: dict[str, Any]) -> ToolResult:
+        return await self._services.execute_tool(ctx, tool_name, tool_args)
+
+    async def _run_agent_loop(
         self,
         *,
         sid: str,
@@ -292,106 +276,166 @@ class TurnProcessor:
         emit,
         stream_id: str,
     ) -> TurnResult:
-        prev_msgs = await self._memory.get_context(session_id=sid)
+        """Run the ReAct-style agent loop using ChatClient + ToolExecutor.
+
+        Replaces LangGraph's ``create_agent`` internals with a simple while-loop:
+        1. Call LLM with current messages + tools
+        2. If LLM returns tool calls → execute them → add results → goto 1
+        3. If LLM returns final text → done
+        """
+        prev_msgs = await self._get_memory_context(sid)
         _ensure_reasoning_roundtrip(prev_msgs)
-        messages = [*prev_msgs, HumanMessage(content=user_message)]
+        messages: list[dict[str, Any]] = [*prev_msgs, msg.user_message(user_message)]
 
         collected_content = ""
         collected_thinking = ""
         loaded_skill_ids: list[str] = []
         tool_names: list[str] = []
-        intermediate_msgs: list[BaseMessage] = []
-        final_ai_msg: AIMessage | None = None
-        graph = self._graph_getter()
+        intermediate_msgs: list[dict[str, Any]] = []
 
-        async for event in graph.astream_events(
-            {"messages": messages},
-            config={"callbacks": self._callbacks, "recursion_limit": self._max_iterations * 6 + 10},
-            version="v2",
-        ):
-            kind = event.get("event", "")
-            if kind == "on_chat_model_stream":
-                chunk = event.get("data", {}).get("chunk")
-                if chunk:
-                    reasoning = None
-                    if hasattr(chunk, "additional_kwargs"):
-                        reasoning = chunk.additional_kwargs.get("reasoning_content")
-                    if reasoning:
-                        collected_thinking += reasoning
-                        await emit(ThinkingUpdated(
-                            session_id=sid,
-                            turn_id=turn_id,
-                            delta=reasoning,
-                            stream_id=stream_id or "",
-                        ))
-                    if chunk.content:
-                        collected_content += chunk.content
-                        await emit(TokenEmitted(
-                            session_id=sid,
-                            turn_id=turn_id,
-                            delta=chunk.content,
-                            stream_id=stream_id or "",
-                        ))
+        tools = await self._get_tool_catalog()
+        tool_schemas = [t.to_openai_schema() for t in tools] if tools else None
+        logger.info("agent loop start sid=%s iteration_max=%d tools=%d", sid, self._max_iterations, len(tools) if tools else 0)
 
-            elif kind == "on_chat_model_end":
-                msg = (event.get("data") or {}).get("output")
-                if isinstance(msg, AIMessage):
-                    if msg.tool_calls:
-                        intermediate_msgs.append(msg)
-                    else:
-                        final_ai_msg = msg
+        llm = self._llm
 
-            elif kind == "on_tool_start":
-                name = event.get("name", "")
-                input_data = event.get("data", {}).get("input")
-                run_id = str(event.get("run_id") or "")
-                tool_names.append(name)
-                if not stream_id and name == "load_skill" and isinstance(input_data, dict):
-                    skill_name = input_data.get("skill_name", "")
-                    skill = self._skills.get_skill_by_name(skill_name)
+        iteration = -1
+        for iteration in range(self._max_iterations):
+            # Build the system prompt with skills injected for the first iteration
+            system_prompt = self._get_system_prompt_for_iteration()
+
+            collected_content = ""
+            collected_thinking = ""
+            tool_calls: list[dict[str, Any]] = []
+
+            # ── stream LLM response ──────────────────────────────────
+            async for event in llm.stream_chat(
+                messages,
+                tools=tool_schemas,
+                system_prompt=system_prompt,
+            ):
+                if isinstance(event, ContentDelta):
+                    collected_content += event.content
+                    await emit(TokenEmitted(
+                        session_id=sid, turn_id=turn_id,
+                        delta=event.content, stream_id=stream_id or "",
+                    ))
+
+                elif isinstance(event, ThinkingDelta):
+                    collected_thinking += event.content
+                    await emit(ThinkingUpdated(
+                        session_id=sid, turn_id=turn_id,
+                        delta=event.content, stream_id=stream_id or "",
+                    ))
+
+                elif isinstance(event, ToolCallRequest):
+                    tool_calls = event.tool_calls
+
+                elif isinstance(event, StreamEnd):
+                    collected_content = event.content
+                    collected_thinking = event.thinking
+                    if event.tool_calls:
+                        tool_calls = event.tool_calls
+
+            # ── no tool calls → final answer ─────────────────────────
+            if not tool_calls:
+                assistant_msg = msg.assistant_message(
+                    collected_content,
+                    reasoning_content=collected_thinking,
+                )
+                messages.append(assistant_msg)
+                intermediate_msgs.append(assistant_msg)
+                break
+
+            # ── execute tools ────────────────────────────────────────
+            assistant_msg = msg.assistant_message(
+                collected_content,
+                tool_calls=tool_calls,
+                reasoning_content=collected_thinking,
+            )
+            messages.append(assistant_msg)
+            intermediate_msgs.append(assistant_msg)
+
+            for tc in tool_calls:
+                fn = tc.get("function", {})
+                tool_name = fn.get("name", "")
+                tool_args_str = fn.get("arguments", "{}")
+                try:
+                    tool_args = _json.loads(tool_args_str) if isinstance(tool_args_str, str) else tool_args_str
+                except Exception:
+                    tool_args = {}
+
+                tool_names.append(tool_name)
+
+                # Emit skill-loaded for load_skill calls
+                if tool_name == "load_skill" and not stream_id:
+                    skill_name = tool_args.get("skill_name", "") if isinstance(tool_args, dict) else ""
+                    skill = await self._get_skill_by_name(skill_name)
                     if skill:
                         loaded_skill_ids.append(skill.id)
                         await emit(SkillLoaded(
-                            session_id=sid,
-                            turn_id=turn_id,
-                            skill_name=skill.name,
-                            skill_pattern=skill.pattern,
+                            session_id=sid, turn_id=turn_id,
+                            skill_name=skill.name, skill_pattern=skill.pattern,
                         ))
-                await emit(ToolStarted(
-                    session_id=sid,
-                    turn_id=turn_id,
-                    tool_id=run_id,
-                    tool_name=name,
-                    tool_input=input_data,
-                    is_cron=bool(stream_id),
-                    stream_id=stream_id or "",
-                ))
 
-            elif kind == "on_tool_end":
-                run_id = str(event.get("run_id") or "")
-                output = event.get("data", {}).get("output")
-                if isinstance(output, ToolMessage):
-                    intermediate_msgs.append(output)
-                await emit(ToolFinished(
-                    session_id=sid,
-                    turn_id=turn_id,
-                    tool_id=run_id,
-                    output=output.content if isinstance(output, ToolMessage) else output,
-                    is_cron=bool(stream_id),
-                    stream_id=stream_id or "",
-                ))
+                run_id = tc.get("id", uuid.uuid4().hex[:12])
 
-        batch: list[BaseMessage] = [HumanMessage(content=user_message), *intermediate_msgs]
-        if final_ai_msg is not None:
-            batch.append(final_ai_msg)
+                ctx = ToolExecutionContext(
+                    session_id=sid, turn_id=turn_id,
+                    source="cron" if stream_id else "user",
+                )
+                tool_result = await self._execute_tool(ctx, tool_name, tool_args)
+                logger.info("tool executed name=%s ok=%s", tool_name, tool_result.ok)
+
+                # Convert ToolResult to string for backward compatibility
+                result_str = tool_result.output if tool_result.ok else tool_result.error
+
+                tool_msg = msg.tool_message(result_str, tool_call_id=run_id)
+                messages.append(tool_msg)
+                intermediate_msgs.append(tool_msg)
+
         else:
-            batch.append(AIMessage(
-                content=collected_content,
-                additional_kwargs={"reasoning_content": collected_thinking or ""},
-            ))
+            # max_iterations reached — 强制让 LLM 给出最终回复（不带 tools）
+            logger.warning("max_iterations reached, forcing final answer sid=%s", sid)
+            collected_content = ""
+            collected_thinking = ""
+            try:
+                async for event in llm.stream_chat(
+                    messages,
+                    tools=None,  # 不允许再调工具
+                    system_prompt=self._get_system_prompt_for_iteration(),
+                ):
+                    if isinstance(event, ContentDelta):
+                        collected_content += event.content
+                        await emit(TokenEmitted(
+                            session_id=sid, turn_id=turn_id,
+                            delta=event.content, stream_id=stream_id or "",
+                        ))
+                    elif isinstance(event, ThinkingDelta):
+                        collected_thinking += event.content
+                        await emit(ThinkingUpdated(
+                            session_id=sid, turn_id=turn_id,
+                            delta=event.content, stream_id=stream_id or "",
+                        ))
+                    elif isinstance(event, StreamEnd):
+                        collected_content = event.content
+                        collected_thinking = event.thinking
+            except Exception:
+                logger.warning("forced final answer failed", exc_info=True)
+                collected_content = collected_content or "（达到最大工具调用次数，未能完成回复）"
 
-        await self._memory.add_messages(batch, session_id=sid)
-        full_history = await self._memory.get_context(session_id=sid)
+            assistant_msg = msg.assistant_message(
+                collected_content,
+                reasoning_content=collected_thinking,
+            )
+            messages.append(assistant_msg)
+            intermediate_msgs.append(assistant_msg)
+
+        # ── persist and return ────────────────────────────────────────
+        logger.info("agent loop done sid=%s iterations=%d content_len=%d", sid, iteration + 1, len(collected_content))
+        batch: list[dict[str, Any]] = [msg.user_message(user_message), *intermediate_msgs]
+        await self._append_memory(sid, batch)
+        full_history = await self._get_memory_context(sid)
         return TurnResult(
             turn_id=turn_id,
             messages=full_history,
@@ -403,26 +447,30 @@ class TurnProcessor:
             last_query_matched=len(loaded_skill_ids) > 0,
         )
 
+    def _get_system_prompt_for_iteration(self) -> str:
+        """Return the system prompt (with skills injected) from PromptAssembler.
+
+        The prompt is injected on every LLM call so that the model remembers
+        its role and available skills even across tool-call iterations.
+        """
+        return self._get_system_prompt()
+
+    # ── cron hooks ────────────────────────────────────────────────────────
+
     def _build_cron_started_hook(
         self, *, job_id: str, name: str, prompt: str, stream_id: str,
     ) -> Callable[[str, str], Awaitable[None]]:
         async def _hook(session_id: str, turn_id: str) -> None:
             await self._push_notification(ToolStarted(
-                session_id=session_id,
-                turn_id=turn_id,
-                tool_id=stream_id,
-                tool_name="cron",
+                session_id=session_id, turn_id=turn_id,
+                tool_id=stream_id, tool_name="cron",
                 tool_input={"job_id": job_id, "name": name, "prompt": prompt},
-                is_cron=True,
-                stream_id=stream_id,
+                is_cron=True, stream_id=stream_id,
             ))
             await self._push_notification(ToolFinished(
-                session_id=session_id,
-                turn_id=turn_id,
-                tool_id=stream_id,
-                output=prompt,
-                is_cron=True,
-                stream_id=stream_id,
+                session_id=session_id, turn_id=turn_id,
+                tool_id=stream_id, output=prompt,
+                is_cron=True, stream_id=stream_id,
             ))
         return _hook
 
@@ -434,7 +482,8 @@ class TurnProcessor:
                 session_id=session_id, stream_id=stream_id, messages=result.message_batch,
             ))
             await self._push_notification(CronDone(
-                session_id=session_id, stream_id=stream_id, content=result.content, thinking=result.thinking,
+                session_id=session_id, stream_id=stream_id,
+                content=result.content, thinking=result.thinking,
             ))
         return _hook
 
@@ -443,35 +492,14 @@ class TurnProcessor:
     ) -> Callable[[str, str, Exception], Awaitable[None]]:
         async def _hook(session_id: str, _: str, error: Exception) -> None:
             await self._push_notification(CronError(
-                session_id=session_id, stream_id=stream_id, error=f"{type(error).__name__}: {error}",
+                session_id=session_id, stream_id=stream_id,
+                error=f"{type(error).__name__}: {error}",
             ))
         return _hook
 
-    @staticmethod
-    def _compose_turn_emit(
-        queue: asyncio.Queue | None,
-        publish_emit: Callable[[Any], Awaitable[None]],
-    ) -> Callable[[Any], Awaitable[None]]:
-        if queue is None:
-            return publish_emit
 
-        async def _emit(event) -> None:
-            await publish_emit(event)
-            await queue.put(event)
-
-        return _emit
-
-
-def _ensure_reasoning_roundtrip(messages: list) -> None:
+def _ensure_reasoning_roundtrip(messages: list[dict[str, Any]]) -> None:
+    """Ensure every assistant message has a reasoning_content key for round-trip."""
     for m in messages:
-        if not isinstance(m, AIMessage):
-            continue
-        ak = getattr(m, "additional_kwargs", None)
-        if ak is None:
-            m.additional_kwargs = {"reasoning_content": ""}
-            continue
-        if not isinstance(ak, dict):
-            ak = dict(ak)
-            m.additional_kwargs = ak
-        if "reasoning_content" not in ak:
-            ak["reasoning_content"] = ""
+        if msg.is_assistant(m) and "reasoning_content" not in m:
+            m["reasoning_content"] = ""

@@ -1,4 +1,4 @@
-"""Event bus — unified publish/subscribe for all module coordination."""
+"""Event bus — unified publish/subscribe + request/reply for all module coordination."""
 
 from alex.bus.events import (
     Event,
@@ -23,6 +23,7 @@ from alex.bus.events import (
     TokenEmitted,
     ToolStarted,
     ToolFinished,
+    ToolsProvided,
     ToastRequested,
     SkillLoaded,
     SessionRestored,
@@ -37,7 +38,20 @@ from alex.bus.events import (
 )
 from alex.bus.in_memory import AsyncEventBus
 
+# Re-export kernel bus primitives for convenience
+from alex.kernel.bus import (
+    Request,
+    MessageBus,
+    correlation_id,
+)
+from alex.kernel.errors import (
+    CapabilityTimeout,
+    CapabilityUnavailable,
+    HandlerError,
+)
+
 __all__ = [
+    # Existing event types
     "Event",
     "Command",
     "DomainEvent",
@@ -60,6 +74,7 @@ __all__ = [
     "TokenEmitted",
     "ToolStarted",
     "ToolFinished",
+    "ToolsProvided",
     "ToastRequested",
     "SkillLoaded",
     "SessionRestored",
@@ -71,5 +86,14 @@ __all__ = [
     "SkillReflectEvent",
     "SkillReflectErrorEvent",
     "CronRecordPersist",
+    # Bus implementation
     "AsyncEventBus",
+    # Kernel bus primitives (request/reply)
+    "Request",
+    "MessageBus",
+    "correlation_id",
+    # Kernel errors
+    "CapabilityTimeout",
+    "CapabilityUnavailable",
+    "HandlerError",
 ]

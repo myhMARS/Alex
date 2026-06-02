@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import threading
-import time
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from alex.bus.events import Event, TurnCompleted, TurnStarted
+from alex.bus.events import Event, TurnStarted
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -30,6 +28,7 @@ def _run_in_thread(coro_func, *args):
     err = []
 
     def _runner():
+        loop = None
         try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
@@ -37,7 +36,8 @@ def _run_in_thread(coro_func, *args):
         except Exception as e:
             err.append(e)
         finally:
-            loop.close()
+            if loop is not None:
+                loop.close()
 
     t = threading.Thread(target=_runner)
     t.start()

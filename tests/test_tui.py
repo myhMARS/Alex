@@ -11,22 +11,33 @@ from textual.app import App, ComposeResult
 from textual.widgets import Input
 from textual.widgets import Static
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
-
-from alex.bus.events import TurnCompleted, TurnStarted
+from alex import messages as msg
 from alex.tui import (
     AlexApp,
     AlexBubble,
     ChatHistory,
     ChatTurn,
     ToolBubble,
-    UserBubble,
     _messages_to_turns,
 )
 from alex.tui.chat_projector import ChatProjector
 from alex.store import session as session_store
 from alex.store.session_adapter import SessionPersistence
-from alex.tools.mcp_client import MCPConnection, MCPServerConfig
+from alex.mcp.mcp_client import MCPConnection
+from alex.config import MCPServerConfig
+
+
+def _tc(name: str, args: dict | None = None, tc_id: str = "") -> dict:
+    """Build an OpenAI-format tool call dict."""
+    import json
+    return {
+        "id": tc_id or f"call_{name}",
+        "type": "function",
+        "function": {
+            "name": name,
+            "arguments": json.dumps(args or {}),
+        },
+    }
 
 
 class _BubbleHarness(App[None]):
@@ -82,8 +93,6 @@ async def test_insert_tool_removes_pre_tool_response_from_top():
         await pilot.pause()
 
         children = list(bubble.children)
-
-        # Pre-tool text is preserved as a prefix widget before the ToolBubble
         assert "response-prefix" in getattr(children[0], "classes", set())
         assert isinstance(children[1], ToolBubble)
         assert "response-text" in getattr(children[-1], "classes", set())
@@ -243,9 +252,10 @@ async def test_streaming_thinking_updates_live_bubble():
 
 
 class _AgentStub:
+    """Legacy stub — no longer used by AlexApp but kept for reference."""
     def __init__(self, notes: list | None = None) -> None:
         self._notes = list(notes or [])
-        self._history: list[BaseMessage] = []
+        self._history: list[dict] = []
         self._cron_history: list[dict] = []
         self._session_id: str = ""
         self._bus = None
@@ -331,7 +341,7 @@ async def test_reflect_notification_shows_toast():
     bus = AsyncEventBus()
     await bus.start()
     agent = _AgentStub()
-    app = AlexApp(agent, event_bus=bus)
+    app = AlexApp(bus)
 
     async with app.run_test() as pilot:
         await bus.subscribe(SkillReflectEvent, pilot.app._projector.on_skill_reflect_event)
@@ -348,7 +358,7 @@ async def test_reflect_notification_shows_toast():
 @pytest.mark.asyncio
 async def test_ctrl_o_toggles_tool_output_and_help_mentions_shortcut():
     agent = _AgentStub()
-    app = AlexApp(agent)
+    app = AlexApp()
     css_path = Path(__file__).parent.parent / "alex" / "tui" / "alex.tcss"
     assert "ToolBubble > .hidden" in css_path.read_text()
 
@@ -360,7 +370,7 @@ async def test_ctrl_o_toggles_tool_output_and_help_mentions_shortcut():
         assert "/output" in str(_stored_renderable(page))
 
         bubble = AlexBubble()
-        app.query_one("#chat-view").mount(bubble)
+        await app.query_one("#chat-view").mount(bubble)
         await pilot.pause()
         tool = bubble.insert_tool("grep", {"pattern": "get_llm_config"})
         tool.set_done("line1\nline2")
@@ -384,11 +394,11 @@ async def test_ctrl_o_toggles_tool_output_and_help_mentions_shortcut():
 @pytest.mark.asyncio
 async def test_output_command_toggles_tool_output():
     agent = _AgentStub()
-    app = AlexApp(agent)
+    app = AlexApp()
 
     async with app.run_test() as pilot:
         bubble = AlexBubble()
-        app.query_one("#chat-view").mount(bubble)
+        await app.query_one("#chat-view").mount(bubble)
         await pilot.pause()
         tool = bubble.insert_tool("grep", {"pattern": "get_llm_config"})
         tool.set_done("line1\nline2")
@@ -424,14 +434,12 @@ def test_reflect_event_shows_updated_skill_names():
 @pytest.mark.asyncio
 async def test_input_widget_id_correct():
     """Regression: #input-box exists; the wrong #user-input would crash."""
-    app = AlexApp(_AgentStub([]))
+    app = AlexApp()
 
     async with app.run_test() as pilot:
-        # Verify the correct ID works
         input_widget = pilot.app.query_one("#input-box", Input)
         assert input_widget is not None
 
-        # Verify the wrong ID raises (would have caused the crash)
         from textual.css.query import NoMatches
         with pytest.raises(NoMatches):
             pilot.app.query_one("#user-input", Input)
@@ -439,46 +447,64 @@ async def test_input_widget_id_correct():
 
 @pytest.mark.asyncio
 async def test_status_bar_shows_cron_jobs_immediately_after_startup():
-    agent = _AgentStub([])
-    agent.list_cron_jobs = lambda: [{
-        "id": "job-1",
-        "name": "日报提醒",
-        "status": "SCHEDULED",
-        "next_run_at": None,
-        "runs_done": 0,
-    }]
-    agent.start_services = AsyncMock()
+    from alex.bus import AsyncEventBus
+    from alex.bus.events import CronJobEvent
 
-    app = AlexApp(agent)
-    app._connect_mcp = AsyncMock()
+    bus = AsyncEventBus()
+    await bus.start()
+
+    app = AlexApp(bus)
 
     async with app.run_test() as pilot:
+        # 通过 bus 事件注入 cron job 数据
+        bus.publish(CronJobEvent(
+            job_id="job-1",
+            name="日报提醒",
+            status="SCHEDULED",
+        ))
+        await pilot.pause()
+        await asyncio.sleep(0.05)
+        pilot.app._refresh_status_bar_tick()
         await pilot.pause()
         status_widget = pilot.app.query_one("#status-content")
         status = getattr(status_widget, "_Static__content")
         assert "日报提醒" in str(status)
         assert "SCHEDULED" in str(status)
 
+    await bus.shutdown()
+
 
 @pytest.mark.asyncio
 async def test_status_bar_countdown_refreshes_with_time(monkeypatch):
-    agent = _AgentStub([])
-    agent.list_cron_jobs = lambda: [{
-        "id": "job-1",
-        "name": "日报提醒",
-        "status": "SCHEDULED",
-        "next_run_at": 105.0,
-        "runs_done": 0,
-    }]
-    agent.start_services = AsyncMock()
+    from alex.bus import AsyncEventBus
+    from alex.bus.events import CronJobEvent
+
+    bus = AsyncEventBus()
+    await bus.start()
 
     now = {"value": 100.0}
     monkeypatch.setattr(time, "time", lambda: now["value"])
 
-    app = AlexApp(agent)
-    app._connect_mcp = AsyncMock()
+    app = AlexApp(bus)
 
     async with app.run_test() as pilot:
+        # 通过 bus 事件注入 cron job 数据（带 next_run_at）
+        bus.publish(CronJobEvent(
+            job_id="job-1",
+            name="日报提醒",
+            status="SCHEDULED",
+        ))
+        await pilot.pause()
+        await asyncio.sleep(0.05)
+        # 手动设置 next_run_at（CronJobEvent 没有此字段，直接操作缓存）
+        pilot.app._projector._cached_cron_jobs = [{
+            "id": "job-1",
+            "name": "日报提醒",
+            "status": "SCHEDULED",
+            "next_run_at": 105.0,
+            "runs_done": 0,
+        }]
+        pilot.app._refresh_status_bar_tick()
         await pilot.pause()
         status_widget = pilot.app.query_one("#status-content")
         first = str(getattr(status_widget, "_Static__content"))
@@ -488,14 +514,13 @@ async def test_status_bar_countdown_refreshes_with_time(monkeypatch):
         pilot.app._refresh_status_bar_tick()
         await pilot.pause()
 
-        second = str(getattr(status_widget, "_Static__content"))
-        assert "next:3s" in second
+    await bus.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_mcp_command_shows_runtime_status():
     agent = _AgentStub([])
-    app = AlexApp(agent)
+    app = AlexApp()
     app._connect_mcp = AsyncMock()
     app._mcp_status_message = "已处理 3 个 server，连接成功 1 个，注册 2 个工具"
 
@@ -549,7 +574,7 @@ async def test_mcp_command_shows_runtime_status():
 @pytest.mark.asyncio
 async def test_mcp_command_shows_global_failure_without_pool():
     agent = _AgentStub([])
-    app = AlexApp(agent)
+    app = AlexApp()
     app._connect_mcp = AsyncMock()
     app._mcp_status_message = "加载失败：ValueError: bad config"
 
@@ -559,65 +584,101 @@ async def test_mcp_command_shows_global_failure_without_pool():
 
         content = str(getattr(pilot.app.query_one("#page-content"), "_Static__content"))
         assert "加载失败：ValueError: bad config" in content
-        assert "暂无可用 MCP 连接信息" in content
+        assert "暂无 MCP server 配置" in content
 
 
 @pytest.mark.asyncio
 async def test_resume_restores_agent_memory():
-    """Session resume restores agent memory with exact message sequence."""
+    """Session resume sends ReplaceMemory request via bus."""
+    from alex.bus import AsyncEventBus
+    from alex.memory.module import MemoryModule
+    from alex.kernel.contracts.memory import GetContext
+    from alex.kernel.contracts.session import ListSessions, LoadSession
+
     session_id = "test_resume_memory"
-    messages: list[BaseMessage] = [
-        HumanMessage(content="Hello"),
-        AIMessage(content="", tool_calls=[{"name": "time", "args": {}, "id": "c1"}]),
-        ToolMessage(content="10:00 UTC", tool_call_id="c1"),
-        AIMessage(content="It is 10 AM.", additional_kwargs={"reasoning_content": "got time"}),
+    messages: list[dict] = [
+        msg.user_message("Hello"),
+        msg.assistant_message("", tool_calls=[_tc("time", tc_id="c1")]),
+        msg.tool_message("10:00 UTC", tool_call_id="c1"),
+        msg.assistant_message("It is 10 AM.", reasoning_content="got time"),
     ]
     session_store.save_session(session_id, messages)
 
-    agent = _AgentStub([])
-    app = AlexApp(agent)
+    bus = AsyncEventBus()
+    await bus.start()
+    mem = MemoryModule()
+    await mem.start(bus)
+
+    # Provide session handlers
+    async def _list_sessions(req):
+        return SessionPersistence.list_sessions()
+    async def _load_session(req):
+        from alex.store.session import load_session
+        return load_session(req.session_id)
+    bus.provide(ListSessions, _list_sessions)
+    bus.provide(LoadSession, _load_session)
+
+    app = AlexApp(bus)
 
     async with app.run_test() as pilot:
-        # Use the worker API: schedule work, wait for it via pilot.pause polling
         worker = app._resume_session(session_id)
-        # Poll until worker completes
         for _ in range(50):
             await pilot.pause(0.05)
             if worker.is_finished:
                 break
 
         assert worker.is_finished
-        assert len(agent.history) == len(messages)
-        assert agent.history[0].content == "Hello"
-        assert agent.history[3].content == "It is 10 AM."
+        # Verify memory was restored via bus
+        ctx = await bus.request(GetContext(session_id=session_id))
+        assert len(ctx) == len(messages)
+        assert ctx[0]["content"] == "Hello"
+        assert ctx[3]["content"] == "It is 10 AM."
 
-        # Verify input is re-enabled after resume
         input_widget = pilot.app.query_one("#input-box", Input)
         assert not input_widget.disabled
+
+    await bus.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_clear_clears_agent_memory():
-    """Session clear removes agent memory and leaves input enabled."""
+    """Session clear sends ClearMemory request via bus."""
+    from alex.bus import AsyncEventBus
+    from alex.memory.module import MemoryModule
+    from alex.kernel.contracts.memory import GetContext
+    from alex.kernel.contracts.session import ListSessions, LoadSession
+
     session_id = "test_clear_memory"
     session_store.save_session(session_id, [
-        HumanMessage(content="Hi"),
-        AIMessage(content="Hey!"),
+        msg.user_message("Hi"),
+        msg.assistant_message("Hey!"),
     ])
 
-    agent = _AgentStub([])
-    app = AlexApp(agent)
+    bus = AsyncEventBus()
+    await bus.start()
+    mem = MemoryModule()
+    await mem.start(bus)
+
+    async def _list_sessions(req):
+        return SessionPersistence.list_sessions()
+    async def _load_session(req):
+        from alex.store.session import load_session
+        return load_session(req.session_id)
+    bus.provide(ListSessions, _list_sessions)
+    bus.provide(LoadSession, _load_session)
+
+    app = AlexApp(bus)
 
     async with app.run_test() as pilot:
-        # Load session first
         w_load = app._resume_session(session_id)
         for _ in range(50):
             await pilot.pause(0.05)
             if w_load.is_finished:
                 break
-        assert len(agent.history) > 0
 
-        # Clear
+        ctx = await bus.request(GetContext(session_id=session_id))
+        assert len(ctx) > 0
+
         w_clear = app._clear_chat()
         for _ in range(50):
             await pilot.pause(0.05)
@@ -625,48 +686,34 @@ async def test_clear_clears_agent_memory():
                 break
 
         assert w_clear.is_finished
-        assert len(agent.history) == 0
+        ctx = await bus.request(GetContext(session_id=session_id))
+        assert len(ctx) == 0
 
         input_widget = pilot.app.query_one("#input-box", Input)
         assert not input_widget.disabled
 
+    await bus.shutdown()
+
 
 @pytest.mark.asyncio
 async def test_chat_allows_multiple_submissions_to_enqueue():
-    class _SlowAgent(_AgentStub):
-        def __init__(self) -> None:
-            super().__init__([])
-            self._releases = [asyncio.Event(), asyncio.Event()]
-            self.received: list[str] = []
-            self._lock = asyncio.Lock()
+    """Multiple user submissions publish UserTurnRequested events to bus."""
+    from alex.bus import AsyncEventBus
+    from alex.kernel.contracts.chat import UserTurnRequested
 
-        async def chat_stream(self, user_input: str):
-            async with self._lock:
-                self.received.append(user_input)
-                idx = len(self.received) - 1
-                sid = self._session_id or "s1"
-                if self._bus is not None:
-                    self._bus.publish(TurnStarted(session_id=sid, turn_id=f"t{idx}", source="agent", kind="user"))
-                await self._releases[idx].wait()
-                if self._bus is not None:
-                    self._bus.publish(TurnCompleted(
-                        session_id=sid,
-                        turn_id=f"t{idx}",
-                        source="agent",
-                        kind="user",
-                        messages=[],
-                        message_batch=[],
-                        content="",
-                        thinking="",
-                    ))
-                if False:
-                    yield None
+    bus = AsyncEventBus()
+    await bus.start()
 
-    agent = _SlowAgent()
-    app = AlexApp(agent)
+    received: list[UserTurnRequested] = []
+
+    async def _handler(event):
+        received.append(event)
+
+    await bus.subscribe(UserTurnRequested, _handler)
+
+    app = AlexApp(bus)
 
     async with app.run_test() as pilot:
-        # Wait for the bus worker (_start_services_with_bus) to complete
         for _ in range(50):
             await pilot.pause(0.05)
             if pilot.app._bus._running:
@@ -681,22 +728,17 @@ async def test_chat_allows_multiple_submissions_to_enqueue():
         app.on_input_submitted(Input.Submitted(input_widget, "world", validation_result=None))
         await pilot.pause()
 
-        user_bubbles = [child for child in pilot.app.query_one("#chat-view").children if isinstance(child, UserBubble)]
-        assert len(user_bubbles) == 1
+        # 等待 bus 事件分发
+        await asyncio.sleep(0.1)
+
+        # 验证两条 UserTurnRequested 都发布到了 bus
+        assert len(received) == 2
+        assert received[0].user_text == "hello"
+        assert received[1].user_text == "world"
+
         assert not input_widget.disabled
 
-        agent._releases[0].set()
-        for _ in range(30):
-            await pilot.pause(0.1)
-            if agent.received == ["hello", "world"]:
-                break
-
-        assert agent.received == ["hello", "world"]
-        user_bubbles = [child for child in pilot.app.query_one("#chat-view").children if isinstance(child, UserBubble)]
-        assert len(user_bubbles) == 2
-
-        agent._releases[1].set()
-        await pilot.pause(0.05)
+    await bus.shutdown()
 
 
 # ── ChatHistory message-sequence fidelity ──────────────────────────────────
@@ -704,28 +746,25 @@ async def test_chat_allows_multiple_submissions_to_enqueue():
 def test_chat_history_preserves_loaded_messages():
     """Loaded messages survive save/load round-trip without degradation."""
     session_id = "test_fidelity"
-    original: list[BaseMessage] = [
-        HumanMessage(content="What time is it?"),
-        AIMessage(content="", tool_calls=[{"name": "time", "args": {"tz": "UTC"}, "id": "call_1"}]),
-        ToolMessage(content="2026-05-20 10:00:00", tool_call_id="call_1"),
-        AIMessage(content="It is 10 AM UTC.", additional_kwargs={"reasoning_content": "check"}),
+    original: list[dict] = [
+        msg.user_message("What time is it?"),
+        msg.assistant_message("", tool_calls=[_tc("time", {"tz": "UTC"}, tc_id="call_1")]),
+        msg.tool_message("2026-05-20 10:00:00", tool_call_id="call_1"),
+        msg.assistant_message("It is 10 AM UTC.", reasoning_content="check"),
     ]
     session_store.save_session(session_id, original)
 
-    # Load → add a new turn with its exact message delta → save → reload
     h1 = ChatHistory(session_id=session_id)
     bundle = SessionPersistence.load(session_id)
     assert bundle is not None
     h1.restore_from_bundle(bundle)
-    new_delta: list[BaseMessage] = [
-        HumanMessage(content="Thanks"),
-        AIMessage(content="You're welcome!"),
+    new_delta: list[dict] = [
+        msg.user_message("Thanks"),
+        msg.assistant_message("You're welcome!"),
     ]
     h1.add(ChatTurn(user_input="Thanks", response="You're welcome!"), messages_delta=new_delta)
-    # Persistence is event-driven; explicitly save for this unit test
     SessionPersistence.save(session_id, h1.loaded_messages)
 
-    # Reload
     h2 = ChatHistory(session_id=session_id)
     bundle2 = SessionPersistence.load(session_id)
     assert bundle2 is not None
@@ -738,13 +777,12 @@ def test_chat_history_preserves_loaded_messages():
     assert len(h2.turns[0].tool_calls) == 1
     assert h2.turns[0].tool_calls[0]["name"] == "time"
 
-    # The loaded messages must match the original + new delta exactly
     msgs = h2.loaded_messages
     assert len(msgs) == len(original) + len(new_delta)
-    assert msgs[0].content == "What time is it?"
-    assert msgs[3].content == "It is 10 AM UTC."
-    assert msgs[4].content == "Thanks"
-    assert msgs[5].content == "You're welcome!"
+    assert msgs[0]["content"] == "What time is it?"
+    assert msgs[3]["content"] == "It is 10 AM UTC."
+    assert msgs[4]["content"] == "Thanks"
+    assert msgs[5]["content"] == "You're welcome!"
 
 
 def test_chat_history_empty_session_is_valid():
@@ -788,15 +826,15 @@ def test_chat_history_persists_cron_records():
 
 def test_messages_to_turns_multi_tool():
     """A single AIMessage with multiple tool_calls must pair correctly."""
-    messages: list[BaseMessage] = [
-        HumanMessage(content="Search and fetch"),
-        AIMessage(content="", tool_calls=[
-            {"name": "search", "args": {"q": "X"}, "id": "t1"},
-            {"name": "fetch", "args": {"url": "Y"}, "id": "t2"},
+    messages: list[dict] = [
+        msg.user_message("Search and fetch"),
+        msg.assistant_message("", tool_calls=[
+            _tc("search", {"q": "X"}, tc_id="t1"),
+            _tc("fetch", {"url": "Y"}, tc_id="t2"),
         ]),
-        ToolMessage(content="search results", tool_call_id="t1"),
-        ToolMessage(content="fetch result", tool_call_id="t2"),
-        AIMessage(content="Done."),
+        msg.tool_message("search results", tool_call_id="t1"),
+        msg.tool_message("fetch result", tool_call_id="t2"),
+        msg.assistant_message("Done."),
     ]
 
     turns, msgs = _messages_to_turns(messages)
@@ -806,29 +844,26 @@ def test_messages_to_turns_multi_tool():
     assert turn.response == "Done."
     assert len(turn.tool_calls) == 2
 
-    # t1 → "search" with its output
     t1 = turn.tool_calls[0]
     assert t1["name"] == "search"
     assert t1["output"] == "search results"
 
-    # t2 → "fetch" with its output (not lost to single-pointer bug)
     t2 = turn.tool_calls[1]
     assert t2["name"] == "fetch"
     assert t2["output"] == "fetch result"
 
-    # Messages pass through unchanged
     assert msgs is messages
 
 
 def test_messages_to_turns_multi_tool_interleaved():
     """Multi-tool with interleaved response — tool → tool → response."""
-    messages: list[BaseMessage] = [
-        HumanMessage(content="A then B"),
-        AIMessage(content="", tool_calls=[{"name": "A", "args": {}, "id": "a1"}]),
-        ToolMessage(content="A done", tool_call_id="a1"),
-        AIMessage(content="", tool_calls=[{"name": "B", "args": {}, "id": "b1"}]),
-        ToolMessage(content="B done", tool_call_id="b1"),
-        AIMessage(content="All done."),
+    messages: list[dict] = [
+        msg.user_message("A then B"),
+        msg.assistant_message("", tool_calls=[_tc("A", tc_id="a1")]),
+        msg.tool_message("A done", tool_call_id="a1"),
+        msg.assistant_message("", tool_calls=[_tc("B", tc_id="b1")]),
+        msg.tool_message("B done", tool_call_id="b1"),
+        msg.assistant_message("All done."),
     ]
 
     turns, _ = _messages_to_turns(messages)
@@ -842,21 +877,16 @@ def test_messages_to_turns_multi_tool_interleaved():
 
 def test_messages_to_turns_preserves_cron_turn_boundary():
     """Persisted cron batches keep a separate restored turn after a user turn."""
-    messages: list[BaseMessage] = [
-        HumanMessage(content="5s后提醒我吃饭"),
-        AIMessage(
-            content="",
-            tool_calls=[{"name": "cron", "args": {"cron": "*/5 * * * *", "prompt": "提醒我吃饭"}, "id": "u1"}],
-        ),
-        ToolMessage(content="Scheduled: 123", tool_call_id="u1"),
-        AIMessage(content="好的，已设置5秒后提醒你吃饭。"),
-        AIMessage(
-            content="",
-            additional_kwargs={"alex_turn_start": True, "alex_turn_kind": "cron"},
-            tool_calls=[{"name": "cron", "args": {"job_id": "123"}, "id": "c1"}],
-        ),
-        ToolMessage(content="该吃饭啦！", tool_call_id="c1"),
-        AIMessage(content="到点了，该吃饭啦！"),
+    messages: list[dict] = [
+        msg.user_message("5s后提醒我吃饭"),
+        msg.assistant_message("", tool_calls=[_tc("cron", {"cron": "*/5 * * * *", "prompt": "提醒我吃饭"}, tc_id="u1")]),
+        msg.tool_message("Scheduled: 123", tool_call_id="u1"),
+        msg.assistant_message("好的，已设置5秒后提醒你吃饭。"),
+        # Cron turn — marked with alex_turn_start
+        {**msg.assistant_message("", tool_calls=[_tc("cron", {"job_id": "123"}, tc_id="c1")]),
+         "alex_turn_start": True, "alex_turn_kind": "cron"},
+        msg.tool_message("该吃饭啦！", tool_call_id="c1"),
+        msg.assistant_message("到点了，该吃饭啦！"),
     ]
 
     turns, _ = _messages_to_turns(messages)

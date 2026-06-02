@@ -1,32 +1,15 @@
-"""Agent module — application services, turn orchestration, and LLM coordination."""
+"""Agent module — conversational agent with tool-use, memory, and streaming."""
 
 from alex.agent.service import Agent
-from alex.agent.factory import create_agent
-from alex.agent.ports import (
-    AgentFacade,
-    LLMGateway,
-    MemoryPort,
-)
 from alex.agent.chat_service import ChatAppService
-from alex.agent.feedback_service import FeedbackAppService
-from alex.agent.skill_admin_service import SkillAdminAppService
-from alex.agent.prompt import PromptAssembler
-from alex.agent.session_service import SessionService
-from alex.agent.cron_service import CronService
-from alex.agent.turn_processor import TurnProcessor, TurnResult
+from alex.agent.turn_processor import TurnProcessor, TurnResult, TurnServices
+from alex.agent.module import AgentModule
 
 __all__ = [
     "Agent",
-    "AgentFacade",
+    "AgentModule",
     "ChatAppService",
-    "CronService",
-    "FeedbackAppService",
-    "LLMGateway",
-    "MemoryPort",
-    "PromptAssembler",
-    "SessionService",
-    "SkillAdminAppService",
     "TurnProcessor",
     "TurnResult",
-    "create_agent",
+    "TurnServices",
 ]

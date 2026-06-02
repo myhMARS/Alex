@@ -8,7 +8,6 @@ callers can inject test doubles or alternate backends.
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING
 
 from alex.llm.base import LLMConfig
@@ -42,7 +41,7 @@ class SkillService:
     def retrieve(self, query: str, top_k: int = 3) -> list[Skill]:
         return self._retriever.retrieve(query, top_k)
 
-    def inject_skills_prompt(self, query: str) -> str:  # noqa: ARG002  # query reserved for future use
+    def inject_skills_prompt(self, _query: str) -> str:  # reserved for future use
         skills = self._store.list_all()
         active = [s for s in skills if s.status != "DEPRECATED"]
         if not active:
@@ -123,7 +122,7 @@ class SkillService:
     # ── LLM-based merge ──────────────────────────────────────────────────
 
     async def merge_skills(self, config: LLMConfig | None = None) -> dict:
-        from alex.llm.json_client import create_json_completion
+        from alex.llm import create_json_completion
 
         active_skills = [s for s in self._store.list_all() if s.status != "DEPRECATED"]
         if len(active_skills) < 2:

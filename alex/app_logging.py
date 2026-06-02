@@ -11,7 +11,36 @@ from alex.config import get_log_backup_count, get_log_max_bytes
 DEFAULT_LOG_DIR = Path.home() / ".alex" / "logs"
 DEFAULT_MAX_BYTES = 5 * 1024 * 1024
 DEFAULT_BACKUP_COUNT = 5
-LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+LOG_FORMAT = "%(asctime)s %(levelname)-5s [%(module_tag)s] %(message)s"
+
+
+class _ModuleTagFilter(logging.Filter):
+    """为日志记录添加简短的模块标签，如 [agent] [bus] [tools]。"""
+
+    _TAG_MAP = {
+        "alex.agent": "agent",
+        "alex.tools": "tools",
+        "alex.bus": "bus",
+        "alex.tui": "tui",
+        "alex.mcp": "mcp",
+        "alex.skill": "skill",
+        "alex.memory": "memory",
+        "alex.scheduler": "cron",
+        "alex.store": "store",
+        "alex.kernel": "kernel",
+        "alex.llm": "llm",
+        "alex.entry": "entry",
+    }
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        name = record.name
+        tag = "alex"
+        for prefix, short in self._TAG_MAP.items():
+            if name.startswith(prefix):
+                tag = short
+                break
+        record.module_tag = tag  # type: ignore[attr-defined]
+        return True
 
 
 def configure_logging(
@@ -47,6 +76,7 @@ def configure_logging(
     )
     file_handler.setFormatter(formatter)
     file_handler.setLevel(logging.INFO)
+    file_handler.addFilter(_ModuleTagFilter())
     file_handler._alex_managed = True  # type: ignore[attr-defined]
 
     root.addHandler(file_handler)

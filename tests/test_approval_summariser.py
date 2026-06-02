@@ -13,7 +13,6 @@ from alex.tools.fs import (
 from alex.tools.permissions import (
     PERMISSION_WRITE,
     PermissionPolicy,
-    PreviewBlock,
     ToolApprovalRequest,
     attach_approval_summariser,
     build_approval_request,

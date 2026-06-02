@@ -2,10 +2,9 @@
 
 import asyncio
 
-from ddgs import DDGS
-from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+from alex.tools.models import AlexTool
 from alex.tools.permissions import PERMISSION_NETWORK
 
 
@@ -19,6 +18,9 @@ class WebSearchInput(BaseModel):
 
 def _do_search(query: str, max_results: int) -> list[dict]:
     """Synchronous search — runs in a thread to avoid blocking the event loop."""
+    # Imported lazily so ``ddgs`` stays off the startup critical path.
+    from ddgs import DDGS
+
     return list(DDGS().text(query, max_results=max_results))
 
 
@@ -50,8 +52,8 @@ async def _web_search(query: str, max_results: int = 5) -> str:
         return f"Search error for '{query}': {type(e).__name__} - {e}"
 
 
-def create_web_search_tool() -> StructuredTool:
-    return StructuredTool.from_function(
+def create_web_search_tool() -> AlexTool:
+    return AlexTool.from_function(
         coroutine=_web_search,
         name="web_search",
         description=(

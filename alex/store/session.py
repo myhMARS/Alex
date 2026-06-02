@@ -1,9 +1,8 @@
-"""Core session persistence — standard LangChain message sequence serialization.
+"""Core session persistence — message sequence serialization.
 
 Session files are stored as JSON arrays of serialized messages under
-~/.alex/sessions/<session_id>.json.  This keeps the persistence protocol
-in the core layer so that Agent.restore_history() can perform exact
-reconstruction, rather than approximating from a UI view-model.
+~/.alex/sessions/<session_id>.json.  Messages are plain dicts with
+``role`` and ``content`` keys, directly JSON-compatible.
 """
 
 from __future__ import annotations
@@ -12,89 +11,41 @@ import json
 import os
 import tempfile
 import threading
-import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from alex import messages as msg
 
 SESSIONS_DIR = Path.home() / ".alex" / "sessions"
 _SESSION_LOCKS: dict[str, threading.RLock] = {}
 _SESSION_LOCKS_GUARD = threading.Lock()
 
-# ── serialization -----------------------------------------------------------
 
-_TYPE_MAP: dict[str, type[BaseMessage]] = {
-    "human": HumanMessage,
-    "ai": AIMessage,
-    "tool": ToolMessage,
-    "system": SystemMessage,
-}
-
-_TYPE_REVERSE: dict[type[BaseMessage], str] = {
-    HumanMessage: "human",
-    AIMessage: "ai",
-    ToolMessage: "tool",
-    SystemMessage: "system",
-}
+# ── serialization (plain dicts → JSON) ────────────────────────────────────
 
 
-def serialize_message(msg: BaseMessage) -> dict[str, Any]:
-    """Serialize a single LangChain message to a JSON-safe dict."""
-    record: dict[str, Any] = {
-        "type": _TYPE_REVERSE[type(msg)],
-        "content": getattr(msg, "content", ""),
-    }
-
-    if isinstance(msg, AIMessage):
-        if msg.tool_calls:
-            record["tool_calls"] = msg.tool_calls
-        ak = getattr(msg, "additional_kwargs", None)
-        if ak:
-            record["additional_kwargs"] = dict(ak)
-
-    if isinstance(msg, ToolMessage):
-        record["tool_call_id"] = getattr(msg, "tool_call_id", "")
-
-    return record
+def serialize_message(message: dict[str, Any]) -> dict[str, Any]:
+    """Return a JSON-safe copy of *message* (already plain dicts)."""
+    return dict(message)
 
 
-def deserialize_message(record: dict[str, Any]) -> BaseMessage:
-    """Deserialize a JSON record back into a LangChain message."""
-    mtype = _TYPE_MAP.get(record.get("type", ""), AIMessage)
-    content = record.get("content", "")
-
-    if mtype is HumanMessage:
-        return HumanMessage(content=content)
-
-    if mtype is ToolMessage:
-        return ToolMessage(content=content, tool_call_id=record.get("tool_call_id", ""))
-
-    if mtype is AIMessage:
-        ak = record.get("additional_kwargs")
-        tc = record.get("tool_calls")
-        kwargs: dict[str, Any] = {}
-        if ak is not None:
-            kwargs["additional_kwargs"] = ak
-        if tc is not None:
-            kwargs["tool_calls"] = tc
-        return AIMessage(content=content, **kwargs)
-
-    # SystemMessage
-    return SystemMessage(content=content)
+def deserialize_message(record: dict[str, Any]) -> dict[str, Any]:
+    """Return *record* as a message dict."""
+    return dict(record)
 
 
-def serialize_messages(messages: list[BaseMessage]) -> list[dict[str, Any]]:
+def serialize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [serialize_message(m) for m in messages]
 
 
-def deserialize_messages(records: list[dict[str, Any]]) -> list[BaseMessage]:
+def deserialize_messages(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [deserialize_message(r) for r in records]
 
 
-# ── file I/O ----------------------------------------------------------------
+# ── file I/O ──────────────────────────────────────────────────────────────
+
 
 def _session_path(session_id: str) -> Path:
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
@@ -125,14 +76,14 @@ def _get_session_lock(session_id: str) -> threading.RLock:
         return lock
 
 
-def save_session(session_id: str, messages: list[BaseMessage]) -> Path:
+def save_session(session_id: str, messages: list[dict[str, Any]]) -> Path:
     """Persist a message sequence to ~/.alex/sessions/<session_id>.json."""
     return save_session_bundle(session_id, messages)
 
 
 def save_session_bundle(
     session_id: str,
-    messages: list[BaseMessage],
+    messages: list[dict[str, Any]],
     cron_history: list[dict[str, Any]] | None = None,
 ) -> Path:
     """Persist messages plus session-scoped cron execution history."""
@@ -140,7 +91,13 @@ def save_session_bundle(
         path = _session_path(session_id)
         existing = load_session_raw(session_id) or {}
         created_at = existing.get("created_at") or datetime.now().isoformat()
-        first_msg = messages[0].content if messages else ""
+        first_msg = ""
+        for m in messages:
+            if msg.is_user(m):
+                first_msg = m.get("content", "")
+                break
+        if not first_msg and messages:
+            first_msg = messages[0].get("content", "")
         if first_msg and len(first_msg) > 80:
             first_msg = first_msg[:80]
         effective_cron_history = cron_history
@@ -157,7 +114,7 @@ def save_session_bundle(
         return path
 
 
-def load_session(session_id: str) -> list[BaseMessage] | None:
+def load_session(session_id: str) -> list[dict[str, Any]] | None:
     """Load a message sequence from disk.  Returns None if the file is missing or corrupt."""
     path = _session_path(session_id)
     if not path.exists():

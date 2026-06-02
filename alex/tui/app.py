@@ -1,8 +1,8 @@
-"""Textual TUI for Alex agent — alternate screen with scrollable chat."""
+"""Textual TUI for Alex agent — 直接通过 bus 与所有模块通信。"""
 
 from __future__ import annotations
 
-import asyncio
+from typing import Any
 
 from textual import on, work
 from textual.app import App, ComposeResult
@@ -11,7 +11,6 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.timer import Timer
 from textual.widgets import Header, Input, Static
 
-from alex.agent.ports import AgentFacade
 from alex.bus import AsyncEventBus
 from alex.bus.events import (
     CronDebugEvent,
@@ -23,15 +22,12 @@ from alex.bus.events import (
     TokenEmitted,
     ToolFinished,
     ToolStarted,
+    ToolsProvided,
     TurnCompleted,
     TurnFailed,
     TurnStarted,
 )
-from alex.tools.mcp_client import (
-    MCPClientPool,
-    MCPUnavailableError,
-    load_mcp_tools_from_config,
-)
+from alex.kernel.contracts.chat import FeedbackSubmitted, UserTurnRequested
 from alex.tui.view_models import ChatHistory
 from alex.tui.view_state import SessionViewState
 from alex.tui.chat_projector import ChatProjector
@@ -40,12 +36,15 @@ from alex.tui.controller import ChatControllerMixin
 
 
 class AlexApp(ChatControllerMixin, App):
-    """Alex Agent TUI — chat interface with scrollable history."""
+    """Alex Agent TUI — 直接通过 bus 与所有模块通信，无 AgentFacade 中间层。"""
 
     TITLE = "Alex"
     SUB_TITLE = "/help for shortcuts"
 
     CSS_PATH = "alex.tcss"
+
+    ENABLE_COMMAND_PALETTE = False
+    SELECTION_ENABLED = True
 
     BINDINGS = [
         Binding("ctrl+t", "toggle_thinking", "Thinking", show=False, priority=True),
@@ -56,22 +55,44 @@ class AlexApp(ChatControllerMixin, App):
         Binding("ctrl+c", "quit", "Quit", show=False),
     ]
 
-    def __init__(self, agent: AgentFacade, event_bus: AsyncEventBus | None = None, **kwargs) -> None:
+    def __init__(self, bus: AsyncEventBus | None = None, *, host_managed: bool = False, **kwargs) -> None:
         super().__init__(**kwargs)
-        self._agent = agent
-        self._bus = event_bus or AsyncEventBus()
+        self._bus: AsyncEventBus = bus or AsyncEventBus()
+        self._host_managed = host_managed
         self._history = ChatHistory()
         self._thinking_expanded = False
         self._skills_expanded = False
         self._tool_output_expanded = False
 
-        # Phase 3: view state, projector, notifications replace scattered attrs
         self._view_state = SessionViewState()
         self._notif = NotificationController(self, self._view_state)
         self._projector = ChatProjector(self)
-        self._mcp_pool: MCPClientPool | None = None
+        self._mcp_configs: list = []
         self._mcp_status_message: str = "未开始加载"
         self._status_timer: Timer | None = None
+
+    # Public contract properties — Package-private _-prefixed internals
+    # exposed through these as a stable interface for collaborators.
+
+    @property
+    def chat_history(self) -> ChatHistory:
+        return self._history
+
+    @property
+    def message_bus(self) -> Any:
+        return self._bus
+
+    @property
+    def notif(self) -> NotificationController:
+        return self._notif
+
+    @property
+    def tool_output_expanded(self) -> bool:
+        return self._tool_output_expanded
+
+    @property
+    def view_state(self) -> SessionViewState:
+        return self._view_state
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -87,131 +108,112 @@ class AlexApp(ChatControllerMixin, App):
         yield Input(placeholder="Message Alex... (Ctrl+G/B to rate, Ctrl+C: quit)", id="input-box")
 
     def on_mount(self) -> None:
-        """Start fresh — no auto-restore."""
+        """Start fresh — subscribe to bus events."""
         self.query_one("#input-box", Input).focus()
-        try:
-            self._agent.bind_event_loop(asyncio.get_running_loop())
-        except Exception:
-            pass
-        self._agent.set_session_context(self._history.session_id, self._history.cron_history)
-        self._install_permission_hook()
         self._status_timer = self.set_interval(1.0, self._refresh_status_bar_tick)
         self._start_services_with_bus()
 
     def _refresh_status_bar_tick(self) -> None:
         self._projector.refresh_status_bar()
 
-    def _install_permission_hook(self) -> None:
-        """Inject the TUI confirm prompt into the agent's permission policy.
-
-        Tolerant of stub agents (used in tests) that don't expose a
-        ``permissions`` property.
-        """
-        existing = getattr(self._agent, "permissions", None)
-        if existing is None:
-            return
-        existing.confirm_hook = self._notif.confirm_permission
-        # Re-apply so any already-registered tools and the executor see
-        # the updated hook (set_permissions also rewraps gated tools).
-        try:
-            self._agent.set_permissions(existing)
-        except AttributeError:
-            pass
-
     @work(exclusive=True)
     async def _start_services_with_bus(self) -> None:
         bus = self._bus
-        if bus is not None:
-            await bus.start()
-            p = self._projector
-            await bus.subscribe(CronJobEvent, p.on_cron_job_event)
-            await bus.subscribe(CronDebugEvent, p.on_cron_debug_event)
-            await bus.subscribe(SkillReflectEvent, p.on_skill_reflect_event)
-            await bus.subscribe(SkillReflectErrorEvent, p.on_skill_reflect_error_event)
-            await bus.subscribe(TurnStarted, p.on_turn_started)
-            await bus.subscribe(SkillLoaded, p.on_skill_loaded)
-            await bus.subscribe(ThinkingUpdated, p.on_thinking)
-            await bus.subscribe(TokenEmitted, p.on_token)
-            await bus.subscribe(ToolStarted, p.on_tool_started)
-            await bus.subscribe(ToolFinished, p.on_tool_finished)
-            await bus.subscribe(TurnCompleted, p.on_turn_completed)
-            await bus.subscribe(TurnFailed, p.on_turn_failed)
-            await self._agent.subscribe_store(bus)
-            if self._agent.bus is None:
-                self._agent.bind_event_bus(bus)
-        try:
-            await self._agent.start_services()
-        except Exception:
-            pass
+        # Bus may already be started by ModuleHost — start() is idempotent
+        await bus.start()
+
+        # 绑定 NotificationController 到 bus（订阅权限请求事件）
+        await self._notif.bind_bus(bus)
+
+        # 订阅所有 UI 相关事件
+        # 使用 _wrap_handler 确保 handler 在 Textual app context 中执行
+        p = self._projector
+        await bus.subscribe(CronJobEvent, self._wrap_handler(p.on_cron_job_event))
+        await bus.subscribe(CronDebugEvent, self._wrap_handler(p.on_cron_debug_event))
+        await bus.subscribe(SkillReflectEvent, self._wrap_handler(p.on_skill_reflect_event))
+        await bus.subscribe(SkillReflectErrorEvent, self._wrap_handler(p.on_skill_reflect_error_event))
+        await bus.subscribe(TurnStarted, self._wrap_handler(p.on_turn_started))
+        await bus.subscribe(SkillLoaded, self._wrap_handler(p.on_skill_loaded))
+        await bus.subscribe(ThinkingUpdated, self._wrap_handler(p.on_thinking))
+        await bus.subscribe(TokenEmitted, self._wrap_handler(p.on_token))
+        await bus.subscribe(ToolStarted, self._wrap_handler(p.on_tool_started))
+        await bus.subscribe(ToolFinished, self._wrap_handler(p.on_tool_finished))
+        await bus.subscribe(ToolsProvided, self._wrap_handler(self._on_mcp_tools_provided))
+        await bus.subscribe(TurnCompleted, self._wrap_handler(p.on_turn_completed))
+        await bus.subscribe(TurnFailed, self._wrap_handler(p.on_turn_failed))
+
         self._projector.refresh_status_bar()
 
-        await self._connect_mcp()
-        self._projector.refresh_status_bar()
+    def _wrap_handler(self, handler):
+        """包装 bus 事件 handler，确保在 Textual app context 中执行。
 
-    async def _connect_mcp(self) -> None:
-        """Load and register MCP tools from ``~/.alex/mcp.json``.
-
-        Failures are surfaced as toasts so a missing required dependency
-        or a misconfigured server doesn't block startup.
+        bus dispatch loop 不在 Textual context 中，直接操作 widget 会
+        触发 LookupError: active_app。用 run_worker 调度到 app context。
         """
-        self._mcp_status_message = "加载中"
-        try:
-            pool, tools = await load_mcp_tools_from_config()
-        except MCPUnavailableError as e:
-            self._mcp_status_message = f"不可用：{e}"
-            self._notif.show_toast(f"MCP 不可用：{e}", duration=4)
-            return
-        except Exception as e:
-            self._mcp_status_message = f"加载失败：{type(e).__name__}: {e}"
-            self._notif.show_toast(f"MCP 加载失败：{type(e).__name__}: {e}", duration=4)
-            return
+        async def _wrapped(event):
+            self.run_worker(handler(event), exclusive=False)
+        return _wrapped
 
-        self._mcp_pool = pool
-        connections = pool.connections
-        connected = sum(1 for conn in connections if not conn.error)
-        if not connections:
-            self._mcp_status_message = "未发现 MCP server 配置"
-        else:
-            self._mcp_status_message = (
-                f"已处理 {len(connections)} 个 server，连接成功 {connected} 个，注册 {len(tools)} 个工具"
-            )
-        if not tools:
+        # Load MCP config for status display
+        self._load_mcp_config_sync()
+        self._projector.refresh_status_bar()
+
+    async def _on_mcp_tools_provided(self, event: ToolsProvided) -> None:
+        """Called when MCPModule announces tools — update status display."""
+        if event.provider == "mcp":
+            count = len(event.specs)
+            self._mcp_status_message = f"已连接，注册 {count} 个工具"
+            self._projector.refresh_status_bar()
+
+    def _load_mcp_config_sync(self) -> None:
+        """Load MCP config file for the /mcp status page."""
+        if self._mcp_configs or self._mcp_status_message != "未开始加载":
             return
-        for tool in tools:
-            try:
-                self._agent.register_tool(tool)
-            except Exception:
-                continue
-        self._notif.show_toast(f"已加载 {len(tools)} 个 MCP 工具", duration=2)
+        try:
+            from alex.config import load_mcp_config
+            self._mcp_configs = load_mcp_config()
+            if self._mcp_configs:
+                self._mcp_status_message = "连接中（后台）"
+            else:
+                self._mcp_status_message = "未发现 MCP server 配置"
+        except Exception:
+            self._mcp_configs = []
+            self._mcp_status_message = "配置读取失败"
 
     def action_quit(self) -> None:
         self._do_shutdown()
 
     @work(exclusive=True)
     async def _do_shutdown(self) -> None:
-        try:
-            await self._agent.shutdown()
-        except Exception:
-            pass
-        if self._mcp_pool is not None:
-            try:
-                await self._mcp_pool.aclose()
-            except Exception:
-                pass
-            self._mcp_pool = None
         self.exit()
 
-    # ── key-binding actions delegated to NotificationController ─────────
+    # ── key-binding actions ─────────────────────────────────────────────
 
     def action_rate_good(self) -> None:
-        self._notif.rate_response(
-            True, self._agent, self._view_state.pending_feedback_turn_id
-        )
+        self._submit_feedback(positive=True)
 
     def action_rate_bad(self) -> None:
-        self._notif.rate_response(
-            False, self._agent, self._view_state.pending_feedback_turn_id
-        )
+        self._submit_feedback(positive=False)
+
+    def _submit_feedback(self, positive: bool) -> None:
+        """Submit feedback via bus event."""
+        vs = self._view_state
+        if vs.last_response_rated:
+            return
+        vs.last_response_rated = True
+        turn_id = vs.pending_feedback_turn_id
+        vs.pending_feedback_turn_id = ""
+
+        # 发布反馈事件到 bus → agent/skill 模块处理
+        self._bus.publish(FeedbackSubmitted(
+            session_id=self._history.session_id,
+            turn_id=turn_id,
+            positive=positive,
+        ))
+
+        if not positive:
+            self._notif.show_toast("已标记为不满意，正在反思…", duration=2)
+        self._notif.dismiss_feedback()
 
     # ── input handling ──────────────────────────────────────────────────
 
@@ -229,7 +231,7 @@ class AlexApp(ChatControllerMixin, App):
         cmd = user_input.lower()
         vs = self._view_state
 
-        # ── modal gate: when a page panel is showing, only allow :q, /x, and resume selection ──
+        # ── modal gate ──
         if vs.page_mode is not None:
             if cmd == ":q":
                 self._dismiss_overlay()
@@ -299,15 +301,13 @@ class AlexApp(ChatControllerMixin, App):
         notif.dismiss_feedback()
         self._projector.note_user_submission(user_input)
 
-        # Start async response; the user bubble is mounted only when the turn
-        # is actually dequeued for processing.
+        # 发布用户消息到 bus → agent 模块订阅并处理
         self._run_chat(user_input)
 
     @work
     async def _run_chat(self, user_input: str) -> None:
-        """Run agent chat — rendering and history updates are bus-driven."""
-        try:
-            async for _ in self._agent.chat_stream(user_input):
-                await asyncio.sleep(0)
-        except Exception as e:
-            self._notif.show_toast(f"对话执行失败：{e}", duration=3)
+        """发布 UserTurnRequested 到 bus，agent 模块处理后通过事件流式返回结果。"""
+        self._bus.publish(UserTurnRequested(
+            session_id=self._history.session_id,
+            user_text=user_input,
+        ))

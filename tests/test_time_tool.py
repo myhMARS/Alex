@@ -1,7 +1,5 @@
 import pytest
 
-pytest.importorskip("langchain_core")
-
 from alex.tools.time import _get_current_time
 
 

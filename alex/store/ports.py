@@ -1,15 +1,8 @@
-"""Store module public interfaces — stable repository contracts.
-
-Defines the SessionBundle shape and SessionRepository port that
-SessionPersistence (adapter) implements. The agent layer depends
-only on these interfaces, never on store internals.
-"""
+"""Store module public interfaces — stable repository contracts."""
 
 from __future__ import annotations
 
 from typing import Any, Protocol, TypedDict
-
-from langchain_core.messages import BaseMessage
 
 
 class SessionBundle(TypedDict):
@@ -18,18 +11,14 @@ class SessionBundle(TypedDict):
     session_id: str
     created_at: str
     first_message: str
-    messages: list[BaseMessage]
+    messages: list[dict[str, Any]]
     cron_history: list[dict[str, Any]]
 
 
 class SessionRepository(Protocol):
-    """Session persistence — load/save/list/delete session bundles.
+    """Session persistence — load/save/list/delete session bundles."""
 
-    Matches the actual SessionPersistence adapter interface so the
-    port no longer drifts from the implementation.
-    """
-
-    def save(self, session_id: str, messages: list[BaseMessage]) -> None: ...
+    def save(self, session_id: str, messages: list[dict[str, Any]]) -> None: ...
 
     def load(self, session_id: str) -> SessionBundle | None: ...
 

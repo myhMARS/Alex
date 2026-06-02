@@ -149,7 +149,7 @@ async def test_cron_manager_persists_durable_jobs_atomically(tmp_path, monkeypat
         await asyncio.sleep(0)
         return prompt
 
-    monkeypatch.setattr("alex.scheduler.manager.os.replace", _replace)
+    monkeypatch.setattr("alex.scheduler.cron_store.os.replace", _replace)
     mgr = CronManager(lambda n: notes.append(n), storage_dir=tmp_path)
     job_id = await mgr.schedule(
         session_id="atomic-session",
@@ -211,16 +211,26 @@ async def test_cron_manager_restores_durable_jobs_into_current_session(tmp_path)
 
 @pytest.mark.asyncio
 async def test_cron_tool_schedules_raw_prompt():
-    class _SchedulerStub:
-        def __init__(self) -> None:
-            self.calls: list[dict] = []
+    from alex.bus import AsyncEventBus
+    from alex.scheduler.module import CronModule
 
-        async def schedule_cron_job(self, **kwargs) -> str:
+    bus = AsyncEventBus()
+    await bus.start()
+
+    class _MockManager:
+        def __init__(self):
+            self.calls = []
+        async def schedule(self, **kwargs):
             self.calls.append(kwargs)
             return "job-1"
+        def list_jobs(self):
+            return []
 
-    scheduler = _SchedulerStub()
-    tool = create_cron_tool(scheduler)
+    mgr = _MockManager()
+    cron_mod = CronModule(cron_manager=mgr)
+    await cron_mod.start(bus)
+
+    tool = create_cron_tool(bus)
     result = await tool.coroutine(
         cron="*/5 * * * *",
         prompt="└─ ✓ 提醒用户：2分钟到了，请去跑测试！",
@@ -229,49 +239,78 @@ async def test_cron_tool_schedules_raw_prompt():
     )
 
     assert result == "Scheduled: job-1"
-    assert scheduler.calls[0]["prompt"] == "└─ ✓ 提醒用户：2分钟到了，请去跑测试！"
+    assert mgr.calls[0]["prompt"] == "└─ ✓ 提醒用户：2分钟到了，请去跑测试！"
+    await bus.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_cron_cancel_tool_deletes_job():
-    class _SchedulerStub:
-        def __init__(self) -> None:
-            self.cancelled: list[str] = []
+    from alex.bus import AsyncEventBus
+    from alex.scheduler.module import CronModule
 
-        async def cancel_cron_job(self, job_id: str) -> bool:
+    bus = AsyncEventBus()
+    await bus.start()
+
+    class _MockManager:
+        def __init__(self):
+            self.cancelled = []
+        async def cancel(self, job_id):
             self.cancelled.append(job_id)
             return True
+        def list_jobs(self):
+            return []
 
-    scheduler = _SchedulerStub()
-    tool = create_cron_cancel_tool(scheduler)
+    mgr = _MockManager()
+    cron_mod = CronModule(cron_manager=mgr)
+    await cron_mod.start(bus)
+
+    tool = create_cron_cancel_tool(bus)
     result = await tool.coroutine(job_id="job-1")
 
     assert result == "Cancelled: job-1"
-    assert scheduler.cancelled == ["job-1"]
+    assert mgr.cancelled == ["job-1"]
+    await bus.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_cron_cancel_tool_requires_job_id():
-    class _SchedulerStub:
-        async def cancel_cron_job(self, job_id: str) -> bool:
-            return True
+    from alex.bus import AsyncEventBus
+    from alex.scheduler.module import CronModule
 
-    tool = create_cron_cancel_tool(_SchedulerStub())
+    bus = AsyncEventBus()
+    await bus.start()
+    cron_mod = CronModule()
+    await cron_mod.start(bus)
+
+    tool = create_cron_cancel_tool(bus)
     result = await tool.coroutine(job_id="")
 
     assert result == "Error: job_id is required"
+    await bus.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_cron_cancel_tool_reports_missing_job():
-    class _SchedulerStub:
-        async def cancel_cron_job(self, job_id: str) -> bool:
-            return False
+    from alex.bus import AsyncEventBus
+    from alex.scheduler.module import CronModule
 
-    tool = create_cron_cancel_tool(_SchedulerStub())
+    bus = AsyncEventBus()
+    await bus.start()
+
+    class _MockManager:
+        async def cancel(self, job_id):
+            return False
+        def list_jobs(self):
+            return []
+
+    cron_mod = CronModule(cron_manager=_MockManager())
+    await cron_mod.start(bus)
+
+    tool = create_cron_cancel_tool(bus)
     result = await tool.coroutine(job_id="missing-job")
 
     assert result == "Error: cron job not found: missing-job"
+    await bus.shutdown()
 
 
 def test_cron_tool_prompt_guidance_restricts_wrapper_text():

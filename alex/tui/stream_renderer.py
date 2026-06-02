@@ -59,6 +59,7 @@ class StreamRenderer:
         self._inflight_bubbles[tool_id] = self.bubble.insert_tool(tool_name, args)
 
     def on_tool_finished(self, tool_id: str, output: str = "") -> None:
+        output_str = ""
         tid = tool_id or ""
         if not tid or tid not in self._inflight_tools:
             while self._inflight_order and self._inflight_order[-1] not in self._inflight_tools:

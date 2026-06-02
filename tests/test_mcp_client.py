@@ -8,15 +8,14 @@ from pathlib import Path
 import httpx
 import pytest
 
-from alex.tools import mcp_client
-from alex.tools.mcp_client import (
+from alex.mcp import mcp_client
+from alex.mcp.mcp_client import (
     MCPClientPool,
-    MCPServerConfig,
     _format_mcp_result,
     _schema_to_pydantic,
-    load_mcp_config,
     load_mcp_tools_from_config,
 )
+from alex.config import MCPServerConfig, load_mcp_config
 from alex.tools.permissions import PERMISSION_NETWORK, required_permission
 
 
