@@ -20,22 +20,32 @@ def main() -> None:
     async def _run() -> None:
         bus = AsyncEventBus()
         host = ModuleHost(bus)
-
-        for ep in entry_points(group="alex.modules"):
-            if ep.name == "tui":
-                continue  # TUI runs after all modules start
-            logger.info("Loading module: %s", ep.name)
-            host.register(ep.load()())
-
-        await host.start_all()
-        logger.info("All modules started via ModuleHost")
-
-        from alex.tui import AlexApp
-        app = AlexApp(bus, host_managed=True)
-
+        started = False
         try:
+            for ep in entry_points(group="alex.modules"):
+                if ep.name == "tui":
+                    continue  # TUI runs after all modules start
+                logger.info("Loading module: %s", ep.name)
+                host.register(ep.load()())
+
+            await host.start_all()
+            started = True
+            logger.info("All modules started via ModuleHost")
+
+            from alex.tui import AlexApp
+            app = AlexApp(bus, host_managed=True)
             await app.run_async()
         finally:
-            await host.stop_all()
+            if started:
+                try:
+                    await host.stop_all()
+                except Exception:
+                    logger.warning("Error during host.stop_all()", exc_info=True)
+            else:
+                # 启动失败 — 至少关闭 bus
+                try:
+                    await bus.shutdown()
+                except Exception:
+                    pass
 
     asyncio.run(_run())

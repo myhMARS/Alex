@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 from collections import deque
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING
 
 from textual.containers import VerticalScroll
 from textual.widgets import Static
@@ -33,21 +33,7 @@ from alex.tui.presenter import AlexBubble, SystemBubble, UserBubble
 from alex.tui.stream_renderer import StreamRenderer
 
 if TYPE_CHECKING:
-    from alex.tui.notification_controller import NotificationController
-    from alex.tui.view_models import ChatHistory
-    from alex.tui.view_state import SessionViewState
-
-
-class _ProjectorHost(Protocol):
-    """Minimal interface ChatProjector requires from its host App."""
-
-    chat_history: ChatHistory
-    message_bus: Any
-    notif: NotificationController
-    tool_output_expanded: bool
-    view_state: SessionViewState
-
-    def query_one(self, selector: str, expect_type: type) -> Any: ...
+    from alex.tui.app import AlexApp
 
 
 class ChatProjector:
@@ -58,7 +44,7 @@ class ChatProjector:
     rather than holding the logic themselves.
     """
 
-    def __init__(self, app: _ProjectorHost) -> None:
+    def __init__(self, app: AlexApp) -> None:
         self._app = app
         self._active_renderers: dict[str, StreamRenderer] = {}
         self._user_inputs: dict[str, str] = {}

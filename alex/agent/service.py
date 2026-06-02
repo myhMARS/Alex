@@ -28,7 +28,7 @@ class Agent:
         bus: AsyncEventBus,
         *,
         system_prompt: str = "You are a helpful AI assistant.",
-        max_iterations: int = 5,
+        max_iterations: int = 15,
         callbacks: list | None = None,
         llm: ChatClient | None = None,
     ) -> None:

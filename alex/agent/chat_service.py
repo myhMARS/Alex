@@ -122,7 +122,7 @@ class ChatAppService:
         llm: ChatClient | None,
         bus: AsyncEventBus,
         system_prompt: str,
-        max_iterations: int = 5,
+        max_iterations: int = 15,
         callbacks: list | None = None,
     ) -> None:
         self._llm: ChatClient | None = llm
@@ -146,8 +146,12 @@ class ChatAppService:
     # ── bus ────────────────────────────────────────────────────────────
 
     def set_event_bus(self, bus: AsyncEventBus | None) -> None:
-        if bus is not None:
-            self._bus = bus
+        if bus is None:
+            return
+        self._bus = bus
+        # 同步更新所有持有 bus 引用的内部对象
+        self._prompt._bus = bus  # _PromptAssembler
+        self._turn_processor._services = _BusTurnServices(bus)  # 重建 services
 
     async def push_notification(self, event) -> None:
         self._bus.publish(event)

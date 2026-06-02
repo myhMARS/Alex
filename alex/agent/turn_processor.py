@@ -98,7 +98,7 @@ class TurnProcessor:
         push_notification,
         services: TurnServices,
         get_system_prompt: Callable[[], str] | None = None,
-        max_iterations: int = 5,
+        max_iterations: int = 15,
         callbacks: list | None = None,
         session_id: str = "",
     ) -> None:
@@ -395,7 +395,35 @@ class TurnProcessor:
                 intermediate_msgs.append(tool_msg)
 
         else:
-            # max_iterations reached — append whatever we have
+            # max_iterations reached — 强制让 LLM 给出最终回复（不带 tools）
+            logger.warning("max_iterations reached, forcing final answer sid=%s", sid)
+            collected_content = ""
+            collected_thinking = ""
+            try:
+                async for event in llm.stream_chat(
+                    messages,
+                    tools=None,  # 不允许再调工具
+                    system_prompt=self._get_system_prompt_for_iteration(),
+                ):
+                    if isinstance(event, ContentDelta):
+                        collected_content += event.content
+                        await emit(TokenEmitted(
+                            session_id=sid, turn_id=turn_id,
+                            delta=event.content, stream_id=stream_id or "",
+                        ))
+                    elif isinstance(event, ThinkingDelta):
+                        collected_thinking += event.content
+                        await emit(ThinkingUpdated(
+                            session_id=sid, turn_id=turn_id,
+                            delta=event.content, stream_id=stream_id or "",
+                        ))
+                    elif isinstance(event, StreamEnd):
+                        collected_content = event.content
+                        collected_thinking = event.thinking
+            except Exception:
+                logger.warning("forced final answer failed", exc_info=True)
+                collected_content = collected_content or "（达到最大工具调用次数，未能完成回复）"
+
             assistant_msg = msg.assistant_message(
                 collected_content,
                 reasoning_content=collected_thinking,

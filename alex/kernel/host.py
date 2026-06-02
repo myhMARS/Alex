@@ -32,14 +32,22 @@ class ModuleHost:
         logger.info("Registered module: %s", module.name)
 
     async def start_all(self) -> None:
-        """Start the bus, then start each module in dependency order."""
+        """Start the bus, then start each module in dependency order.
+
+        如果中途某模块启动失败，已启动的模块会按逆序停止以保证一致性。
+        """
         await self._bus.start()
         order = self._topological_sort()
-        for module in order:
-            logger.info("Starting module: %s", module.name)
-            await module.start(self._bus)
-            self._started.append(module)
-        logger.info("All %d modules started.", len(self._started))
+        try:
+            for module in order:
+                logger.info("Starting module: %s", module.name)
+                await module.start(self._bus)
+                self._started.append(module)
+            logger.info("All %d modules started.", len(self._started))
+        except Exception:
+            logger.exception("Module start failed, rolling back already-started modules")
+            await self.stop_all()
+            raise
 
     async def stop_all(self) -> None:
         """Stop each module (reverse start order), then shut down the bus."""
