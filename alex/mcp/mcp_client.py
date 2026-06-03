@@ -495,7 +495,9 @@ class MCPClientPool:
                     cfg.name, cfg.transport, cfg.timeout if cfg.timeout else 10.0,
                 )
                 connection.error = f"TimeoutError: connection timed out after {cfg.timeout if cfg.timeout else 10.0:.0f}s"
-            except Exception as e:
+            except asyncio.CancelledError:
+                raise
+            except BaseException as e:
                 logger.warning("MCP server '%s' (%s) failed to connect: %s", cfg.name, cfg.transport, e)
                 connection.error = f"{type(e).__name__}: {e}"
             self._connections.append(connection)

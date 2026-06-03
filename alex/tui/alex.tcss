@@ -157,3 +157,14 @@ ToolBubble > #tool-output-full {
 ToolBubble > .hidden {
     display: none;
 }
+
+Tree > .tree--highlight-line,
+Tree > .tree--cursor {
+    background: $panel;
+    color: $text;
+}
+
+Tree > .tree--guides-hover,
+Tree > .tree--guides-selected {
+    color: $primary;
+}

@@ -10,7 +10,7 @@ from typing import Any
 
 from textual import work
 from textual.containers import VerticalScroll
-from textual.widgets import Input, Static
+from textual.widgets import Input, Static, Tree
 
 from alex.kernel.contracts.cron import ListCronJobs
 from alex.kernel.contracts.memory import ClearMemory, ReplaceMemory
@@ -65,6 +65,10 @@ class ChatControllerMixin:
         page_view.add_class("hidden")
         self.query_one("#page-title", Static).update("")
         self.query_one("#page-content", Static).update("")
+        # Hide MCP tree
+        existing = self.query("#mcp-tree")
+        if existing:
+            existing.first().display = False
         vs.showing_session_list = False
         vs.page_mode = None
         chat_view.scroll_end()
@@ -75,6 +79,11 @@ class ChatControllerMixin:
         page_view = self.query_one("#page-view", VerticalScroll)
         chat_view.add_class("hidden")
         page_view.remove_class("hidden")
+        # Hide MCP tree when showing a static page
+        existing = self.query("#mcp-tree")
+        if existing:
+            existing.first().display = False
+        self.query_one("#page-content", Static).display = True
         self.query_one("#page-title", Static).update(title)
         self.query_one("#page-content", Static).update(content)
         page_view.scroll_home()
@@ -212,80 +221,123 @@ class ChatControllerMixin:
         self._show_page("Cron 任务", content, mode="cron")
 
     def _handle_mcp_cmd(self) -> None:
-        """Show current MCP runtime status — driven by MCPModule bus events."""
-        lines = ["  \U0001f50c MCP 状态", ""]
-        status = str(getattr(self, "_mcp_status_message", "") or "未开始加载")
-        lines.append(f"  总览: {status}")
-
-        # Prefer event metadata, fall back to direct _mcp_pool (backward compat)
+        """Show MCP runtime status using a Tree widget for native navigation."""
         servers: list[dict] = list(getattr(self, "_mcp_servers", []) or [])
         pool = getattr(self, "_mcp_pool", None)
         connections = list(getattr(pool, "connections", []) or [])
         configs = list(getattr(self, "_mcp_configs", []) or [])
+        status = str(getattr(self, "_mcp_status_message", "") or "未开始加载")
 
-        if servers:
-            lines.append("")
-            for srv in servers:
-                name = srv.get("name", "?")
-                transport = srv.get("transport", "?")
-                srv_status = srv.get("status", "?")
-                tool_count = srv.get("tool_count")
-                error = srv.get("error")
-                enabled = srv.get("enabled", True)
+        # Switch to page view
+        chat_view = self.query_one("#chat-view", VerticalScroll)
+        page_view = self.query_one("#page-view", VerticalScroll)
+        chat_view.add_class("hidden")
+        page_view.remove_class("hidden")
+        self._view_state.page_mode = "mcp"
 
-                if not enabled:
-                    state = "DISABLED"
-                elif srv_status == "ERROR" or error:
-                    state = "ERROR"
-                elif srv_status in ("connected", "CONNECTED"):
-                    state = "CONNECTED"
-                else:
-                    state = srv_status.upper()
+        # Set title
+        self.query_one("#page-title", Static).update(f"\U0001f50c MCP 状态 — {status}")
 
-                tool_str = str(tool_count) if tool_count is not None else "?"
-                lines.append(f"  - {name} [{transport}] {state}  tools:{tool_str}")
-                cmd = srv.get("command", "")
-                url = srv.get("url", "")
-                if cmd:
-                    lines.append(f"    target: {cmd}")
-                if url:
-                    lines.append(f"    target: {url}")
-                if error:
-                    lines.append(f"    error: {error}")
-        elif connections:
-            lines.append("")
-            for conn in connections:
-                cfg = conn.config
-                if conn.error == "disabled":
-                    state = "DISABLED"
-                elif conn.error:
-                    state = "ERROR"
-                else:
-                    state = "CONNECTED"
-                target = cfg.command if cfg.transport == "stdio" else cfg.url
-                lines.append(f"  - {cfg.name} [{cfg.transport}] {state}  tools:{len(conn.tools)}")
-                if target:
-                    lines.append(f"    target: {target}")
-                if conn.error and conn.error != "disabled":
-                    lines.append(f"    error: {conn.error}")
-        elif configs:
-            lines.append("")
-            for cfg in configs:
-                name = cfg.name if hasattr(cfg, "name") else str(cfg)
-                transport = cfg.transport if hasattr(cfg, "transport") else "?"
-                enabled = cfg.enabled if hasattr(cfg, "enabled") else True
-                state = "LOADING" if enabled else "DISABLED"
-                target = ""
-                if hasattr(cfg, "command") and cfg.command:
-                    target = f"    target: {cfg.command}"
-                if hasattr(cfg, "url") and cfg.url:
-                    target = f"    target: {cfg.url}"
-                lines.append(f"  - {name} [{transport}] {state}  tools:?")
-                if target:
-                    lines.append(target)
+        # Hide static content, show / mount Tree
+        self.query_one("#page-content", Static).display = False
+        existing = self.query("#mcp-tree")
+        tree: Tree
+        if existing:
+            tree = existing.first()
+            tree.display = True
+            tree.clear()
         else:
-            lines.extend(["", "  [等待 MCP 模块状态更新...]"])
-        self._show_page("MCP 状态", "\n".join(lines), mode="mcp")
+            tree = Tree(f"\U0001f50c {status}", id="mcp-tree")
+            page_view.mount(tree)
+        tree.show_root = True
+        tree.focus()
+
+        if not servers and not connections:
+            tree.root.add("[dim]等待 MCP 模块状态更新...[/]")
+            return
+
+        # Build server list from event metadata, or fall back to _mcp_pool
+        if servers:
+            self._populate_tree_from_servers(tree, servers)
+        elif connections:
+            self._populate_tree_from_pool(tree, connections)
+
+    def _populate_tree_from_servers(self, tree: Tree, servers: list[dict]) -> None:
+        """Populate Tree from ToolsProvided event metadata."""
+        for srv in servers:
+            name = srv.get("name", "?")
+            transport = srv.get("transport", "?")
+            srv_status = srv.get("status", "?")
+            tool_count = srv.get("tool_count")
+            error = srv.get("error")
+            enabled = srv.get("enabled", True)
+
+            state = _server_state_label(srv_status, error, enabled)
+            tool_str = str(tool_count) if tool_count is not None else "?"
+            label = f"{name}  [{transport}]  {state}  [bold]tools:{tool_str}[/]"
+
+            cmd = srv.get("command", "")
+            url = srv.get("url", "")
+            if cmd:
+                label += f"\n    [dim]target: {cmd}[/]"
+            if url:
+                label += f"\n    [dim]target: {url}[/]"
+            if error:
+                label += f"\n    [$error]error: {error}[/]"
+
+            srv_node = tree.root.add(label, expand=False)
+            tools: list[dict] = srv.get("tools", []) or []
+            for t in tools:
+                t_name = t.get("name", "?")
+                t_desc = t.get("description", "")
+                tool_label = f"[bold $success]\U0001f527 {t_name}[/]"
+                if t_desc:
+                    tool_label += f"\n    [italic $text-muted]{t_desc}[/]"
+                srv_node.add_leaf(tool_label)
+            if not tools and srv_status in ("connected", "CONNECTED"):
+                srv_node.add_leaf("[dim](此 server 未注册任何工具)[/]")
+
+    def _populate_tree_from_pool(self, tree: Tree, connections: list) -> None:
+        """Populate Tree from _mcp_pool (backward compat for tests / direct access)."""
+        for conn in connections:
+            cfg = conn.config
+            if conn.error == "disabled":
+                state = "[bold $text-disabled]DISABLED[/]"
+            elif conn.error:
+                state = "[bold $error]ERROR[/]"
+            else:
+                state = "[bold $success]CONNECTED[/]"
+
+            target = cfg.command if cfg.transport == "stdio" else cfg.url
+            label = f"{cfg.name}  [{cfg.transport}]  {state}  [bold]tools:{len(conn.tools)}[/]"
+            if target:
+                label += f"\n    [dim]target: {target}[/]"
+            if conn.error and conn.error != "disabled":
+                label += f"\n    [$error]error: {conn.error}[/]"
+
+            srv_node = tree.root.add(label, expand=False)
+            for t in conn.tools:
+                t_name = getattr(t, "name", t) if hasattr(t, "name") else str(t)
+                t_desc = getattr(t, "description", "") if hasattr(t, "description") else ""
+                tool_label = f"[bold $success]\U0001f527 {t_name}[/]"
+                if t_desc:
+                    tool_label += f"\n    [italic $text-muted]{t_desc}[/]"
+                srv_node.add_leaf(tool_label)
+            if not conn.tools:
+                srv_node.add_leaf("[dim](此 server 未注册任何工具)[/]")
+
+
+def _server_state_label(srv_status: str, error: str | None, enabled: bool) -> str:
+    """Rich markup label for a server's connection state."""
+    if not enabled:
+        return "[bold $text-disabled]DISABLED[/]"
+    if srv_status == "ERROR" or error:
+        return "[bold $error]ERROR[/]"
+    if srv_status in ("connected", "CONNECTED"):
+        return "[bold $success]CONNECTED[/]"
+    if srv_status == "connecting":
+        return "[italic]connecting[/]"
+    return srv_status.upper()
 
     # ── session management（通过 bus）──────────────────────────────────
 

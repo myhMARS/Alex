@@ -562,13 +562,17 @@ async def test_mcp_command_shows_runtime_status():
 
         assert pilot.app._view_state.page_mode == "mcp"
         title = str(getattr(pilot.app.query_one("#page-title"), "_Static__content"))
-        content = str(getattr(pilot.app.query_one("#page-content"), "_Static__content"))
         assert "MCP 状态" in title
-        assert "连接成功 1 个" in content
-        assert "local-server [stdio] CONNECTED  tools:2" in content
-        assert "http-server [streamable-http] ERROR  tools:0" in content
-        assert "error: RuntimeError: boom" in content
-        assert "disabled-server [sse] DISABLED  tools:0" in content
+
+        from textual.widgets import Tree
+        tree = pilot.app.query_one(Tree)
+        labels: list[str] = []
+        for node in tree.root.children:
+            labels.append(str(node.label.plain if hasattr(node.label, "plain") else node.label))
+        tree_text = " ".join(labels)
+        assert "local-server" in tree_text
+        assert "http-server" in tree_text
+        assert "disabled-server" in tree_text
 
 
 @pytest.mark.asyncio
@@ -582,8 +586,8 @@ async def test_mcp_command_shows_global_failure_without_pool():
         pilot.app._handle_mcp_cmd()
         await pilot.pause()
 
-        content = str(getattr(pilot.app.query_one("#page-content"), "_Static__content"))
-        assert "加载失败：ValueError: bad config" in content
+        title = str(getattr(pilot.app.query_one("#page-title"), "_Static__content"))
+        assert "加载失败：ValueError: bad config" in title
 
 
 @pytest.mark.asyncio

@@ -21,6 +21,7 @@ from alex.kernel.contracts.chat import (
 # Tool contracts (catalog, execution, approval)
 from alex.kernel.contracts.tools import (
     ExecuteTool,
+    GetMCPStatus,
     GetToolCatalog,
     InvokeProviderTool,
     RegisterTool,
@@ -83,6 +84,7 @@ __all__ = [
     "UserTurnRequested",
     # Tools
     "ExecuteTool",
+    "GetMCPStatus",
     "GetToolCatalog",
     "InvokeProviderTool",
     "RegisterTool",

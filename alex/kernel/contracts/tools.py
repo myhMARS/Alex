@@ -96,6 +96,15 @@ class ToolApprovalResolved(Event):
     remember: bool = False
 
 
+# ── MCP status (TUI → MCP module) ────────────────────────────────────────────
+
+@dataclass
+class GetMCPStatus(Request[dict[str, Any]]):
+    """Request current MCP connection state from the MCP module.
+
+    Returns ``{"servers": [...], "status_message": "..."}``.
+    """
+
 # ── Provider-level tool invocation (mcp / plugin → tools gateway) ────────────
 
 @dataclass

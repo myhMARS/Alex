@@ -35,6 +35,31 @@ from alex.tui.notification_controller import NotificationController
 from alex.tui.controller import ChatControllerMixin
 
 
+def _compute_mcp_status(servers: list[dict]) -> str:
+    """Compute aggregate MCP status from per-server state list."""
+    if not servers:
+        return "未发现 MCP server 配置"
+    total = len(servers)
+    connected = sum(1 for s in servers if s.get("status") in ("connected", "CONNECTED"))
+    failed = sum(1 for s in servers if s.get("status") == "ERROR" or s.get("error"))
+    disabled = sum(1 for s in servers if s.get("enabled") is False)
+    connecting = total - connected - failed - disabled
+
+    parts: list[str] = []
+    if connected:
+        total_tools = sum(s.get("tool_count", 0) or 0 for s in servers if s.get("status") in ("connected", "CONNECTED"))
+        parts.append(f"{connected} 台已连接（{total_tools} 工具）")
+    if connecting:
+        parts.append(f"{connecting} 台连接中")
+    if failed:
+        parts.append(f"{failed} 台连接失败")
+    if disabled:
+        parts.append(f"{disabled} 台已禁用")
+    if not parts:
+        return "等待连接..."
+    return "，".join(parts)
+
+
 class AlexApp(ChatControllerMixin, App):
     """Alex Agent TUI — 直接通过 bus 与所有模块通信，无 AgentFacade 中间层。"""
 
@@ -143,6 +168,35 @@ class AlexApp(ChatControllerMixin, App):
         await bus.subscribe(TurnCompleted, self._wrap_handler(p.on_turn_completed))
         await bus.subscribe(TurnFailed, self._wrap_handler(p.on_turn_failed))
 
+        # MCPModule.start() 可能在订阅前就已发布 ToolsProvided 事件。
+        # 通过 bus request 主动拉取当前状态（TUI 不直接读配置文件）。
+        if not self._mcp_servers:
+            try:
+                from alex.kernel.contracts.tools import GetMCPStatus
+                result = await bus.request(GetMCPStatus())
+                servers = result.get("servers", [])
+                if servers:
+                    self._mcp_servers = servers
+                    self._mcp_status_message = _compute_mcp_status(servers)
+                    self._projector.refresh_status_bar()
+            except Exception:
+                pass
+
+    def _refresh_mcp_tree(self) -> None:
+        """Refresh the MCP Tree widget in-place when new data arrives."""
+        from textual.widgets import Tree
+        existing = self.query("#mcp-tree")
+        if not existing:
+            return
+        tree: Tree = existing.first()
+        tree.clear()
+        tree.show_root = True
+        tree.root.label = f"\U0001f50c {self._mcp_status_message}"
+        if not self._mcp_servers:
+            tree.root.add("[dim]等待 MCP 模块状态更新...[/]")
+            return
+        self._populate_tree_from_servers(tree, self._mcp_servers)
+
     def _wrap_handler(self, handler):
         """包装 bus 事件 handler，确保在 Textual app context 中执行。
 
@@ -155,17 +209,29 @@ class AlexApp(ChatControllerMixin, App):
 
     async def _on_mcp_tools_provided(self, event: ToolsProvided) -> None:
         """Called when MCPModule announces tools or status — update status display."""
-        if event.provider == "mcp":
-            meta = event.metadata or {}
-            msg = meta.get("message", "")
-            if msg:
-                self._mcp_status_message = msg
-            elif event.specs:
-                self._mcp_status_message = f"已连接，注册 {len(event.specs)} 个工具"
-            servers = meta.get("servers")
-            if isinstance(servers, list):
-                self._mcp_servers = servers
-            self._projector.refresh_status_bar()
+        import logging
+        _log = logging.getLogger(__name__)
+        try:
+            if event.provider == "mcp":
+                meta = event.metadata or {}
+                servers = meta.get("servers")
+                _log.info("MCP TUI: received ToolsProvided specs=%d servers=%s",
+                           len(event.specs or []), len(servers) if isinstance(servers, list) else "none")
+                if isinstance(servers, list):
+                    self._mcp_servers = servers
+                    self._mcp_status_message = _compute_mcp_status(servers)
+                else:
+                    msg = meta.get("message", "")
+                    if msg:
+                        self._mcp_status_message = msg
+                    elif event.specs:
+                        self._mcp_status_message = f"已连接，注册 {len(event.specs)} 个工具"
+                self._projector.refresh_status_bar()
+                if self._view_state.page_mode == "mcp":
+                    self._refresh_mcp_tree()
+                _log.info("MCP TUI: status updated — %s", self._mcp_status_message)
+        except Exception:
+            _log.exception("MCP TUI: _on_mcp_tools_provided crashed")
 
     def action_quit(self) -> None:
         self._do_shutdown()

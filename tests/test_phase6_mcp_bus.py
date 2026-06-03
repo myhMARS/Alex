@@ -7,6 +7,7 @@ Validates:
 """
 
 import asyncio
+import json
 
 import pytest
 
@@ -19,6 +20,10 @@ from alex.kernel.dto.tool import ToolExecutionContext
 
 class TestMCPModule:
     """MCPModule standalone tests."""
+
+    @staticmethod
+    def _write_config(tmp_path, payload: dict) -> None:
+        (tmp_path / "mcp.json").write_text(json.dumps(payload), encoding="utf-8")
 
     @pytest.mark.asyncio
     async def test_mcp_module_provides_invoke_handler(self):
@@ -52,6 +57,92 @@ class TestMCPModule:
         mcp_mod = MCPModule(config_path=Path("/nonexistent/mcp_config.json"))
         await mcp_mod.start(bus)
         await mcp_mod.stop()
+
+        await bus.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_mcp_module_publishes_timeout_state_when_global_wait_times_out(self, tmp_path, monkeypatch):
+        """Global wait_for timeout should publish a terminal timeout state."""
+        self._write_config(tmp_path, {
+            "mcpServers": {
+                "slow-server": {
+                    "command": "slow-mcp-server",
+                }
+            }
+        })
+        config_path = tmp_path / "mcp.json"
+
+        bus = AsyncEventBus()
+        await bus.start()
+
+        received: list[ToolsProvided] = []
+
+        async def _collect(event: ToolsProvided):
+            if event.provider == "mcp":
+                received.append(event)
+
+        await bus.subscribe(ToolsProvided, _collect)
+
+        real_wait_for = asyncio.wait_for
+
+        async def _raise_global_timeout(awaitable, timeout=None):
+            if timeout == 15.0:
+                awaitable.close()
+                raise asyncio.TimeoutError()
+            return await real_wait_for(awaitable, timeout=timeout)
+
+        monkeypatch.setattr("alex.mcp.module.asyncio.wait_for", _raise_global_timeout)
+
+        mcp_mod = MCPModule(config_path=config_path)
+        await mcp_mod.start(bus)
+        await asyncio.sleep(0.05)
+
+        assert mcp_mod._server_state
+        assert mcp_mod._server_state[0]["status"] == "ERROR"
+        assert mcp_mod._server_state[0]["error"] == "连接超时（15s）"
+        assert received[-1].metadata["status"] == "timeout"
+
+        await bus.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_mcp_module_publishes_cancelled_state_on_stop(self, tmp_path, monkeypatch):
+        """Cancelling the background connection task should clear connecting state."""
+        self._write_config(tmp_path, {
+            "mcpServers": {
+                "slow-server": {
+                    "command": "slow-mcp-server",
+                }
+            }
+        })
+        config_path = tmp_path / "mcp.json"
+
+        bus = AsyncEventBus()
+        await bus.start()
+
+        received: list[ToolsProvided] = []
+
+        async def _collect(event: ToolsProvided):
+            if event.provider == "mcp":
+                received.append(event)
+
+        await bus.subscribe(ToolsProvided, _collect)
+
+        async def _slow_connect_all(self, configs):
+            await asyncio.sleep(60)
+            return []
+
+        monkeypatch.setattr("alex.mcp.mcp_client.MCPClientPool.connect_all", _slow_connect_all)
+
+        mcp_mod = MCPModule(config_path=config_path)
+        await mcp_mod.start(bus)
+        await asyncio.sleep(0.05)
+        await mcp_mod.stop()
+        await asyncio.sleep(0.05)
+
+        assert mcp_mod._server_state
+        assert mcp_mod._server_state[0]["status"] == "ERROR"
+        assert mcp_mod._server_state[0]["error"] == "连接已取消"
+        assert received[-1].metadata["status"] == "cancelled"
 
         await bus.shutdown()
 
