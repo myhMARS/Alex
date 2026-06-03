@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 from typing import Any
 
 from textual import work
@@ -288,12 +289,12 @@ class ChatControllerMixin:
             srv_node = tree.root.add(label, expand=False)
             tools: list[dict] = srv.get("tools", []) or []
             for t in tools:
-                t_name = t.get("name", "?")
-                t_desc = t.get("description", "")
-                tool_label = f"[bold $success]\U0001f527 {t_name}[/]"
-                if t_desc:
-                    tool_label += f"\n    [italic $text-muted]{t_desc}[/]"
-                srv_node.add_leaf(tool_label)
+                self._add_tool_node(
+                    srv_node,
+                    name=t.get("name", "?"),
+                    description=t.get("description", ""),
+                    json_schema=t.get("json_schema", {}) or {},
+                )
             if not tools and srv_status in ("connected", "CONNECTED"):
                 srv_node.add_leaf("[dim](此 server 未注册任何工具)[/]")
 
@@ -317,14 +318,38 @@ class ChatControllerMixin:
 
             srv_node = tree.root.add(label, expand=False)
             for t in conn.tools:
-                t_name = getattr(t, "name", t) if hasattr(t, "name") else str(t)
-                t_desc = getattr(t, "description", "") if hasattr(t, "description") else ""
-                tool_label = f"[bold $success]\U0001f527 {t_name}[/]"
-                if t_desc:
-                    tool_label += f"\n    [italic $text-muted]{t_desc}[/]"
-                srv_node.add_leaf(tool_label)
+                self._add_tool_node(
+                    srv_node,
+                    name=getattr(t, "name", t) if hasattr(t, "name") else str(t),
+                    description=getattr(t, "description", "") if hasattr(t, "description") else "",
+                    json_schema=getattr(t, "parameters", {}) if hasattr(t, "parameters") else {},
+                )
             if not conn.tools:
                 srv_node.add_leaf("[dim](此 server 未注册任何工具)[/]")
+
+    def _add_tool_node(self, srv_node, *, name: str, description: str, json_schema: dict[str, Any]) -> None:
+        """Add an expandable tool node with description and input schema details."""
+        tool_node = srv_node.add(f"[bold $success]\U0001f527 {name}[/]", expand=False)
+        if description:
+            tool_node.add_leaf(f"[italic $text-muted]描述: {description}[/]")
+
+        schema_text = _format_tool_schema(json_schema)
+        if schema_text:
+            schema_node = tool_node.add("[bold]输入参数[/]", expand=False)
+            for line in schema_text.splitlines():
+                schema_node.add_leaf(f"[dim]{line}[/]")
+        else:
+            tool_node.add_leaf("[dim]输入参数: 无[/]")
+
+
+def _format_tool_schema(schema: dict[str, Any]) -> str:
+    """Format a tool input schema for display in the MCP tree."""
+    if not schema:
+        return ""
+    try:
+        return json.dumps(schema, ensure_ascii=False, indent=2, sort_keys=True)
+    except TypeError:
+        return str(schema)
 
 
 def _server_state_label(srv_status: str, error: str | None, enabled: bool) -> str:

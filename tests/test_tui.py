@@ -20,6 +20,7 @@ from alex.tui import (
     ToolBubble,
     _messages_to_turns,
 )
+from alex.tui.app import _compute_mcp_status
 from alex.tui.chat_projector import ChatProjector
 from alex.store import session as session_store
 from alex.store.session_adapter import SessionPersistence
@@ -588,6 +589,60 @@ async def test_mcp_command_shows_global_failure_without_pool():
 
         title = str(getattr(pilot.app.query_one("#page-title"), "_Static__content"))
         assert "加载失败：ValueError: bad config" in title
+
+
+@pytest.mark.asyncio
+async def test_mcp_command_shows_expandable_tool_details():
+    app = AlexApp()
+    app._connect_mcp = AsyncMock()
+    app._mcp_servers = [{
+        "name": "memory-server",
+        "transport": "streamable-http",
+        "url": "http://localhost:8000/mcp",
+        "enabled": True,
+        "status": "CONNECTED",
+        "tool_count": 1,
+        "error": None,
+        "tools": [{
+            "name": "mcp__memory__search",
+            "description": "Search stored memories",
+            "json_schema": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+        }],
+    }]
+    app._mcp_status_message = _compute_mcp_status(app._mcp_servers)
+
+    async with app.run_test() as pilot:
+        pilot.app._handle_mcp_cmd()
+        await pilot.pause()
+
+        title = str(getattr(pilot.app.query_one("#page-title"), "_Static__content"))
+        assert "台" not in title
+
+        from textual.widgets import Tree
+        tree = pilot.app.query_one(Tree)
+        server_node = tree.root.children[0]
+        tool_node = server_node.children[0]
+        labels = [str(tool_node.label.plain if hasattr(tool_node.label, "plain") else tool_node.label)]
+        labels.extend(
+            str(child.label.plain if hasattr(child.label, "plain") else child.label)
+            for child in tool_node.children
+        )
+        schema_node = tool_node.children[1]
+        labels.extend(
+            str(child.label.plain if hasattr(child.label, "plain") else child.label)
+            for child in schema_node.children
+        )
+
+        detail_text = " ".join(labels)
+        assert "mcp__memory__search" in detail_text
+        assert "描述: Search stored memories" in detail_text
+        assert "输入参数" in detail_text
+        assert '"query"' in detail_text
+        assert '"required"' in detail_text
 
 
 @pytest.mark.asyncio

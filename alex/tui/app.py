@@ -48,13 +48,13 @@ def _compute_mcp_status(servers: list[dict]) -> str:
     parts: list[str] = []
     if connected:
         total_tools = sum(s.get("tool_count", 0) or 0 for s in servers if s.get("status") in ("connected", "CONNECTED"))
-        parts.append(f"{connected} 台已连接（{total_tools} 工具）")
+        parts.append(f"已连接 {connected} 个（{total_tools} 工具）")
     if connecting:
-        parts.append(f"{connecting} 台连接中")
+        parts.append(f"连接中 {connecting} 个")
     if failed:
-        parts.append(f"{failed} 台连接失败")
+        parts.append(f"连接失败 {failed} 个")
     if disabled:
-        parts.append(f"{disabled} 台已禁用")
+        parts.append(f"已禁用 {disabled} 个")
     if not parts:
         return "等待连接..."
     return "，".join(parts)

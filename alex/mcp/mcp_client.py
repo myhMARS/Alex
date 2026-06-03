@@ -278,6 +278,7 @@ class MCPConnection:
     config: MCPServerConfig
     tools: list[MCPTool] = field(default_factory=list)
     error: str | None = None
+    healthcheck: Any = None
 
 
 class MCPClientPool:
@@ -364,7 +365,7 @@ class MCPClientPool:
         ) as client:
             yield client
 
-    async def _connect_stdio(self, cfg: MCPServerConfig, sdk: tuple) -> list[MCPTool]:
+    async def _connect_stdio(self, cfg: MCPServerConfig, sdk: tuple) -> tuple[list[MCPTool], Any]:
         ClientSession, StdioServerParameters, stdio_client, _, _ = sdk
         params = StdioServerParameters(
             command=cfg.command,
@@ -375,7 +376,13 @@ class MCPClientPool:
         session = await self._stack.enter_async_context(ClientSession(read, write))
         await session.initialize()
         listed = await session.list_tools()
-        return self._build_tools(config=cfg, listed=listed, invoke=session.call_tool)
+        tools = self._build_tools(config=cfg, listed=listed, invoke=session.call_tool)
+
+        async def _healthcheck() -> list[MCPTool]:
+            refreshed = await session.list_tools()
+            return self._build_tools(config=cfg, listed=refreshed, invoke=session.call_tool)
+
+        return tools, _healthcheck
 
     async def _build_http_transport_kwargs(self, cfg: MCPServerConfig, sig: inspect.Signature) -> dict[str, Any]:
         kwargs: dict[str, Any] = {}
@@ -413,7 +420,7 @@ class MCPClientPool:
             )
         return kwargs
 
-    async def _connect_streamable_http(self, cfg: MCPServerConfig, sdk: tuple) -> list[MCPTool]:
+    async def _connect_streamable_http(self, cfg: MCPServerConfig, sdk: tuple) -> tuple[list[MCPTool], Any]:
         ClientSession, _, _, streamable_http_client, _ = sdk
         if streamable_http_client is None:
             raise MCPUnavailableError("Installed MCP SDK does not provide streamable-http client support")
@@ -449,9 +456,15 @@ class MCPClientPool:
                 )
             return await session.call_tool(name, arguments)
 
-        return self._build_tools(config=cfg, listed=listed, invoke=_invoke_tool)
+        tools = self._build_tools(config=cfg, listed=listed, invoke=_invoke_tool)
 
-    async def _connect_sse(self, cfg: MCPServerConfig, sdk: tuple) -> list[MCPTool]:
+        async def _healthcheck() -> list[MCPTool]:
+            refreshed = await session.list_tools()
+            return self._build_tools(config=cfg, listed=refreshed, invoke=_invoke_tool)
+
+        return tools, _healthcheck
+
+    async def _connect_sse(self, cfg: MCPServerConfig, sdk: tuple) -> tuple[list[MCPTool], Any]:
         ClientSession, _, _, _, sse_client = sdk
         if sse_client is None:
             raise MCPUnavailableError("Installed MCP SDK does not provide SSE client support")
@@ -462,9 +475,15 @@ class MCPClientPool:
         session = await self._stack.enter_async_context(ClientSession(read, write))
         await session.initialize()
         listed = await session.list_tools()
-        return self._build_tools(config=cfg, listed=listed, invoke=session.call_tool)
+        tools = self._build_tools(config=cfg, listed=listed, invoke=session.call_tool)
 
-    async def _connect_single(self, cfg: MCPServerConfig, sdk: tuple) -> list[MCPTool]:
+        async def _healthcheck() -> list[MCPTool]:
+            refreshed = await session.list_tools()
+            return self._build_tools(config=cfg, listed=refreshed, invoke=session.call_tool)
+
+        return tools, _healthcheck
+
+    async def _connect_single(self, cfg: MCPServerConfig, sdk: tuple) -> tuple[list[MCPTool], Any]:
         if cfg.transport == "stdio":
             return await self._connect_stdio(cfg, sdk)
         if cfg.transport == "streamable-http":
@@ -485,7 +504,7 @@ class MCPClientPool:
             connection = MCPConnection(config=cfg)
             try:
                 per_server_timeout = cfg.timeout if cfg.timeout is not None else 10.0
-                connection.tools = await asyncio.wait_for(
+                connection.tools, connection.healthcheck = await asyncio.wait_for(
                     self._connect_single(cfg, sdk),
                     timeout=per_server_timeout,
                 )
@@ -501,6 +520,27 @@ class MCPClientPool:
                 logger.warning("MCP server '%s' (%s) failed to connect: %s", cfg.name, cfg.transport, e)
                 connection.error = f"{type(e).__name__}: {e}"
             self._connections.append(connection)
+        return self._connections
+
+    async def check_health(self) -> list[MCPConnection]:
+        """Refresh live session health for currently connected servers."""
+        for connection in self._connections:
+            if connection.error or connection.healthcheck is None:
+                continue
+            try:
+                timeout = connection.config.timeout if connection.config.timeout is not None else 10.0
+                connection.tools = await asyncio.wait_for(connection.healthcheck(), timeout=timeout)
+                connection.error = None
+            except asyncio.CancelledError:
+                raise
+            except BaseException as e:
+                logger.warning(
+                    "MCP server '%s' (%s) health check failed: %s",
+                    connection.config.name,
+                    connection.config.transport,
+                    e,
+                )
+                connection.error = f"{type(e).__name__}: {e}"
         return self._connections
 
     async def aclose(self) -> None:

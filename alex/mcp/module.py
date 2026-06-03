@@ -29,6 +29,7 @@ class MCPModule:
 
     name = "mcp"
     dependencies: list[str] = ["tools"]
+    HEALTH_CHECK_INTERVAL = 30.0
 
     def __init__(self, config_path: Any = None) -> None:
         self._config_path = config_path
@@ -36,6 +37,8 @@ class MCPModule:
         self._pool: Any = None
         self._tools_by_name: dict[str, Any] = {}
         self._connect_task: asyncio.Task | None = None
+        self._health_task: asyncio.Task | None = None
+        self._configs: list[Any] = []
         self._server_state: list[dict[str, Any]] = []
 
     async def start(self, bus: Any) -> None:
@@ -51,18 +54,21 @@ class MCPModule:
             configs = load_mcp_config(self._config_path)
         except Exception:
             logger.warning("MCP config load failed", exc_info=True)
+            self._configs = []
             self._server_state = []
             bus.publish(ToolsProvided(provider="mcp", specs=[],
                 metadata={"status": "config_error", "servers": []}))
             return
 
         if not configs:
+            self._configs = []
             self._server_state = []
             bus.publish(ToolsProvided(provider="mcp", specs=[],
                 metadata={"status": "no_servers", "servers": []}))
             logger.info("No MCP servers configured")
             return
 
+        self._configs = list(configs)
         servers = [_serialize_config(cfg) for cfg in configs]
         self._server_state = servers
         bus.publish(ToolsProvided(provider="mcp", specs=[],
@@ -71,10 +77,18 @@ class MCPModule:
 
         # Connect to MCP servers in the background — never block startup
         self._connect_task = asyncio.create_task(self._connect_servers(configs))
+        self._health_task = asyncio.create_task(self._monitor_server_health())
 
         logger.info("MCPModule started (provides InvokeProviderTool, connecting in background)")
 
     async def stop(self) -> None:
+        if self._health_task is not None:
+            self._health_task.cancel()
+            try:
+                await self._health_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._health_task = None
         if self._connect_task is not None:
             self._connect_task.cancel()
             try:
@@ -89,9 +103,99 @@ class MCPModule:
                 pass
             self._pool = None
         self._tools_by_name.clear()
+        self._configs = []
         self._bus = None
 
     # ── server connection ────────────────────────────────────────────────
+
+    def _publish_terminal_state(self, configs: list, *, status: str, error: str) -> None:
+        servers = [_serialize_config(cfg) for cfg in configs]
+        for s in servers:
+            if s.get("status") == "connecting":
+                s["status"] = "ERROR"
+                s["error"] = error
+        self._tools_by_name.clear()
+        self._server_state = servers
+        if self._bus:
+            self._bus.publish(ToolsProvided(
+                provider="mcp",
+                specs=[],
+                metadata={"status": status, "servers": servers},
+            ))
+
+    def _publish_connections_state(self, connections: list) -> None:
+        all_specs: list[dict[str, Any]] = []
+        server_details: list[dict[str, Any]] = []
+        tools_by_name: dict[str, Any] = {}
+
+        logger.info("MCP: processing %d connections...", len(connections))
+        for conn in connections:
+            detail = _serialize_connection(conn)
+            logger.info(
+                "MCP:   %s status=%s error=%s tools=%d",
+                conn.config.name,
+                detail.get("status"),
+                conn.error,
+                len(conn.tools),
+            )
+            server_details.append(detail)
+            if conn.error:
+                continue
+            for tool in conn.tools:
+                tools_by_name[tool.name] = tool
+                all_specs.append({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "json_schema": tool.parameters,
+                    "provider": "mcp",
+                    "metadata": tool.metadata or {},
+                })
+
+        tool_count = len(all_specs)
+        error_count = sum(1 for d in server_details if d.get("error"))
+        self._tools_by_name = tools_by_name
+        self._server_state = server_details
+        if self._bus:
+            self._bus.publish(ToolsProvided(
+                provider="mcp",
+                specs=all_specs,
+                metadata={
+                    "status": "connected",
+                    "tool_count": tool_count,
+                    "servers": server_details,
+                },
+            ))
+        logger.info(
+            "MCP: announced %d tools from %d servers (errors=%d)",
+            tool_count,
+            len(connections),
+            error_count,
+        )
+
+    async def _monitor_server_health(self) -> None:
+        """Periodically re-check MCP server availability."""
+        while True:
+            await asyncio.sleep(self.HEALTH_CHECK_INTERVAL)
+            if self._connect_task is not None and not self._connect_task.done():
+                continue
+            try:
+                await self._refresh_server_health()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("MCP: periodic health check failed", exc_info=True)
+
+    async def _refresh_server_health(self) -> None:
+        """Refresh current MCP availability without replacing the live pool."""
+        if not self._configs:
+            return
+
+        if self._pool is None:
+            self._publish_terminal_state(self._configs, status="error", error="MCP 尚未建立连接池")
+            return
+
+        await self._pool.check_health()
+        self._publish_connections_state(self._pool.connections)
 
     async def _connect_servers(self, configs: list) -> None:
         """Connect to *configs* (already loaded) and announce tools.
@@ -128,27 +232,13 @@ class MCPModule:
         safety_task = asyncio.create_task(_safety_timeout())
 
         try:
-            def _publish_terminal_state(*, status: str, error: str) -> None:
-                servers = [_serialize_config(cfg) for cfg in configs]
-                for s in servers:
-                    if s.get("status") == "connecting":
-                        s["status"] = "ERROR"
-                        s["error"] = error
-                self._server_state = servers
-                if self._bus:
-                    self._bus.publish(ToolsProvided(
-                        provider="mcp",
-                        specs=[],
-                        metadata={"status": status, "servers": servers},
-                    ))
-
             try:
                 logger.info("MCP: importing MCPClientPool...")
                 from alex.mcp.mcp_client import MCPClientPool
                 logger.info("MCP: MCPClientPool imported, starting connect_all...")
             except Exception:
                 logger.warning("MCP client not available", exc_info=True)
-                _publish_terminal_state(status="error", error="MCP client 不可用")
+                self._publish_terminal_state(configs, status="error", error="MCP client 不可用")
                 return
 
             self._pool = MCPClientPool()
@@ -160,58 +250,27 @@ class MCPModule:
                 )
                 elapsed = asyncio.get_running_loop().time() - conn_start
                 logger.info("MCP: connect_all completed in %.1fs, %d connections", elapsed, len(connections))
-
-                # Processing and publish — wrapped to catch any exception
-                all_specs: list[dict[str, Any]] = []
-                server_details: list[dict[str, Any]] = []
-                logger.info("MCP: processing %d connections...", len(connections))
-                for conn in connections:
-                    detail = _serialize_connection(conn)
-                    logger.info("MCP:   %s status=%s error=%s tools=%d",
-                        conn.config.name, detail.get("status"), conn.error, len(conn.tools))
-                    server_details.append(detail)
-                    if conn.error:
-                        continue
-                    for tool in conn.tools:
-                        self._tools_by_name[tool.name] = tool
-                        all_specs.append({
-                            "name": tool.name,
-                            "description": tool.description,
-                            "json_schema": tool.parameters,
-                            "provider": "mcp",
-                            "metadata": tool.metadata or {},
-                        })
-
                 if safety_fired:
                     logger.warning("MCP: skipping publish — safety timer already fired")
                 elif not self._bus:
                     logger.error("MCP: skipping publish — bus is None!")
                 else:
-                    tool_count = len(all_specs)
-                    error_count = sum(1 for d in server_details if d.get("error"))
-                    self._server_state = server_details
-                    self._bus.publish(ToolsProvided(provider="mcp", specs=all_specs,
-                        metadata={
-                            "status": "connected",
-                            "tool_count": tool_count,
-                            "servers": server_details,
-                        }))
-                    logger.info("MCP: announced %d tools from %d servers (errors=%d)", tool_count, len(connections), error_count)
+                    self._publish_connections_state(connections)
             except asyncio.TimeoutError:
                 elapsed = asyncio.get_running_loop().time() - conn_start
                 logger.warning("MCP server connection timed out after %.1fs (> 15s)", elapsed)
                 if not safety_fired:
-                    _publish_terminal_state(status="timeout", error="连接超时（15s）")
+                    self._publish_terminal_state(configs, status="timeout", error="连接超时（15s）")
                 return
             except asyncio.CancelledError:
                 logger.warning("MCP: connection task cancelled")
                 if not safety_fired:
-                    _publish_terminal_state(status="cancelled", error="连接已取消")
+                    self._publish_terminal_state(configs, status="cancelled", error="连接已取消")
                 raise
             except Exception as exc:
                 logger.warning("MCP server connection failed", exc_info=True)
                 if not safety_fired:
-                    _publish_terminal_state(status="error", error=f"{type(exc).__name__}: {exc}")
+                    self._publish_terminal_state(configs, status="error", error=f"{type(exc).__name__}: {exc}")
                 return
         finally:
             elapsed = asyncio.get_running_loop().time() - conn_start
@@ -284,6 +343,7 @@ def _serialize_connection(conn: Any) -> dict[str, Any]:
         tools_detail.append({
             "name": getattr(t, "name", ""),
             "description": getattr(t, "description", ""),
+            "json_schema": getattr(t, "parameters", {}) or {},
         })
     return {
         "name": getattr(cfg, "name", ""),

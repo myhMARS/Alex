@@ -13,6 +13,8 @@ import pytest
 
 from alex.bus.in_memory import AsyncEventBus
 from alex.kernel.contracts.tools import ExecuteTool, GetToolCatalog, InvokeProviderTool, ToolsProvided
+from alex.config import MCPServerConfig
+from alex.mcp.mcp_client import MCPConnection
 from alex.mcp.module import MCPModule
 from alex.tools.module import ToolsModule
 from alex.kernel.dto.tool import ToolExecutionContext
@@ -20,6 +22,13 @@ from alex.kernel.dto.tool import ToolExecutionContext
 
 class TestMCPModule:
     """MCPModule standalone tests."""
+
+    class _ToolStub:
+        def __init__(self, name: str, description: str = "") -> None:
+            self.name = name
+            self.description = description
+            self.parameters = {}
+            self.metadata = {}
 
     @staticmethod
     def _write_config(tmp_path, payload: dict) -> None:
@@ -143,6 +152,104 @@ class TestMCPModule:
         assert mcp_mod._server_state[0]["status"] == "ERROR"
         assert mcp_mod._server_state[0]["error"] == "连接已取消"
         assert received[-1].metadata["status"] == "cancelled"
+
+        await bus.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_mcp_module_periodic_health_check_keeps_healthy_pool(self):
+        """Healthy connected servers should refresh in place without rebuilding the pool."""
+        bus = AsyncEventBus()
+        await bus.start()
+
+        received: list[ToolsProvided] = []
+
+        async def _collect(event: ToolsProvided):
+            if event.provider == "mcp":
+                received.append(event)
+
+        await bus.subscribe(ToolsProvided, _collect)
+
+        cfg = MCPServerConfig(name="healthy-server", transport="stdio", command="healthy")
+        tool = self._ToolStub("mcp__healthy-server__echo", "Echo")
+
+        async def _healthcheck():
+            return [tool]
+
+        class _Pool:
+            def __init__(self):
+                self.connections = [MCPConnection(config=cfg, tools=[tool], healthcheck=_healthcheck)]
+                self.health_checks = 0
+                self.closed = False
+
+            async def check_health(self):
+                self.health_checks += 1
+                for connection in self.connections:
+                    connection.tools = await connection.healthcheck()
+                return self.connections
+
+            async def aclose(self):
+                self.closed = True
+
+        mcp_mod = MCPModule()
+        mcp_mod._bus = bus
+        mcp_mod._configs = [cfg]
+        mcp_mod._pool = _Pool()
+
+        await mcp_mod._refresh_server_health()
+        await asyncio.sleep(0.05)
+
+        assert mcp_mod._pool.health_checks == 1
+        assert mcp_mod._server_state[0]["status"] == "CONNECTED"
+        assert mcp_mod._tools_by_name[tool.name].description == "Echo"
+        assert received[-1].metadata["servers"][0]["status"] == "CONNECTED"
+
+        await bus.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_mcp_module_periodic_health_check_only_updates_failed_state(self):
+        """Failed or unhealthy servers should update state in place without pool replacement."""
+        bus = AsyncEventBus()
+        await bus.start()
+
+        received: list[ToolsProvided] = []
+
+        async def _collect(event: ToolsProvided):
+            if event.provider == "mcp":
+                received.append(event)
+
+        await bus.subscribe(ToolsProvided, _collect)
+
+        failed_cfg = MCPServerConfig(name="retry-server", transport="stdio", command="retry")
+        healthy_cfg = MCPServerConfig(name="healthy-server", transport="stdio", command="healthy")
+        tool = self._ToolStub("mcp__healthy-server__echo", "Echo")
+
+        class _Pool:
+            def __init__(self):
+                self.connections = [
+                    MCPConnection(config=failed_cfg, error="RuntimeError: boom"),
+                    MCPConnection(config=healthy_cfg, tools=[tool]),
+                ]
+                self.health_checks = 0
+
+            async def check_health(self):
+                self.health_checks += 1
+                return self.connections
+
+        mcp_mod = MCPModule()
+        mcp_mod._bus = bus
+        mcp_mod._configs = [failed_cfg, healthy_cfg]
+        pool = _Pool()
+        mcp_mod._pool = pool
+
+        await mcp_mod._refresh_server_health()
+        await asyncio.sleep(0.05)
+
+        assert mcp_mod._pool is pool
+        assert pool.health_checks == 1
+        assert mcp_mod._server_state[0]["status"] == "ERROR"
+        assert mcp_mod._server_state[0]["error"] == "RuntimeError: boom"
+        assert mcp_mod._server_state[1]["status"] == "CONNECTED"
+        assert received[-1].metadata["servers"][0]["status"] == "ERROR"
 
         await bus.shutdown()
 
