@@ -167,7 +167,6 @@ class CronManager:
     def _emit_job_event(self, job: CronJob, *, status: str, tool_call_id: str = "") -> None:
         self._emit(CronJobEvent(
             job_id=job.id,
-            session_id=job.session_id,
             name=job.name,
             status=status,
             prompt=job.prompt,

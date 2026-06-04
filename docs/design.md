@@ -137,7 +137,7 @@ graph TB
    │   ├─ bus.start()
    │   ├─ 拓扑排序 (memory → skill → tools → mcp → agent → store → cron)
    │   └─ 每个 module.start(bus): subscribe events / provide handlers
-   └─ AlexApp(bus, host_managed=True).run_async()
+   └─ AlexApp(bus).run_async()
        └─ TUI 启动，用户输入 → bus.publish(UserTurnRequested)
           → AgentModule._on_user_turn() → chat_stream()
 ```

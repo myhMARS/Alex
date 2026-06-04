@@ -2,7 +2,7 @@
 
 Phase 2: wraps existing CronManager (three-way split).
 Provides ScheduleCron / CancelCron.
-Publishes CronTurnRequested / CronJobEvent.
+Publishes CronTurnRequested.
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ from typing import Any
 from alex.scheduler.manager import CronManager
 from alex.kernel.contracts.cron import (
     CancelCron,
-    CronJobEvent,
     CronTurnRequested,
     ListCronJobs,
     ScheduleCron,
@@ -67,18 +66,6 @@ class CronModule:
             runner=self._cron_runner,
         )
 
-        # Publish CronJobEvent for UI notification
-        if self._bus:
-            self._bus.publish(CronJobEvent(
-                session_id=req.session_id or self._session_id,
-                job_id=job_id,
-                name=req.prompt[:80] if req.prompt else "",
-                status="SCHEDULED",
-                prompt=req.prompt,
-                recurring=req.recurring,
-                durable=req.durable,
-            ))
-
         return job_id
 
     async def _handle_cancel(self, req: CancelCron) -> bool:
@@ -87,13 +74,6 @@ class CronModule:
             return False
 
         result = await self._manager.cancel(req.job_id)
-
-        if result and self._bus:
-            self._bus.publish(CronJobEvent(
-                session_id=req.session_id,
-                job_id=req.job_id,
-                status="CANCELLED",
-            ))
 
         return result
 

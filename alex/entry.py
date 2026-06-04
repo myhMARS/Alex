@@ -33,7 +33,7 @@ def main() -> None:
             logger.info("All modules started via ModuleHost")
 
             from alex.tui import AlexApp
-            app = AlexApp(bus, host_managed=True)
+            app = AlexApp(bus)
             await app.run_async()
         finally:
             if started:

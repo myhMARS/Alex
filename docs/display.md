@@ -36,7 +36,7 @@
 
 `module.py` 是 TUI 的 bus 入口。与 `AlexApp` 的关系：
 
-- `ModuleHost` 启动所有后台模块后，`entry.py` 创建 `AlexApp(bus, host_managed=True)` 并调用 `run_async()`
+- `ModuleHost` 启动所有后台模块后，`entry.py` 创建 `AlexApp(bus)` 并调用 `run_async()`
 - `TuiModule` 在模块注册列表中存在但由 `entry.py` 跳过（TUI runs last）
 - `AlexApp` 内部持有 `TuiModule` 实例，用于 `publish_user_turn()` 等 bus 通信
 

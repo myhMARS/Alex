@@ -17,9 +17,6 @@ import json as _json
 
 from alex import messages as msg
 from alex.bus.events import (
-    CronBatch,
-    CronDone,
-    CronError,
     SkillLoaded,
     ThinkingUpdated,
     TokenEmitted,
@@ -66,7 +63,9 @@ class TurnResult:
     message_batch: list[dict[str, Any]] = field(default_factory=list)
     content: str = ""
     thinking: str = ""
+    # Reserved for future use — populated during turn processing but not yet consumed by callers.
     loaded_skill_ids: list[str] = field(default_factory=list)
+    # Reserved for future use — populated during turn processing but not yet consumed by callers.
     tool_names: list[str] = field(default_factory=list)
     last_query_matched: bool = False
 
@@ -271,7 +270,7 @@ class TurnProcessor:
         emit,
         stream_id: str,
     ) -> TurnResult:
-        """Run the ReAct-style agent loop using ChatClient + ToolExecutor.
+        """Run the ReAct-style agent loop using ChatClient + tool registry.
 
         Replaces LangGraph's ``create_agent`` internals with a simple while-loop:
         1. Call LLM with current messages + tools
@@ -460,12 +459,12 @@ class TurnProcessor:
                 session_id=session_id, turn_id=turn_id,
                 tool_id=stream_id, tool_name="cron",
                 tool_input={"job_id": job_id, "name": name, "prompt": prompt},
-                is_cron=True, stream_id=stream_id,
+                stream_id=stream_id,
             ))
             await self._push_notification(ToolFinished(
                 session_id=session_id, turn_id=turn_id,
                 tool_id=stream_id, output=prompt,
-                is_cron=True, stream_id=stream_id,
+                stream_id=stream_id,
             ))
         return _hook
 
@@ -473,23 +472,14 @@ class TurnProcessor:
         self, *, stream_id: str,
     ) -> Callable[[str, str, TurnResult], Awaitable[None]]:
         async def _hook(session_id: str, _: str, result: TurnResult) -> None:
-            await self._push_notification(CronBatch(
-                session_id=session_id, stream_id=stream_id, messages=result.message_batch,
-            ))
-            await self._push_notification(CronDone(
-                session_id=session_id, stream_id=stream_id,
-                content=result.content, thinking=result.thinking,
-            ))
+            pass  # CronBatch/CronDone removed — no subscribers
         return _hook
 
     def _build_cron_failed_hook(
         self, *, stream_id: str,
     ) -> Callable[[str, str, Exception], Awaitable[None]]:
         async def _hook(session_id: str, _: str, error: Exception) -> None:
-            await self._push_notification(CronError(
-                session_id=session_id, stream_id=stream_id,
-                error=f"{type(error).__name__}: {error}",
-            ))
+            pass  # CronError removed — no subscribers
         return _hook
 
 

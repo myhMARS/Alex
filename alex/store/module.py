@@ -14,7 +14,6 @@ from alex.kernel.contracts.chat import TurnCompleted
 from alex.kernel.contracts.session import (
     ListSessions,
     LoadSession,
-    SessionRestored,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,11 +60,4 @@ class StoreModule:
     async def _handle_load_session(self, req: LoadSession) -> list[dict] | None:
         from alex.store.session import load_session
         messages = load_session(req.session_id)
-        if messages and self._bus:
-            # Notify that a session has been restored
-            self._bus.publish(SessionRestored(
-                session_id=req.session_id,
-                messages=messages,
-                message_count=len(messages),
-            ))
         return messages

@@ -1,8 +1,8 @@
 """Tool permission policy — fail-closed, environment-driven.
 
 Every tool that can have side effects declares a required permission via
-``AlexTool.metadata["required_permission"]``.  The :class:`ToolExecutor`
-consults the active :class:`PermissionPolicy` before invoking a tool.
+``AlexTool.metadata["required_permission"]``.  The active
+:class:`PermissionPolicy` gates tool execution before invocation.
 
 Permission levels (ordered by escalation):
 

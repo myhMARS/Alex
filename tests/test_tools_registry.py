@@ -1,4 +1,4 @@
-"""Tests for ToolRegistry and ToolExecutor."""
+"""Tests for ToolRegistry."""
 
 import pytest
 from pydantic import BaseModel, Field
@@ -6,7 +6,6 @@ from pydantic import BaseModel, Field
 from alex.kernel.dto.tool import ToolExecutionContext
 from alex.tools.models import AlexTool
 from alex.tools.registry import ToolRegistry
-from alex.tools.executor import ToolExecutor
 
 
 class _EchoInput(BaseModel):
@@ -68,36 +67,3 @@ class TestToolRegistry:
         assert len(reg.list()) == 1
         assert reg.get("echo") is t2
 
-
-class TestToolExecutor:
-    @pytest.mark.asyncio
-    async def test_execute_registered_tool(self):
-        reg = ToolRegistry()
-        reg.register(_make_tool())
-        executor = ToolExecutor(reg)
-        result = await executor.execute(ToolExecutionContext(session_id="s1"), "echo", {"text": "hello"})
-        assert result == "ECHO: hello"
-
-    @pytest.mark.asyncio
-    async def test_execute_nonexistent_tool(self):
-        reg = ToolRegistry()
-        executor = ToolExecutor(reg)
-        result = await executor.execute(ToolExecutionContext(session_id="s1"), "nonexistent", {})
-        assert result.startswith("Error:")
-
-    @pytest.mark.asyncio
-    async def test_execute_passes_session_id(self):
-        reg = ToolRegistry()
-
-        async def _capture(text: str) -> str:
-            return text
-
-        tool = AlexTool.from_function(
-            name="capture",
-            description="capture",
-            coroutine=_capture,
-        )
-        reg.register(tool)
-        executor = ToolExecutor(reg)
-        result = await executor.execute(ToolExecutionContext(session_id="session-abc"), "capture", {"text": "hi"})
-        assert result == "hi"

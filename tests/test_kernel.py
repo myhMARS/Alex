@@ -278,13 +278,9 @@ class TestContractImports:
         from alex.kernel.contracts.session import (
             ListSessions,
             LoadSession,
-            SaveSession,
-            SessionRestored,
         )
         assert issubclass(ListSessions, Request)
         assert issubclass(LoadSession, Request)
-        assert issubclass(SaveSession, Event)
-        assert issubclass(SessionRestored, Event)
 
     def test_cron_contracts(self):
         from alex.kernel.contracts.cron import (

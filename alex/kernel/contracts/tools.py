@@ -61,7 +61,6 @@ class ToolStarted(Event):
     tool_id: str = ""
     tool_name: str = ""
     tool_input: Any = None
-    is_cron: bool = False
     stream_id: str = ""
 
 
@@ -70,7 +69,6 @@ class ToolFinished(Event):
     """A tool execution has finished (UI notification)."""
     tool_id: str = ""
     output: Any = None
-    is_cron: bool = False
     stream_id: str = ""
 
 

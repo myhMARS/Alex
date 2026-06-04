@@ -61,8 +61,6 @@ from alex.kernel.contracts.memory import (
 from alex.kernel.contracts.session import (
     ListSessions,
     LoadSession,
-    SaveSession,
-    SessionRestored,
 )
 
 # Cron contracts
@@ -115,8 +113,6 @@ __all__ = [
     # Session
     "ListSessions",
     "LoadSession",
-    "SaveSession",
-    "SessionRestored",
     # Cron
     "CancelCron",
     "CronJobEvent",
