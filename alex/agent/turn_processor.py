@@ -161,8 +161,6 @@ class TurnProcessor:
             stream_id=stream_id,
             result_future=result_future,
             on_started=self._build_cron_started_hook(job_id=job_id, name=name, prompt=prompt, stream_id=stream_id),
-            on_completed=self._build_cron_completed_hook(stream_id=stream_id),
-            on_failed=self._build_cron_failed_hook(stream_id=stream_id),
         )
         self._ensure_worker()
         await self._queue.put(req)
@@ -204,7 +202,11 @@ class TurnProcessor:
         turn_id = req.turn_id or uuid.uuid4().hex[:12]
         logger.info("processing turn kind=%s sid=%s turn_id=%s", req.kind, sid, turn_id)
         emit = self._push_notification
-        started = TurnStarted(session_id=sid, turn_id=turn_id, source=req.source, kind=req.kind)
+        started = TurnStarted(
+            session_id=sid, turn_id=turn_id,
+            source=req.source, kind=req.kind,
+            user_input=req.user_message,
+        )
         await emit(started)
         if req.on_started is not None:
             await req.on_started(sid, turn_id)
@@ -216,6 +218,7 @@ class TurnProcessor:
                 user_message=req.user_message,
                 emit=emit,
                 stream_id=req.stream_id,
+                turn_kind=req.kind,
             )
             if req.kind == "user":
                 self._last_result = result
@@ -226,6 +229,7 @@ class TurnProcessor:
                 message_batch=result.message_batch,
                 content=result.content,
                 thinking=result.thinking,
+                stream_id=req.stream_id,
             ))
             if req.on_completed is not None:
                 await req.on_completed(sid, turn_id, result)
@@ -269,6 +273,7 @@ class TurnProcessor:
         user_message: str,
         emit,
         stream_id: str,
+        turn_kind: str = "user",
     ) -> TurnResult:
         """Run the ReAct-style agent loop using ChatClient + tool registry.
 
@@ -428,6 +433,8 @@ class TurnProcessor:
         # ── persist and return ────────────────────────────────────────
         logger.info("agent loop done sid=%s iterations=%d content_len=%d", sid, iteration + 1, len(collected_content))
         batch: list[dict[str, Any]] = [msg.user_message(user_message), *intermediate_msgs]
+        if turn_kind == "cron":
+            batch[0]["alex_turn_kind"] = "cron"
         await self._append_memory(sid, batch)
         full_history = await self._get_memory_context(sid)
         return TurnResult(
@@ -468,19 +475,6 @@ class TurnProcessor:
             ))
         return _hook
 
-    def _build_cron_completed_hook(
-        self, *, stream_id: str,
-    ) -> Callable[[str, str, TurnResult], Awaitable[None]]:
-        async def _hook(session_id: str, _: str, result: TurnResult) -> None:
-            pass  # CronBatch/CronDone removed — no subscribers
-        return _hook
-
-    def _build_cron_failed_hook(
-        self, *, stream_id: str,
-    ) -> Callable[[str, str, Exception], Awaitable[None]]:
-        async def _hook(session_id: str, _: str, error: Exception) -> None:
-            pass  # CronError removed — no subscribers
-        return _hook
 
 
 def _ensure_reasoning_roundtrip(messages: list[dict[str, Any]]) -> None:

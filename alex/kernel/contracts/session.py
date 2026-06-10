@@ -14,5 +14,5 @@ class ListSessions(Request[list[Any]]):
 
 
 @dataclass
-class LoadSession(Request[list[dict[str, Any]] | None]):
-    """Load a session's messages from disk."""
+class LoadSession(Request[dict[str, Any] | None]):
+    """Load a session bundle (messages + cron_history) from disk."""

@@ -69,7 +69,7 @@ class AlexApp(ChatControllerMixin, App):
     CSS_PATH = "alex.tcss"
 
     ENABLE_COMMAND_PALETTE = False
-    SELECTION_ENABLED = True
+    ALLOW_SELECT = True
 
     BINDINGS = [
         Binding("ctrl+t", "toggle_thinking", "Thinking", show=False, priority=True),
@@ -80,10 +80,9 @@ class AlexApp(ChatControllerMixin, App):
         Binding("ctrl+c", "quit", "Quit", show=False),
     ]
 
-    def __init__(self, bus: AsyncEventBus | None = None, *, host_managed: bool = False, **kwargs) -> None:
+    def __init__(self, bus: AsyncEventBus | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self._bus: AsyncEventBus = bus or AsyncEventBus()
-        self._host_managed = host_managed
         self._history = ChatHistory()
         self._thinking_expanded = False
         self._skills_expanded = False
@@ -128,7 +127,7 @@ class AlexApp(ChatControllerMixin, App):
                     yield Static("", id="page-title")
                     yield Static("", id="page-content")
             with VerticalScroll(id="status-bar"):
-                yield Static("后台任务", id="status-title")
+                yield Static("定时任务", id="status-title")
                 yield Static("", id="status-content")
         yield Input(placeholder="Message Alex... (Ctrl+G/B to rate, Ctrl+C: quit)", id="input-box")
 

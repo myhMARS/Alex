@@ -38,6 +38,7 @@ class ThinkingUpdated(Event):
 class TurnStarted(Event):
     """A conversation turn has begun."""
     kind: str = "user"  # "user" | "cron"
+    user_input: str = ""
 
 
 @dataclass
@@ -48,6 +49,7 @@ class TurnCompleted(Event):
     message_batch: list[Any] = field(default_factory=list)
     content: str = ""
     thinking: str = ""
+    stream_id: str = ""
 
 
 @dataclass

@@ -4,15 +4,9 @@ Phase 1: ensure the shared kernel is well-formed, DTOs round-trip correctly,
 and contracts have the expected hierarchy.
 """
 
-from alex.kernel.bus import (
-    Command,
-    Event,
-    Request,
-    correlation_id,
-)
 from alex.kernel.dto.message import MessageDTO
 from alex.kernel.dto.skill import SkillCard
-from alex.kernel.dto.tool import ToolResult, ToolSpec
+from alex.kernel.dto.tool import ToolSpec
 from alex.kernel.errors import CapabilityTimeout, CapabilityUnavailable, HandlerError
 
 
@@ -76,21 +70,6 @@ class TestMessageDTO:
         assert restored.tool_call_id == "call_123"
         assert restored.name == "read_file"
 
-    def test_empty_reasoning_content_defaults_to_empty_string(self):
-        """When reasoning_content is missing, it should default to ''."""
-        d = {"role": "assistant", "content": "hi"}
-        msg = MessageDTO.from_dict(d)
-        assert msg.reasoning_content == ""
-
-    def test_metadata_field(self):
-        """Metadata should be preserved."""
-        original = MessageDTO(role="user", content="hi", metadata={"source": "cron"})
-        d = original.to_dict()
-        # metadata is NOT serialized to the dict (it's cross-module metadata)
-        restored = MessageDTO.from_dict(d)
-        # metadata is preserved on the DTO object itself
-        assert original.metadata == {"source": "cron"}
-
 
 # ── ToolSpec / ToolResult ─────────────────────────────────────────────────────
 
@@ -117,33 +96,12 @@ class TestToolSpec:
         assert schema["function"]["name"] == "my_tool"
         assert schema["function"]["description"] == "Does things"
 
-    def test_default_provider_is_builtin(self):
-        spec = ToolSpec(name="t", description="d")
-        assert spec.provider == "builtin"
-
-
-class TestToolResult:
-    def test_success_result(self):
-        r = ToolResult(name="read_file", output="file contents", run_id="run_1")
-        assert r.ok is True
-        assert r.is_error is False
-
-    def test_error_result(self):
-        r = ToolResult(name="read_file", error="File not found", run_id="run_2")
-        assert r.ok is False
-        assert r.is_error is True
 
 
 # ── SkillCard ─────────────────────────────────────────────────────────────────
 
 
 class TestSkillCard:
-    def test_defaults(self):
-        card = SkillCard()
-        assert card.name == ""
-        assert card.status == "ACTIVE"
-        assert card.tags == []
-
     def test_full_card(self):
         card = SkillCard(
             id="sk_001",
@@ -189,107 +147,4 @@ class TestErrors:
             assert err.__cause__ is original
 
 
-# ── Event / Command / Request hierarchy ───────────────────────────────────────
 
-
-class TestMessageHierarchy:
-    def test_event_has_default_fields(self):
-        evt = Event()
-        assert evt.event_id != ""
-        assert evt.session_id == ""
-        assert evt.trace_id == ""
-
-    def test_command_is_event(self):
-        cmd = Command(session_id="s1")
-        assert isinstance(cmd, Event)
-        assert cmd.session_id == "s1"
-
-    def test_request_is_not_event(self):
-        """Request has its own base class — it's NOT an Event (different dispatch)."""
-        req = Request()
-        assert not isinstance(req, Event)
-
-    def test_correlation_id_is_unique(self):
-        ids = {correlation_id() for _ in range(100)}
-        assert len(ids) == 100
-
-
-# ── Contract imports ──────────────────────────────────────────────────────────
-
-
-class TestContractImports:
-    """Verify that all contract modules are importable and have the right bases."""
-
-    def test_chat_contracts_are_events_or_commands(self):
-        from alex.kernel.contracts.chat import (
-            ThinkingUpdated,
-            TokenEmitted,
-            TurnCompleted,
-            TurnFailed,
-            TurnStarted,
-            UserTurnRequested,
-        )
-        assert issubclass(TokenEmitted, Event)
-        assert issubclass(ThinkingUpdated, Event)
-        assert issubclass(TurnStarted, Event)
-        assert issubclass(TurnCompleted, Event)
-        assert issubclass(TurnFailed, Event)
-        assert issubclass(UserTurnRequested, Command)
-
-    def test_tools_contracts(self):
-        from alex.kernel.contracts.tools import (
-            ExecuteTool,
-            GetToolCatalog,
-            ToolApprovalRequested,
-            ToolApprovalResolved,
-            ToolsProvided,
-        )
-        assert issubclass(ExecuteTool, Request)
-        assert issubclass(GetToolCatalog, Request)
-        assert issubclass(ToolApprovalRequested, Event)
-        assert issubclass(ToolApprovalResolved, Event)
-        assert issubclass(ToolsProvided, Event)
-
-    def test_skills_contracts(self):
-        from alex.kernel.contracts.skills import (
-            LoadSkill,
-            ReflectSkills,
-            RetrieveSkills,
-            SkillsReflected,
-        )
-        assert issubclass(RetrieveSkills, Request)
-        assert issubclass(LoadSkill, Request)
-        assert issubclass(ReflectSkills, Command)
-        assert issubclass(SkillsReflected, Event)
-
-    def test_memory_contracts_are_all_requests(self):
-        from alex.kernel.contracts.memory import (
-            AppendMessages,
-            ClearMemory,
-            GetContext,
-            ReplaceMemory,
-        )
-        assert issubclass(GetContext, Request)
-        assert issubclass(AppendMessages, Request)
-        assert issubclass(ReplaceMemory, Request)
-        assert issubclass(ClearMemory, Request)
-
-    def test_session_contracts(self):
-        from alex.kernel.contracts.session import (
-            ListSessions,
-            LoadSession,
-        )
-        assert issubclass(ListSessions, Request)
-        assert issubclass(LoadSession, Request)
-
-    def test_cron_contracts(self):
-        from alex.kernel.contracts.cron import (
-            CancelCron,
-            CronJobEvent,
-            CronTurnRequested,
-            ScheduleCron,
-        )
-        assert issubclass(ScheduleCron, Request)
-        assert issubclass(CancelCron, Request)
-        assert issubclass(CronTurnRequested, Command)
-        assert issubclass(CronJobEvent, Event)

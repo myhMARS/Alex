@@ -157,7 +157,7 @@ MCPModule 启动时创建后台 `asyncio.Task` 连接所有 MCP servers，不阻
 | **订阅** | `TurnCompleted` | Event | 最终化 bubble |
 | **订阅** | `TurnFailed` | Event | 错误提示 |
 | **订阅** | `SkillsReflected` | Event | Toast 反思结果 |
-| **订阅** | `CronJobEvent` | Event | 刷新后台任务状态栏 |
+| **订阅** | `CronJobEvent` | Event | 刷新定时任务状态栏 |
 | **订阅** | `ToolApprovalRequested` | Event | 弹出权限确认弹窗 |
 | **发布** | `UserTurnRequested` | Command | 用户输入 → AgentModule 订阅执行 |
 | **发布** | `ToolApprovalResolved` | Event | 用户确认/拒绝权限 → ToolsModule 订阅回执 |

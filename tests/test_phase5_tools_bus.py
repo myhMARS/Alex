@@ -6,6 +6,8 @@ Validates:
 - ToolsProvided events are merged into catalog
 """
 
+import asyncio
+
 import pytest
 
 from alex.bus.in_memory import AsyncEventBus
@@ -102,9 +104,15 @@ class TestToolsBusIntegration:
             ],
         ))
 
-        # Give time for event dispatch
-        import asyncio
-        await asyncio.sleep(0.1)
+        # Wait for event dispatch (poll to avoid race conditions on slow CI)
+        for _ in range(20):
+            catalog = await bus.request(GetToolCatalog())
+            names = [t.name for t in catalog]
+            if "mcp_tool_1" in names and "mcp_tool_2" in names:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            raise AssertionError("MCP tools not propagated to catalog within 200ms")
 
         catalog = await bus.request(GetToolCatalog())
         names = [t.name for t in catalog]

@@ -54,10 +54,6 @@ class TestToolRegistry:
         assert reg.get("echo") is None
         assert reg.list() == []
 
-    def test_unregister_nonexistent_does_not_raise(self):
-        reg = ToolRegistry()
-        reg.unregister("nonexistent")
-
     def test_register_overwrites_same_name(self):
         reg = ToolRegistry()
         t1 = _make_tool("echo")

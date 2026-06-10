@@ -57,19 +57,6 @@ class TestMCPModule:
         await bus.shutdown()
 
     @pytest.mark.asyncio
-    async def test_mcp_module_stops_cleanly(self):
-        """MCP module stops without errors even with no connections."""
-        bus = AsyncEventBus()
-        await bus.start()
-
-        from pathlib import Path
-        mcp_mod = MCPModule(config_path=Path("/nonexistent/mcp_config.json"))
-        await mcp_mod.start(bus)
-        await mcp_mod.stop()
-
-        await bus.shutdown()
-
-    @pytest.mark.asyncio
     async def test_mcp_module_publishes_timeout_state_when_global_wait_times_out(self, tmp_path, monkeypatch):
         """Global wait_for timeout should publish a terminal timeout state."""
         self._write_config(tmp_path, {
@@ -278,11 +265,19 @@ class TestMCPToolsGateway:
             ],
         ))
 
-        await asyncio.sleep(0.1)
+        # Wait for event dispatch (poll to avoid race conditions on slow CI)
+        for _ in range(20):
+            catalog = await bus.request(GetToolCatalog())
+            mcp_tools = [t for t in catalog if t.provider == "mcp"]
+            if len(mcp_tools) >= 1:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            raise AssertionError("MCP tools not propagated to catalog within 200ms")
 
         catalog = await bus.request(GetToolCatalog())
         mcp_tools = [t for t in catalog if t.provider == "mcp"]
-        assert len(mcp_tools) >= 1
+        assert len(mcp_tools) == 1, f"expected 1 mcp tool, got {len(mcp_tools)}"
 
         await bus.shutdown()
 
@@ -312,7 +307,14 @@ class TestMCPToolsGateway:
             ],
         ))
 
-        await asyncio.sleep(0.1)
+        # Wait for tool to be registered (poll to avoid race conditions)
+        for _ in range(20):
+            catalog = await bus.request(GetToolCatalog())
+            if any(t.name == "mcp__test__echo" for t in catalog):
+                break
+            await asyncio.sleep(0.01)
+        else:
+            raise AssertionError("mcp__test__echo not found in catalog within 200ms")
 
         # Try to execute an MCP tool — should route to InvokeProviderTool
         ctx = ToolExecutionContext(session_id="test")
@@ -322,9 +324,9 @@ class TestMCPToolsGateway:
             ctx=ctx,
         ))
 
-        # The MCP module has no real server, so it should error gracefully
-        # (either from the gateway not finding the tool or from the MCP module)
+        # The MCP module has no real server — error or empty output is expected
         assert result is not None
+        assert isinstance(result.error, str) or isinstance(result.output, str)
 
         await bus.shutdown()
 

@@ -53,7 +53,8 @@ def _messages_to_turns(messages: list[dict[str, Any]]) -> tuple[list[ChatTurn], 
         if msg.is_user(m):
             if current is not None:
                 turns.append(current)
-            current = ChatTurn(user_input=str(m.get("content", "")), kind="user")
+            turn_kind = str(m.get("alex_turn_kind", "user"))
+            current = ChatTurn(user_input=str(m.get("content", "")), kind=turn_kind)
             pending.clear()
             _order.clear()
 

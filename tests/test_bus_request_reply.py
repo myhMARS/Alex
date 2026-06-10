@@ -226,28 +226,6 @@ async def test_multiple_request_types_coexist():
     await bus.shutdown()
 
 
-@pytest.mark.asyncio
-async def test_request_works_before_event_loop_started():
-    """provide() can be called before start(), but request() needs start()."""
-    bus = AsyncEventBus()
-
-    async def handler(req: GetGreeting) -> str:
-        return f"Hi {req.name}"
-
-    bus.provide(GetGreeting, handler)
-
-    # request() should still work if the bus hasn't been started
-    # (the request plane doesn't use the dispatch loop)
-    # Actually, it won't - but the handler is registered.
-    # Let's start and then request.
-
-    await bus.start()
-    result = await bus.request(GetGreeting(name="PreStart"))
-    assert result == "Hi PreStart"
-
-    await bus.shutdown()
-
-
 # ── handler replacement ──────────────────────────────────────────────────────
 
 

@@ -18,7 +18,7 @@
 │  VerticalScroll #chat-view            │ VerticalScroll     │
 │  ┌────────────────────────────────┐   │ #status-bar        │
 │  │ UserBubble (cyan border)       │   │ ┌──────────────┐   │
-│  ├────────────────────────────────┤   │ │ 后台任务       │   │
+│  ├────────────────────────────────┤   │ │ 定时任务       │   │
 │  │ AlexBubble (green border)      │   │ │ ⟳ job1...    │   │
 │  │  ├─ skills-collapsed/expanded  │   │ │ ⏱ job2...    │   │
 │  │  ├─ ToolBubble ×N              │   │ └──────────────┘   │
@@ -108,7 +108,7 @@
 
 ## 状态栏
 
-右侧 `#status-bar` 实时显示所有 Cron 后台任务：
+右侧 `#status-bar` 实时显示所有 Cron 定时任务：
 - 图标：⟳ (运行中) / ⏱ (已调度)
 - 显示任务名、状态、下次运行倒计时、是否 durable
 - `next:` 倒计时按秒刷新

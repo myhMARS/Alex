@@ -43,6 +43,7 @@ def create_cron_tool(bus: Any) -> AlexTool:
         prompt: str = "",
         recurring: bool = True,
         durable: bool = False,
+        _session_id: str = "",
     ) -> str:
         cron_str = str(cron or "").strip()
         prompt_text = str(prompt or "").strip()
@@ -52,6 +53,7 @@ def create_cron_tool(bus: Any) -> AlexTool:
             return "Error: prompt is required"
 
         job_id = await bus.request(ScheduleCron(
+            session_id=_session_id,
             cron=cron_str,
             prompt=prompt_text,
             recurring=bool(recurring),

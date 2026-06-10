@@ -671,8 +671,8 @@ async def test_resume_restores_agent_memory():
     async def _list_sessions(req):
         return SessionPersistence.list_sessions()
     async def _load_session(req):
-        from alex.store.session import load_session
-        return load_session(req.session_id)
+        from alex.store.session import load_session_bundle
+        return load_session_bundle(req.session_id)
     bus.provide(ListSessions, _list_sessions)
     bus.provide(LoadSession, _load_session)
 
@@ -720,8 +720,8 @@ async def test_clear_clears_agent_memory():
     async def _list_sessions(req):
         return SessionPersistence.list_sessions()
     async def _load_session(req):
-        from alex.store.session import load_session
-        return load_session(req.session_id)
+        from alex.store.session import load_session_bundle
+        return load_session_bundle(req.session_id)
     bus.provide(ListSessions, _list_sessions)
     bus.provide(LoadSession, _load_session)
 

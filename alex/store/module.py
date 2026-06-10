@@ -57,7 +57,6 @@ class StoreModule:
         from alex.store.session import list_sessions
         return list_sessions()
 
-    async def _handle_load_session(self, req: LoadSession) -> list[dict] | None:
-        from alex.store.session import load_session
-        messages = load_session(req.session_id)
-        return messages
+    async def _handle_load_session(self, req: LoadSession) -> dict | None:
+        from alex.store.session import load_session_bundle
+        return load_session_bundle(req.session_id)

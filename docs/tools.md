@@ -39,7 +39,7 @@
 
 ### MCP 模块独立化
 
-`alex/mcp/` 是独立的 MCP 模块（`MCPModule`），不再属于 `alex/tools/`。启动时在**后台任务**中连接 MCP servers，连接成功后通过 `ToolsProvided` 事件广播工具 spec，`ToolsModule` 收编到统一目录。
+`alex/mcp/` 是独立的 MCP 模块（`MCPModule`），不再属于 `alex/tools/`。启动时在**定时任务**中连接 MCP servers，连接成功后通过 `ToolsProvided` 事件广播工具 spec，`ToolsModule` 收编到统一目录。
 
 这样设计的好处：
 - MCP 连接不影响启动速度（慢的 MCP server 不会阻塞 TUI）

@@ -14,7 +14,7 @@ Alex 是一个支持工具调用、流式输出的对话式 AI Agent 智能体�
 - **模型适配**：基于 OpenAI SDK 的统一 ChatClient，支持 DeepSeek / OpenAI / Anthropic 多 provider
 - **自适应成长**：从历史对话中自主提炼技能，持续进化
 - **TUI 交互**：基于 Textual 的终端界面，支持滚动、折叠、会话持久化、modal 确认
-- **Cron 后台任务**：APScheduler 驱动的 prompt 驱动后台任务调度，支持 durable 任务定义持久化与恢复到当前会话，结果以 cron 流式对话注入 TUI
+- **Cron 定时任务**：APScheduler 驱动的 prompt 驱动后台任务调度，支持 durable 任务定义持久化与恢复到当前会话，结果以 cron 流式对话注入 TUI
 - **Kernel + Module 架构**：共享 kernel 层定义跨模块契约，8 个可插拔模块仅通过 MessageBus 通信，模块间零直接导入
 
 ---

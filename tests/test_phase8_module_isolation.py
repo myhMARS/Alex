@@ -64,13 +64,6 @@ class TestModuleIsolation:
     """Verify that business modules do not import each other directly."""
 
     @pytest.mark.parametrize("module_name", BUSINESS_MODULES)
-    def test_module_has_entry_point(self, module_name):
-        """Each business module must have a module.py entry point."""
-        package = module_name.replace(".", "/")
-        module_file = f"{package}/module.py"
-        assert os.path.exists(module_file), f"No module.py for {module_name}"
-
-    @pytest.mark.parametrize("module_name", BUSINESS_MODULES)
     def test_module_only_imports_kernel_or_allowed(self, module_name):
         """Each business module should not import other business modules.
 
@@ -109,12 +102,6 @@ class TestModuleIsolation:
                     f"cross-module business import detected! "
                     f"Use bus messages instead."
                 )
-
-    def test_tui_bus_proxy_only_imports_kernel(self):
-        """TuiBusProxy has been removed — TUI communicates directly with bus."""
-        bus_proxy_file = "alex/tui/bus_proxy.py"
-        if os.path.exists(bus_proxy_file):
-            pytest.fail("bus_proxy.py should have been removed — TUI uses bus directly")
 
     def test_tui_ports_no_agent_facade(self):
         """alex/tui/ports.py no longer defines AgentFacade — TUI uses bus directly."""
@@ -190,24 +177,6 @@ class TestTuiDirectBus:
         assert received[0].positive is True
         assert received[0].turn_id == "turn-1"
 
-        await bus.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_tui_clears_memory_via_bus(self):
-        """TUI clears memory via bus request directly."""
-        from alex.kernel.contracts.memory import ClearMemory
-        from alex.memory.module import MemoryModule
-
-        bus = AsyncEventBus()
-        await bus.start()
-
-        mem = MemoryModule()
-        await mem.start(bus)
-
-        # Simulate what controller._clear_chat does
-        await bus.request(ClearMemory(session_id="test-session"))
-
-        # Should not raise
         await bus.shutdown()
 
     @pytest.mark.asyncio

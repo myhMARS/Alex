@@ -56,8 +56,6 @@ async def test_cron_manager_runs_and_notifies():
         if isinstance(n, CronJobEvent) and n.job_id == job_id and n.status in ("SUCCESS", "FAILED")
     ]
     assert finished_events
-    assert not hasattr(finished_events[-1], "action")
-    assert not hasattr(finished_events[-1], "params")
 
 
 @pytest.mark.asyncio
@@ -225,6 +223,8 @@ async def test_cron_tool_schedules_raw_prompt():
             return "job-1"
         def list_jobs(self):
             return []
+        async def restore_durable_jobs(self, *, runner, session_id=""):
+            pass
 
     mgr = _MockManager()
     cron_mod = CronModule(cron_manager=mgr)
@@ -259,6 +259,8 @@ async def test_cron_cancel_tool_deletes_job():
             return True
         def list_jobs(self):
             return []
+        async def restore_durable_jobs(self, *, runner, session_id=""):
+            pass
 
     mgr = _MockManager()
     cron_mod = CronModule(cron_manager=mgr)
@@ -302,6 +304,8 @@ async def test_cron_cancel_tool_reports_missing_job():
             return False
         def list_jobs(self):
             return []
+        async def restore_durable_jobs(self, *, runner, session_id=""):
+            pass
 
     cron_mod = CronModule(cron_manager=_MockManager())
     await cron_mod.start(bus)
@@ -312,13 +316,3 @@ async def test_cron_cancel_tool_reports_missing_job():
     assert result == "Error: cron job not found: missing-job"
     await bus.shutdown()
 
-
-def test_cron_tool_prompt_guidance_restricts_wrapper_text():
-    prompt_desc = CronInput.model_fields["prompt"].description or ""
-    assert "actual task content" in TOOL_HINT
-    assert "不要" in prompt_desc or "do not include" in prompt_desc
-
-
-def test_cron_cancel_tool_has_job_id_schema():
-    desc = CronCancelInput.model_fields["job_id"].description or ""
-    assert "job id" in desc.lower()

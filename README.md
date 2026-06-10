@@ -150,7 +150,7 @@ Every decision is appended to `~/.alex/audit/permissions.jsonl`.
 - `durable=false` keeps a job only for the current app lifetime
 - `durable=true` persists the job definition to `~/.alex/cron/`, restores it on restart, and rebinds it to the current session
 - Restored jobs do not run while Alex is closed; they resume only when the TUI is open and idle
-- The right-hand `后台任务` panel shows active cron jobs and refreshes the `next:` countdown every second
+- The right-hand `定时任务` panel shows active cron jobs and refreshes the `next:` countdown every second
 - The `prompt` should describe only the task to perform, not reminder phrasing like elapsed-time/status text or UI-style wrapper text
 
 ### Cron Tool Quick Example

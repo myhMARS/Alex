@@ -9,6 +9,7 @@ from alex.tui.view_models import (
 from alex.tui.view_state import SessionViewState
 from alex.tui.presenter import (
     AlexBubble,
+    CronBubble,
     SystemBubble,
     ToolBubble,
     UserBubble,

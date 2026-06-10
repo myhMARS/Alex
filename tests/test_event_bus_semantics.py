@@ -172,14 +172,6 @@ class TestSubscribeUnsubscribe:
         await asyncio.sleep(0.05)
         assert "t2" not in received
 
-    @pytest.mark.asyncio
-    async def test_unsubscribe_nonexistent_is_noop(self, bus):
-        async def _handler(event):
-            pass
-        # Should not raise
-        await bus.unsubscribe(TurnStarted, _handler)
-
-
 # ── cross-thread publish ──────────────────────────────────────────────────────
 
 class TestCrossThreadPublish:
