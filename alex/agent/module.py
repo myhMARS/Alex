@@ -106,7 +106,7 @@ class AgentModule:
             self._bus.publish(ReflectSkills(session_id=cmd.session_id))
 
     async def _on_cron_turn(self, cmd: CronTurnRequested) -> None:
-        """收到 cron 触发 → 在独立 task 中执行 cron turn（通过 TurnProcessor FIFO 串行化）。"""
+        """收到 cron 触发 → 在独立 task 中执行 cron turn（与 user turn 相同模式）。"""
         trigger = cmd.trigger or {}
         logger.info("received CronTurnRequested sid=%s job=%s", cmd.session_id, trigger.get("job_id", ""))
         asyncio.create_task(self._process_cron_turn(cmd))

@@ -141,9 +141,8 @@ class TestTurnProcessorMemoryViaBus:
             llm=None,
             push_notification=lambda e: None,
             services=_BusTurnServices(bus),
-            get_system_prompt=lambda: "You are helpful.",
+            get_system_prompt=lambda _: "You are helpful.",
             max_iterations=1,
-            session_id="test-sid",
         )
 
         # Without a MemoryModule registered, bus request raises CapabilityUnavailable
@@ -170,9 +169,8 @@ class TestTurnProcessorMemoryViaBus:
             llm=None,
             push_notification=lambda e: None,
             services=_BusTurnServices(bus),
-            get_system_prompt=lambda: "You are helpful.",
+            get_system_prompt=lambda _: "You are helpful.",
             max_iterations=1,
-            session_id="bus-test-sid",
         )
 
         # Write through bus

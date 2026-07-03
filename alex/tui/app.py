@@ -35,6 +35,31 @@ from alex.tui.notification_controller import NotificationController
 from alex.tui.controller import ChatControllerMixin
 
 
+def _compute_mcp_status(servers: list[dict]) -> str:
+    """Compute aggregate MCP status from per-server state list."""
+    if not servers:
+        return "未发现 MCP server 配置"
+    total = len(servers)
+    connected = sum(1 for s in servers if s.get("status") in ("connected", "CONNECTED"))
+    failed = sum(1 for s in servers if s.get("status") == "ERROR" or s.get("error"))
+    disabled = sum(1 for s in servers if s.get("enabled") is False)
+    connecting = total - connected - failed - disabled
+
+    parts: list[str] = []
+    if connected:
+        total_tools = sum(s.get("tool_count", 0) or 0 for s in servers if s.get("status") in ("connected", "CONNECTED"))
+        parts.append(f"已连接 {connected} 个（{total_tools} 工具）")
+    if connecting:
+        parts.append(f"连接中 {connecting} 个")
+    if failed:
+        parts.append(f"连接失败 {failed} 个")
+    if disabled:
+        parts.append(f"已禁用 {disabled} 个")
+    if not parts:
+        return "等待连接..."
+    return "，".join(parts)
+
+
 class AlexApp(ChatControllerMixin, App):
     """Alex Agent TUI — 直接通过 bus 与所有模块通信，无 AgentFacade 中间层。"""
 
@@ -44,7 +69,7 @@ class AlexApp(ChatControllerMixin, App):
     CSS_PATH = "alex.tcss"
 
     ENABLE_COMMAND_PALETTE = False
-    SELECTION_ENABLED = True
+    ALLOW_SELECT = True
 
     BINDINGS = [
         Binding("ctrl+t", "toggle_thinking", "Thinking", show=False, priority=True),
@@ -55,10 +80,9 @@ class AlexApp(ChatControllerMixin, App):
         Binding("ctrl+c", "quit", "Quit", show=False),
     ]
 
-    def __init__(self, bus: AsyncEventBus | None = None, *, host_managed: bool = False, **kwargs) -> None:
+    def __init__(self, bus: AsyncEventBus | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self._bus: AsyncEventBus = bus or AsyncEventBus()
-        self._host_managed = host_managed
         self._history = ChatHistory()
         self._thinking_expanded = False
         self._skills_expanded = False
@@ -67,8 +91,8 @@ class AlexApp(ChatControllerMixin, App):
         self._view_state = SessionViewState()
         self._notif = NotificationController(self, self._view_state)
         self._projector = ChatProjector(self)
-        self._mcp_configs: list = []
         self._mcp_status_message: str = "未开始加载"
+        self._mcp_servers: list[dict] = []
         self._status_timer: Timer | None = None
 
     # Public contract properties — Package-private _-prefixed internals
@@ -103,7 +127,7 @@ class AlexApp(ChatControllerMixin, App):
                     yield Static("", id="page-title")
                     yield Static("", id="page-content")
             with VerticalScroll(id="status-bar"):
-                yield Static("后台任务", id="status-title")
+                yield Static("定时任务", id="status-title")
                 yield Static("", id="status-content")
         yield Input(placeholder="Message Alex... (Ctrl+G/B to rate, Ctrl+C: quit)", id="input-box")
 
@@ -111,6 +135,7 @@ class AlexApp(ChatControllerMixin, App):
         """Start fresh — subscribe to bus events."""
         self.query_one("#input-box", Input).focus()
         self._status_timer = self.set_interval(1.0, self._refresh_status_bar_tick)
+        self._projector.refresh_status_bar()
         self._start_services_with_bus()
 
     def _refresh_status_bar_tick(self) -> None:
@@ -142,7 +167,34 @@ class AlexApp(ChatControllerMixin, App):
         await bus.subscribe(TurnCompleted, self._wrap_handler(p.on_turn_completed))
         await bus.subscribe(TurnFailed, self._wrap_handler(p.on_turn_failed))
 
-        self._projector.refresh_status_bar()
+        # MCPModule.start() 可能在订阅前就已发布 ToolsProvided 事件。
+        # 通过 bus request 主动拉取当前状态（TUI 不直接读配置文件）。
+        if not self._mcp_servers:
+            try:
+                from alex.kernel.contracts.tools import GetMCPStatus
+                result = await bus.request(GetMCPStatus())
+                servers = result.get("servers", [])
+                if servers:
+                    self._mcp_servers = servers
+                    self._mcp_status_message = _compute_mcp_status(servers)
+                    self._projector.refresh_status_bar()
+            except Exception:
+                pass
+
+    def _refresh_mcp_tree(self) -> None:
+        """Refresh the MCP Tree widget in-place when new data arrives."""
+        from textual.widgets import Tree
+        existing = self.query("#mcp-tree")
+        if not existing:
+            return
+        tree: Tree = existing.first()
+        tree.clear()
+        tree.show_root = True
+        tree.root.label = f"\U0001f50c {self._mcp_status_message}"
+        if not self._mcp_servers:
+            tree.root.add("[dim]等待 MCP 模块状态更新...[/]")
+            return
+        self._populate_tree_from_servers(tree, self._mcp_servers)
 
     def _wrap_handler(self, handler):
         """包装 bus 事件 handler，确保在 Textual app context 中执行。
@@ -154,31 +206,31 @@ class AlexApp(ChatControllerMixin, App):
             self.run_worker(handler(event), exclusive=False)
         return _wrapped
 
-        # Load MCP config for status display
-        self._load_mcp_config_sync()
-        self._projector.refresh_status_bar()
-
     async def _on_mcp_tools_provided(self, event: ToolsProvided) -> None:
-        """Called when MCPModule announces tools — update status display."""
-        if event.provider == "mcp":
-            count = len(event.specs)
-            self._mcp_status_message = f"已连接，注册 {count} 个工具"
-            self._projector.refresh_status_bar()
-
-    def _load_mcp_config_sync(self) -> None:
-        """Load MCP config file for the /mcp status page."""
-        if self._mcp_configs or self._mcp_status_message != "未开始加载":
-            return
+        """Called when MCPModule announces tools or status — update status display."""
+        import logging
+        _log = logging.getLogger(__name__)
         try:
-            from alex.config import load_mcp_config
-            self._mcp_configs = load_mcp_config()
-            if self._mcp_configs:
-                self._mcp_status_message = "连接中（后台）"
-            else:
-                self._mcp_status_message = "未发现 MCP server 配置"
+            if event.provider == "mcp":
+                meta = event.metadata or {}
+                servers = meta.get("servers")
+                _log.info("MCP TUI: received ToolsProvided specs=%d servers=%s",
+                           len(event.specs or []), len(servers) if isinstance(servers, list) else "none")
+                if isinstance(servers, list):
+                    self._mcp_servers = servers
+                    self._mcp_status_message = _compute_mcp_status(servers)
+                else:
+                    msg = meta.get("message", "")
+                    if msg:
+                        self._mcp_status_message = msg
+                    elif event.specs:
+                        self._mcp_status_message = f"已连接，注册 {len(event.specs)} 个工具"
+                self._projector.refresh_status_bar()
+                if self._view_state.page_mode == "mcp":
+                    self._refresh_mcp_tree()
+                _log.info("MCP TUI: status updated — %s", self._mcp_status_message)
         except Exception:
-            self._mcp_configs = []
-            self._mcp_status_message = "配置读取失败"
+            _log.exception("MCP TUI: _on_mcp_tools_provided crashed")
 
     def action_quit(self) -> None:
         self._do_shutdown()

@@ -6,7 +6,6 @@ from alex.tools.cron import (
     create_cron_cancel_tool,
     create_cron_tool,
 )
-from alex.tools.executor import ToolExecutor
 from alex.tools.fs import (
     TOOL_HINT_EDIT,
     TOOL_HINT_READ,
@@ -122,7 +121,6 @@ __all__ = [
     "get_tool_hints",
     # Runtime
     "ToolExecutionContext",
-    "ToolExecutor",
     "ToolRegistry",
     # Permissions
     "DEFAULT_ALLOWED",

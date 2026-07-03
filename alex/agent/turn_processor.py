@@ -17,9 +17,6 @@ import json as _json
 
 from alex import messages as msg
 from alex.bus.events import (
-    CronBatch,
-    CronDone,
-    CronError,
     SkillLoaded,
     ThinkingUpdated,
     TokenEmitted,
@@ -66,7 +63,9 @@ class TurnResult:
     message_batch: list[dict[str, Any]] = field(default_factory=list)
     content: str = ""
     thinking: str = ""
+    # Reserved for future use — populated during turn processing but not yet consumed by callers.
     loaded_skill_ids: list[str] = field(default_factory=list)
+    # Reserved for future use — populated during turn processing but not yet consumed by callers.
     tool_names: list[str] = field(default_factory=list)
     last_query_matched: bool = False
 
@@ -97,24 +96,19 @@ class TurnProcessor:
         llm: ChatClient | None,
         push_notification,
         services: TurnServices,
-        get_system_prompt: Callable[[], str] | None = None,
+        get_system_prompt: Callable[[str], str] | None = None,
         max_iterations: int = 15,
         callbacks: list | None = None,
-        session_id: str = "",
     ) -> None:
         self._llm: ChatClient | None = llm
         self._push_notification = push_notification
         self._services = services
-        self._get_system_prompt = get_system_prompt or (lambda: "")
+        self._get_system_prompt = get_system_prompt or (lambda _: "")
         self._max_iterations = max_iterations
         self._callbacks = callbacks or []
-        self._session_id = session_id
         self._queue: asyncio.Queue[_QueuedTurn] = asyncio.Queue()
         self._worker_task: asyncio.Task | None = None
         self._last_result: TurnResult | None = None
-
-    def set_session_id(self, session_id: str) -> None:
-        self._session_id = session_id
 
     def set_llm(self, llm: ChatClient) -> None:
         """Replace the LLM client (e.g. after deferred init in start_services)."""
@@ -134,7 +128,7 @@ class TurnProcessor:
         result_future: asyncio.Future = loop.create_future()
         req = _QueuedTurn(
             kind="user", source="agent",
-            session_id=session_id or self._session_id,
+            session_id=session_id,
             turn_id=turn_id,
             user_message=user_message,
             result_future=result_future,
@@ -161,14 +155,12 @@ class TurnProcessor:
         req = _QueuedTurn(
             kind="cron",
             source="cron",
-            session_id=session_id or self._session_id,
+            session_id=session_id,
             turn_id=uuid.uuid4().hex[:12],
             user_message=prompt,
             stream_id=stream_id,
             result_future=result_future,
             on_started=self._build_cron_started_hook(job_id=job_id, name=name, prompt=prompt, stream_id=stream_id),
-            on_completed=self._build_cron_completed_hook(stream_id=stream_id),
-            on_failed=self._build_cron_failed_hook(stream_id=stream_id),
         )
         self._ensure_worker()
         await self._queue.put(req)
@@ -206,11 +198,15 @@ class TurnProcessor:
                 self._queue.task_done()
 
     async def _process_turn(self, req: _QueuedTurn) -> None:
-        sid = req.session_id or self._session_id
+        sid = req.session_id
         turn_id = req.turn_id or uuid.uuid4().hex[:12]
         logger.info("processing turn kind=%s sid=%s turn_id=%s", req.kind, sid, turn_id)
         emit = self._push_notification
-        started = TurnStarted(session_id=sid, turn_id=turn_id, source=req.source, kind=req.kind)
+        started = TurnStarted(
+            session_id=sid, turn_id=turn_id,
+            source=req.source, kind=req.kind,
+            user_input=req.user_message,
+        )
         await emit(started)
         if req.on_started is not None:
             await req.on_started(sid, turn_id)
@@ -222,6 +218,7 @@ class TurnProcessor:
                 user_message=req.user_message,
                 emit=emit,
                 stream_id=req.stream_id,
+                turn_kind=req.kind,
             )
             if req.kind == "user":
                 self._last_result = result
@@ -232,6 +229,7 @@ class TurnProcessor:
                 message_batch=result.message_batch,
                 content=result.content,
                 thinking=result.thinking,
+                stream_id=req.stream_id,
             ))
             if req.on_completed is not None:
                 await req.on_completed(sid, turn_id, result)
@@ -275,8 +273,9 @@ class TurnProcessor:
         user_message: str,
         emit,
         stream_id: str,
+        turn_kind: str = "user",
     ) -> TurnResult:
-        """Run the ReAct-style agent loop using ChatClient + ToolExecutor.
+        """Run the ReAct-style agent loop using ChatClient + tool registry.
 
         Replaces LangGraph's ``create_agent`` internals with a simple while-loop:
         1. Call LLM with current messages + tools
@@ -301,8 +300,8 @@ class TurnProcessor:
 
         iteration = -1
         for iteration in range(self._max_iterations):
-            # Build the system prompt with skills injected for the first iteration
-            system_prompt = self._get_system_prompt_for_iteration()
+            # Build the system prompt with skills injected for this turn
+            system_prompt = await self._get_system_prompt_for_iteration(user_message)
 
             collected_content = ""
             collected_thinking = ""
@@ -403,7 +402,7 @@ class TurnProcessor:
                 async for event in llm.stream_chat(
                     messages,
                     tools=None,  # 不允许再调工具
-                    system_prompt=self._get_system_prompt_for_iteration(),
+                    system_prompt=await self._get_system_prompt_for_iteration(user_message),
                 ):
                     if isinstance(event, ContentDelta):
                         collected_content += event.content
@@ -434,6 +433,8 @@ class TurnProcessor:
         # ── persist and return ────────────────────────────────────────
         logger.info("agent loop done sid=%s iterations=%d content_len=%d", sid, iteration + 1, len(collected_content))
         batch: list[dict[str, Any]] = [msg.user_message(user_message), *intermediate_msgs]
+        if turn_kind == "cron":
+            batch[0]["alex_turn_kind"] = "cron"
         await self._append_memory(sid, batch)
         full_history = await self._get_memory_context(sid)
         return TurnResult(
@@ -447,13 +448,13 @@ class TurnProcessor:
             last_query_matched=len(loaded_skill_ids) > 0,
         )
 
-    def _get_system_prompt_for_iteration(self) -> str:
-        """Return the system prompt (with skills injected) from PromptAssembler.
+    async def _get_system_prompt_for_iteration(self, user_message: str) -> str:
+        """Return the system prompt (with skills injected) for *user_message*.
 
-        The prompt is injected on every LLM call so that the model remembers
-        its role and available skills even across tool-call iterations.
+        Computed per-turn from PromptAssembler so every LLM call carries the
+        correct skill-augmented prompt without shared mutable state.
         """
-        return self._get_system_prompt()
+        return await self._get_system_prompt(user_message)
 
     # ── cron hooks ────────────────────────────────────────────────────────
 
@@ -465,37 +466,15 @@ class TurnProcessor:
                 session_id=session_id, turn_id=turn_id,
                 tool_id=stream_id, tool_name="cron",
                 tool_input={"job_id": job_id, "name": name, "prompt": prompt},
-                is_cron=True, stream_id=stream_id,
+                stream_id=stream_id,
             ))
             await self._push_notification(ToolFinished(
                 session_id=session_id, turn_id=turn_id,
                 tool_id=stream_id, output=prompt,
-                is_cron=True, stream_id=stream_id,
+                stream_id=stream_id,
             ))
         return _hook
 
-    def _build_cron_completed_hook(
-        self, *, stream_id: str,
-    ) -> Callable[[str, str, TurnResult], Awaitable[None]]:
-        async def _hook(session_id: str, _: str, result: TurnResult) -> None:
-            await self._push_notification(CronBatch(
-                session_id=session_id, stream_id=stream_id, messages=result.message_batch,
-            ))
-            await self._push_notification(CronDone(
-                session_id=session_id, stream_id=stream_id,
-                content=result.content, thinking=result.thinking,
-            ))
-        return _hook
-
-    def _build_cron_failed_hook(
-        self, *, stream_id: str,
-    ) -> Callable[[str, str, Exception], Awaitable[None]]:
-        async def _hook(session_id: str, _: str, error: Exception) -> None:
-            await self._push_notification(CronError(
-                session_id=session_id, stream_id=stream_id,
-                error=f"{type(error).__name__}: {error}",
-            ))
-        return _hook
 
 
 def _ensure_reasoning_roundtrip(messages: list[dict[str, Any]]) -> None:

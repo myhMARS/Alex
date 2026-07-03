@@ -19,7 +19,6 @@ from alex.tools.permissions import (
 )
 from alex.kernel.dto.tool import ToolExecutionContext
 from alex.tools.registry import ToolRegistry
-from alex.tools.executor import ToolExecutor
 
 
 class _NoopInput(BaseModel):
@@ -143,29 +142,6 @@ class TestRequiredPermissionHelper:
         tool = _make_tool("t", None)
         assert required_permission(tool) is None
 
-
-class TestSimplifiedExecutor:
-    """简化后的 ToolExecutor 只负责执行，不做权限检查。"""
-
-    @pytest.mark.asyncio
-    async def test_executes_tool(self):
-        registry = ToolRegistry()
-        registry.register(_make_tool("write_thing", PERMISSION_WRITE))
-        executor = ToolExecutor(registry)
-        result = await executor.execute(
-            ToolExecutionContext(session_id="s1"), "write_thing", {"text": "ok"},
-        )
-        # 简化后的 executor 不检查权限，直接执行
-        assert result == "ok"
-
-    @pytest.mark.asyncio
-    async def test_nonexistent_tool_returns_error(self):
-        registry = ToolRegistry()
-        executor = ToolExecutor(registry)
-        result = await executor.execute(
-            ToolExecutionContext(session_id="s1"), "nonexistent", {},
-        )
-        assert result.startswith("Error:")
 
 
 class TestToolGating:

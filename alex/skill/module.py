@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from alex.skill.factory import create_default_skill_service
 from alex.kernel.contracts.chat import FeedbackSubmitted
 from alex.kernel.contracts.skills import (
     DeleteSkill,
@@ -27,21 +28,6 @@ from alex.kernel.dto.skill import SkillCard
 logger = logging.getLogger(__name__)
 
 
-def _create_default_skill_service() -> Any:
-    """Build the default SkillService dependency graph (local factory)."""
-    from alex.skill import SkillService
-    from alex.skill.repository import SkillStore
-    from alex.skill.reflector import Reflector
-    from alex.skill.matcher import SkillRetriever
-    from alex.skill.evolution import EvolutionEngine
-
-    store = SkillStore()
-    reflector = Reflector()
-    retriever = SkillRetriever(store)
-    evolution = EvolutionEngine()
-    return SkillService(store=store, reflector=reflector, retriever=retriever, evolution=evolution)
-
-
 class SkillModule:
     """Pluggable skill module — provides retrieval, loading, and reflection."""
 
@@ -49,7 +35,7 @@ class SkillModule:
     dependencies: list[str] = ["tools"]
 
     def __init__(self, skill_service: Any = None) -> None:
-        self._service = skill_service or _create_default_skill_service()
+        self._service = skill_service or create_default_skill_service()
         self._bus: Any = None
 
     async def start(self, bus: Any) -> None:

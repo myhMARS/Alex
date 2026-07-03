@@ -27,7 +27,9 @@ class TestSkillBusIntegration:
 
         result = await bus.request(RetrieveSkills(query="any query", top_k=5))
         assert isinstance(result, list)
-        # No skills installed by default, empty list is valid
+        if result:
+            from alex.kernel.dto.skill import SkillCard
+            assert all(isinstance(s, SkillCard) for s in result)
 
         await bus.shutdown()
 
@@ -66,9 +68,8 @@ class TestTurnProcessorSkillViaBus:
             llm=None,
             push_notification=lambda e: None,
             services=_BusTurnServices(bus),
-            get_system_prompt=lambda: "",
+            get_system_prompt=lambda _: "",
             max_iterations=1,
-            session_id="test-sid",
         )
 
         # Unknown skill returns None
@@ -93,12 +94,14 @@ class TestTurnProcessorSkillViaBus:
             llm=None,
             push_notification=lambda e: None,
             services=_BusTurnServices(bus),
-            get_system_prompt=lambda: "",
+            get_system_prompt=lambda _: "",
             max_iterations=1,
-            session_id="test-sid",
         )
 
         result = await tp._retrieve_skills("test query", top_k=3)
         assert isinstance(result, list)
+        if result:
+            from alex.kernel.dto.skill import SkillCard
+            assert all(isinstance(s, SkillCard) for s in result)
 
         await bus.shutdown()

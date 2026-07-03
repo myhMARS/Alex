@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import re
+
+from rich.console import Console
 from textual.app import ComposeResult
 from textual.containers import Vertical
+from textual.selection import Selection
+from textual.visual import RichVisual
 from textual.widgets import Static
 
 from alex.tui.markdown import render_response
@@ -14,8 +19,37 @@ _TOOL_OUTPUT_PREVIEW_LINES = 3
 _TOOL_OUTPUT_PREVIEW_WIDTH = 96
 _READ_OUTPUT_PREVIEW_LINES = 3
 
+# Shared console for plain-text extraction from Rich renderables (selection support).
+_plain_console = Console(color_system=None, width=999)
+_ansi_strip = re.compile(r"\x1b\[[0-9;]*m")
+
 
 # ── Widgets ──────────────────────────────────────────────────────────────────
+
+
+class MarkdownStatic(Static):
+    """A :class:`Static` that supports text selection for Rich renderables.
+
+    Rich renderables (e.g. ``rich.markdown.Markdown``) are wrapped in a
+    ``RichVisual`` by Textual's rendering pipeline, but
+    :meth:`Widget.get_selection` only handles ``rich.text.Text`` and
+    ``Content`` visual types.  This subclass overrides ``get_selection``
+    to extract plain text from the underlying renderable so that
+    ``ALLOW_SELECT`` works for markdown content.
+    """
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        visual = self._render()
+        if isinstance(visual, RichVisual):
+            with _plain_console.capture() as capture:
+                _plain_console.print(visual._renderable)
+            text = _ansi_strip.sub("", capture.get())
+            text = "\n".join(line.rstrip() for line in text.splitlines())
+        else:
+            text = str(visual)
+        if not text:
+            return None
+        return selection.extract(text), "\n"
 
 
 class SystemBubble(Static):
@@ -28,10 +62,16 @@ class SystemBubble(Static):
         color: $text-muted;
         height: auto;
     }
+    SystemBubble.error {
+        color: $error;
+        text-style: bold;
+    }
     """
 
-    def __init__(self, text: str) -> None:
+    def __init__(self, text: str, *, is_error: bool = False) -> None:
         super().__init__(text)
+        if is_error:
+            self.add_class("error")
 
 
 class UserBubble(Static):
@@ -50,6 +90,24 @@ class UserBubble(Static):
     def __init__(self, text: str) -> None:
         super().__init__(text)
         self.border_title = "You"
+
+
+class CronBubble(Static):
+    """Cron trigger message bubble — yellow border to distinguish from user."""
+
+    DEFAULT_CSS = """
+    CronBubble {
+        margin: 1 0 0 0;
+        padding: 0 1;
+        border: round yellow;
+        border-title-color: yellow;
+        border-title-style: bold;
+    }
+    """
+
+    def __init__(self, text: str) -> None:
+        super().__init__(text)
+        self.border_title = "Cron"
 
 
 class ToolBubble(Vertical):
@@ -177,7 +235,7 @@ def _mount_tool(container: Vertical, tc: dict, *, output_expanded: bool = False)
     """Mount a prefix widget (if any) and a ToolBubble into *container*."""
     prefix = tc.get("prefix", "")
     if prefix:
-        container.mount(Static(render_response(prefix), classes="response-prefix"))
+        container.mount(MarkdownStatic(render_response(prefix), classes="response-prefix"))
     name = tc.get("name", "")
     args = tc.get("args", {})
     tb = ToolBubble(name, args, output_expanded=output_expanded)
@@ -257,7 +315,7 @@ class AlexBubble(Vertical):
 
         # Response
         if turn.response:
-            widgets.append(Static(render_response(turn.response), classes="response-text"))
+            widgets.append(MarkdownStatic(render_response(turn.response), classes="response-text"))
 
         return widgets
 
@@ -296,7 +354,7 @@ class AlexBubble(Vertical):
         """Insert a ToolBubble and keep assistant text below active tool output."""
         if self._current_response is not None:
             if self._turn.response:
-                self.mount(Static(render_response(self._turn.response), classes="response-prefix"))
+                self.mount(MarkdownStatic(render_response(self._turn.response), classes="response-prefix"))
             self._current_response.remove()
             self._current_response = None
         tb = ToolBubble(name, args, output_expanded=self._tool_output_expanded)
@@ -313,6 +371,12 @@ class AlexBubble(Vertical):
         self._current_response = None
         for child in list(self.children):
             child.remove()
+        if turn.is_error:
+            self.add_class("error")
+            self.border_title = "Alex  ❌ Error"
+        else:
+            self.remove_class("error")
+            self.border_title = "Alex"
         display_tool_calls = _coalesce_tool_calls(turn.tool_calls)
         for widget in self._build_sections():
             if "response-text" in widget.classes and display_tool_calls:
@@ -364,7 +428,9 @@ def render_turn(
     streaming bubble and call finalize(turn) to reproduce the full
     live-chat rendering (skills, thinking, tool blocks, response).
     """
-    if turn.kind != "cron":
+    if turn.kind == "cron":
+        chat_view.mount(CronBubble(turn.user_input))
+    else:
         chat_view.mount(UserBubble(turn.user_input))
     bubble = AlexBubble(
         thinking_expanded=thinking_expanded,

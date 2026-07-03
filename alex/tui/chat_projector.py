@@ -29,7 +29,7 @@ from alex.bus.events import (
     TurnFailed,
     TurnStarted,
 )
-from alex.tui.presenter import AlexBubble, SystemBubble, UserBubble
+from alex.tui.presenter import AlexBubble, CronBubble, SystemBubble, UserBubble
 from alex.tui.stream_renderer import StreamRenderer
 
 if TYPE_CHECKING:
@@ -69,7 +69,9 @@ class ChatProjector:
 
     def _start_renderer(self, *, turn_id: str, kind: str, user_input: str = "") -> StreamRenderer:
         chat_view = self._app.query_one("#chat-view", VerticalScroll)
-        if kind == "user":
+        if kind == "cron":
+            chat_view.mount(CronBubble(user_input))
+        elif kind == "user":
             chat_view.mount(UserBubble(user_input))
         bubble = AlexBubble(tool_output_expanded=self._app.tool_output_expanded)
         chat_view.mount(bubble)
@@ -77,8 +79,7 @@ class ChatProjector:
         chat_view.scroll_end()
         renderer = StreamRenderer(bubble)
         self._active_renderers[turn_id] = renderer
-        if kind == "user":
-            self._user_inputs[turn_id] = user_input
+        self._user_inputs[turn_id] = user_input
         return renderer
 
     @staticmethod
@@ -180,8 +181,8 @@ class ChatProjector:
             return
         if not event.turn_id or self._renderer(event.turn_id) is not None:
             return
-        user_input = ""
-        if event.kind == "user" and self._pending_user_inputs:
+        user_input = getattr(event, "user_input", "") or ""
+        if not user_input and event.kind == "user" and self._pending_user_inputs:
             user_input = self._pending_user_inputs.popleft()
         self._start_renderer(turn_id=event.turn_id, kind=event.kind, user_input=user_input)
 
@@ -233,6 +234,8 @@ class ChatProjector:
             )
             if event.content:
                 turn.response = event.content
+                if event.content.startswith("Error:"):
+                    turn.is_error = True
             if event.thinking:
                 turn.thinking = event.thinking
             renderer.on_batch(list(event.message_batch or []))
@@ -262,11 +265,12 @@ class ChatProjector:
                 kind="cron" if event.source == "cron" else "user",
             )
             turn.response = f"Error: {err}"
+            turn.is_error = True
             renderer.finalize(turn)
         else:
             self._user_inputs.pop(event.turn_id, None)
             chat_view = self._app.query_one("#chat-view", VerticalScroll)
-            chat_view.mount(SystemBubble(f"turn error: {err}"))
+            chat_view.mount(SystemBubble(f"turn error: {err}", is_error=True))
         chat_view = self._app.query_one("#chat-view", VerticalScroll)
         self.trim_chat_view(chat_view)
         chat_view.scroll_end()

@@ -83,31 +83,27 @@ class _BusTurnServices:
 
 
 class _PromptAssembler:
-    """Builds the system prompt with skill instructions injected via bus."""
+    """Builds the system prompt with skill instructions injected via bus.
+
+    Stateless — every call to ``build_prompt(query)`` computes and returns
+    the augmented prompt without mutating shared state.
+    """
 
     def __init__(self, system_prompt: str, bus: MessageBus) -> None:
         self._system_prompt = system_prompt
         self._bus = bus
-        self._current = system_prompt
 
-    @property
-    def augmented_prompt(self) -> str:
-        return self._current
-
-    async def ensure_skills_prompt(self, query: str) -> bool:
+    async def build_prompt(self, query: str) -> str:
+        """Return the system prompt with matched skill instructions injected."""
         try:
             skills = await self._bus.request(RetrieveSkills(query=query, top_k=3))
         except Exception:
-            return False
+            return self._system_prompt
         if not skills:
-            return False
+            return self._system_prompt
         from alex.prompts import get_skills_section
         text = get_skills_section(skills=[{"name": s.name, "pattern": s.pattern} for s in skills])
-        augmented = self._system_prompt + text if text else self._system_prompt
-        if augmented != self._current:
-            self._current = augmented
-            return True
-        return False
+        return self._system_prompt + text if text else self._system_prompt
 
 
 class ChatAppService:
@@ -130,15 +126,17 @@ class ChatAppService:
         self._system_prompt = system_prompt
         self._max_iterations = max_iterations
         self._callbacks = callbacks or []
-        self._session_id: str = ""
         self._cron_history: list[dict] = []
         self._prompt = _PromptAssembler(system_prompt, bus)
+
+        async def _build_prompt(query: str) -> str:
+            return await self._prompt.build_prompt(query)
 
         self._turn_processor = TurnProcessor(
             llm=llm,
             push_notification=self.push_notification,
             services=_BusTurnServices(bus),
-            get_system_prompt=lambda: self._prompt.augmented_prompt,
+            get_system_prompt=_build_prompt,
             max_iterations=max_iterations,
             callbacks=self._callbacks,
         )
@@ -194,13 +192,7 @@ class ChatAppService:
     # ── session context ───────────────────────────────────────────────
 
     def set_session_context(self, session_id: str, cron_history: list[dict] | None = None) -> None:
-        self._session_id = session_id
         self._cron_history = list(cron_history or [])
-        self._turn_processor.set_session_id(session_id)
-
-    @property
-    def session_id(self) -> str:
-        return self._session_id
 
     # ── cron ──────────────────────────────────────────────────────────
 
@@ -243,18 +235,14 @@ class ChatAppService:
     def last_turn_result(self):
         return self._turn_processor.last_result
 
-    async def chat_stream(self, user_message: str) -> None:
-        """执行用户 turn — 事件通过 bus 广播。"""
+    async def chat_stream(self, user_message: str, *, session_id: str) -> None:
+        """执行用户 turn — 事件通过 bus 广播。session_id 作为不可变参数传入。"""
         try:
             await self._bus.start()
         except Exception:
             pass
-        try:
-            await self._prompt.ensure_skills_prompt(user_message)
-        except Exception:
-            _logger.debug("ensure_skills_prompt failed", exc_info=True)
         await self._turn_processor.run_user_turn(
-            user_message, session_id=self._session_id,
+            user_message, session_id=session_id,
         )
 
     # ── cron history ──────────────────────────────────────────────────

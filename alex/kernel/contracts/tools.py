@@ -48,9 +48,11 @@ class ToolsProvided(Event):
     """Published by mcp / plugin loaders to announce available tools.
 
     The tools gateway subscribes to this and merges specs into its catalog.
+    ``metadata`` carries optional status info (e.g. MCP connection state).
     """
     provider: str = ""  # "mcp" | "plugin"
     specs: list[dict[str, Any]] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -59,7 +61,6 @@ class ToolStarted(Event):
     tool_id: str = ""
     tool_name: str = ""
     tool_input: Any = None
-    is_cron: bool = False
     stream_id: str = ""
 
 
@@ -68,7 +69,6 @@ class ToolFinished(Event):
     """A tool execution has finished (UI notification)."""
     tool_id: str = ""
     output: Any = None
-    is_cron: bool = False
     stream_id: str = ""
 
 
@@ -93,6 +93,15 @@ class ToolApprovalResolved(Event):
     granted: bool = False
     remember: bool = False
 
+
+# ── MCP status (TUI → MCP module) ────────────────────────────────────────────
+
+@dataclass
+class GetMCPStatus(Request[dict[str, Any]]):
+    """Request current MCP connection state from the MCP module.
+
+    Returns ``{"servers": [...], "status_message": "..."}``.
+    """
 
 # ── Provider-level tool invocation (mcp / plugin → tools gateway) ────────────
 

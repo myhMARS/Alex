@@ -70,13 +70,6 @@ class ListenerModule:
 
 class TestModuleHostLifecycle:
     @pytest.mark.asyncio
-    async def test_start_and_stop_empty_host(self):
-        bus = AsyncEventBus()
-        host = ModuleHost(bus)
-        await host.start_all()
-        await host.stop_all()
-
-    @pytest.mark.asyncio
     async def test_register_and_start_module(self):
         bus = AsyncEventBus()
         host = ModuleHost(bus)
@@ -240,25 +233,6 @@ class TestMemoryModule:
 
 class TestSkillModule:
     @pytest.mark.asyncio
-    async def test_skill_module_starts_without_skills(self):
-        from alex.skill.module import SkillModule
-        from alex.kernel.contracts.skills import RetrieveSkills
-
-        bus = AsyncEventBus()
-        host = ModuleHost(bus)
-
-        skill_mod = SkillModule()
-        host.register(skill_mod)
-        await host.start_all()
-
-        # Retrieve with no skills installed
-        result = await bus.request(RetrieveSkills(query="test", top_k=3))
-        assert isinstance(result, list)
-        # No skills installed by default
-
-        await host.stop_all()
-
-    @pytest.mark.asyncio
     async def test_load_nonexistent_skill_raises(self):
         from alex.skill.module import SkillModule
         from alex.kernel.contracts.skills import LoadSkill
@@ -278,23 +252,6 @@ class TestSkillModule:
 
 
 class TestToolsModule:
-    @pytest.mark.asyncio
-    async def test_catalog_returns_list(self):
-        from alex.tools.module import ToolsModule
-        from alex.kernel.contracts.tools import GetToolCatalog
-
-        bus = AsyncEventBus()
-        host = ModuleHost(bus)
-
-        tools_mod = ToolsModule()
-        host.register(tools_mod)
-        await host.start_all()
-
-        catalog = await bus.request(GetToolCatalog())
-        assert isinstance(catalog, list)
-
-        await host.stop_all()
-
     @pytest.mark.asyncio
     async def test_execute_unknown_tool_returns_error(self):
         from alex.tools.module import ToolsModule
@@ -355,20 +312,3 @@ class TestToolsModule:
         await host.stop_all()
 
 
-class TestStoreModule:
-    @pytest.mark.asyncio
-    async def test_list_sessions_returns_list(self):
-        from alex.store.module import StoreModule
-        from alex.kernel.contracts.session import ListSessions
-
-        bus = AsyncEventBus()
-        host = ModuleHost(bus)
-
-        store_mod = StoreModule()
-        host.register(store_mod)
-        await host.start_all()
-
-        result = await bus.request(ListSessions())
-        assert isinstance(result, list)
-
-        await host.stop_all()

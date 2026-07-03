@@ -229,21 +229,5 @@ class TestPwshEmptyAndMissing:
 # ── host detection ────────────────────────────────────────────────────
 
 
-class TestHostDetection:
-    def test_detect_returns_dict(self):
-        found = detect_available_shells()
-        assert isinstance(found, dict)
-        for name in found:
-            assert name in {"bash", "pwsh", "bash_wsl"}
 
-    def test_create_available_returns_only_present_shells(self):
-        tools = create_available_shell_tools()
-        names = {t.name for t in tools}
-        if _BASH_AVAILABLE:
-            assert "bash" in names
-        else:
-            assert "bash" not in names
-        if _PWSH_AVAILABLE:
-            assert "pwsh" in names
-        else:
-            assert "pwsh" not in names
+

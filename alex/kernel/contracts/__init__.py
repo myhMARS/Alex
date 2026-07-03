@@ -21,6 +21,7 @@ from alex.kernel.contracts.chat import (
 # Tool contracts (catalog, execution, approval)
 from alex.kernel.contracts.tools import (
     ExecuteTool,
+    GetMCPStatus,
     GetToolCatalog,
     InvokeProviderTool,
     RegisterTool,
@@ -60,8 +61,6 @@ from alex.kernel.contracts.memory import (
 from alex.kernel.contracts.session import (
     ListSessions,
     LoadSession,
-    SaveSession,
-    SessionRestored,
 )
 
 # Cron contracts
@@ -83,6 +82,7 @@ __all__ = [
     "UserTurnRequested",
     # Tools
     "ExecuteTool",
+    "GetMCPStatus",
     "GetToolCatalog",
     "InvokeProviderTool",
     "RegisterTool",
@@ -113,8 +113,6 @@ __all__ = [
     # Session
     "ListSessions",
     "LoadSession",
-    "SaveSession",
-    "SessionRestored",
     # Cron
     "CancelCron",
     "CronJobEvent",

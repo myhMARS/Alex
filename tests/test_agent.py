@@ -90,7 +90,7 @@ class TestAgentChatDelegation:
 
         await agent.chat_stream("hello")
 
-        agent._chat.chat_stream.assert_awaited_once_with("hello")
+        agent._chat.chat_stream.assert_awaited_once_with("hello", session_id="")
 
     def test_last_turn_result_proxies_chat_service(self):
         agent = _make_test_agent(llm=MagicMock())

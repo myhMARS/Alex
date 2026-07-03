@@ -2,18 +2,19 @@
 
 Phase 2: wraps existing CronManager (three-way split).
 Provides ScheduleCron / CancelCron.
-Publishes CronTurnRequested / CronJobEvent.
+Publishes CronTurnRequested.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
 from alex.scheduler.manager import CronManager
+from alex.kernel.contracts.chat import TurnCompleted, TurnStarted
 from alex.kernel.contracts.cron import (
     CancelCron,
-    CronJobEvent,
     CronTurnRequested,
     ListCronJobs,
     ScheduleCron,
@@ -32,9 +33,15 @@ class CronModule:
         self._manager = cron_manager
         self._bus: Any = None
         self._session_id: str = ""
+        self._pending_futures: dict[str, asyncio.Future] = {}
 
     async def start(self, bus: Any) -> None:
         self._bus = bus
+        if self._manager is None:
+            self._manager = CronManager(notify=lambda e: self._bus.publish(e) if self._bus else None)
+        await self._manager.restore_durable_jobs(runner=self._cron_runner, session_id=self._session_id)
+        await bus.subscribe(TurnStarted, self._on_turn_started)
+        await bus.subscribe(TurnCompleted, self._on_turn_completed)
         bus.provide(ScheduleCron, self._handle_schedule)
         bus.provide(CancelCron, self._handle_cancel)
         bus.provide(ListCronJobs, self._handle_list_jobs)
@@ -46,10 +53,28 @@ class CronModule:
                 await self._manager.shutdown()
             except Exception:
                 pass
+        for future in self._pending_futures.values():
+            if not future.done():
+                future.cancel()
+        self._pending_futures.clear()
         self._bus = None
 
-    def set_session_id(self, session_id: str) -> None:
-        self._session_id = session_id
+    # ── TurnStarted → track current session ──────────────────────────────
+
+    async def _on_turn_started(self, event: TurnStarted) -> None:
+        if event.session_id:
+            self._session_id = event.session_id
+
+    # ── TurnCompleted → resolve cron pending futures ──────────────────────
+
+    async def _on_turn_completed(self, event: TurnCompleted) -> None:
+        """当 cron turn 完成时，resolve 对应的 Future。"""
+        stream_id = getattr(event, "stream_id", "") or ""
+        if not stream_id or not stream_id.startswith("cron:"):
+            return
+        future = self._pending_futures.pop(stream_id, None)
+        if future is not None and not future.done():
+            future.set_result(event.content or "")
 
     # ── request handlers ─────────────────────────────────────────────────
 
@@ -67,18 +92,6 @@ class CronModule:
             runner=self._cron_runner,
         )
 
-        # Publish CronJobEvent for UI notification
-        if self._bus:
-            self._bus.publish(CronJobEvent(
-                session_id=req.session_id or self._session_id,
-                job_id=job_id,
-                name=req.prompt[:80] if req.prompt else "",
-                status="SCHEDULED",
-                prompt=req.prompt,
-                recurring=req.recurring,
-                durable=req.durable,
-            ))
-
         return job_id
 
     async def _handle_cancel(self, req: CancelCron) -> bool:
@@ -88,13 +101,6 @@ class CronModule:
 
         result = await self._manager.cancel(req.job_id)
 
-        if result and self._bus:
-            self._bus.publish(CronJobEvent(
-                session_id=req.session_id,
-                job_id=req.job_id,
-                status="CANCELLED",
-            ))
-
         return result
 
     async def _handle_list_jobs(self, _req: ListCronJobs) -> list[dict]:
@@ -103,13 +109,29 @@ class CronModule:
             return []
         return self._manager.list_jobs()
 
-    # ── cron runner（通过 bus 发布 CronTurnRequested 触发 agent 执行）──
+    # ── cron runner（通过 bus 发布 CronTurnRequested，等待 turn 完成）──
 
     async def _cron_runner(
         self, session_id: str, job_id: str, name: str,
         prompt: str, stream_id: str, _wait_until_done: bool = True,
     ) -> str:
-        """Cron 触发时的 runner — 发布 CronTurnRequested 到 bus。"""
+        """Cron 触发时的 runner — 发布事件并等待 TurnCompleted 后返回结果。"""
+        if not _wait_until_done:
+            self._bus.publish(CronTurnRequested(
+                session_id=session_id,
+                trigger={
+                    "job_id": job_id,
+                    "name": name,
+                    "prompt": prompt,
+                    "stream_id": stream_id,
+                },
+            ))
+            return "ENQUEUED"
+
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+        self._pending_futures[stream_id] = future
+
         self._bus.publish(CronTurnRequested(
             session_id=session_id,
             trigger={
@@ -119,7 +141,15 @@ class CronModule:
                 "stream_id": stream_id,
             },
         ))
-        return "TRIGGERED"
+
+        try:
+            return await asyncio.wait_for(future, timeout=600.0)
+        except asyncio.TimeoutError:
+            return "Error: cron turn timed out after 600s"
+        except asyncio.CancelledError:
+            return "Error: cron turn cancelled"
+        finally:
+            self._pending_futures.pop(stream_id, None)
 
     @property
     def manager(self) -> Any:

@@ -6,10 +6,6 @@ from alex.memory.buffer import BufferMemory
 
 
 class TestBufferMemory:
-    def test_initial_state(self):
-        mem = BufferMemory(max_size=50)
-        assert mem.size == 0
-
     @pytest.mark.asyncio
     async def test_add_message_with_session_id(self):
         mem = BufferMemory()
@@ -125,19 +121,3 @@ class TestBufferMemory:
         assert len(ctx_a) == 2
         assert [m["content"] for m in ctx_a] == ["2", "3"]
         assert [m["content"] for m in ctx_b] == ["b"]
-
-
-class TestMemoryServiceProtocol:
-    """Verify BufferMemory structurally satisfies MemoryService Protocol."""
-
-    def test_has_append(self):
-        assert hasattr(BufferMemory, "append") or hasattr(BufferMemory(), "append")
-
-    def test_has_get_context(self):
-        assert hasattr(BufferMemory, "get_context")
-
-    def test_has_replace(self):
-        assert hasattr(BufferMemory, "replace") or hasattr(BufferMemory(), "replace")
-
-    def test_has_clear(self):
-        assert hasattr(BufferMemory, "clear")

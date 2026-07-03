@@ -80,6 +80,10 @@ AlexBubble {
     border-title-style: bold;
     height: auto;
 }
+AlexBubble.error {
+    border: round $error;
+    border-title-color: $error;
+}
 AlexBubble > .thinking-collapsed {
     height: 1;
     color: $text-muted;
@@ -152,4 +156,15 @@ ToolBubble > #tool-output-full {
 }
 ToolBubble > .hidden {
     display: none;
+}
+
+Tree > .tree--highlight-line,
+Tree > .tree--cursor {
+    background: $panel;
+    color: $text;
+}
+
+Tree > .tree--guides-hover,
+Tree > .tree--guides-selected {
+    color: $primary;
 }

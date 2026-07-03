@@ -26,14 +26,7 @@ _SESSION_LOCKS_GUARD = threading.Lock()
 # ── serialization (plain dicts → JSON) ────────────────────────────────────
 
 
-def serialize_message(message: dict[str, Any]) -> dict[str, Any]:
-    """Return a JSON-safe copy of *message* (already plain dicts)."""
-    return dict(message)
-
-
-def deserialize_message(record: dict[str, Any]) -> dict[str, Any]:
-    """Return *record* as a message dict."""
-    return dict(record)
+from alex.messages import deserialize_message, serialize_message
 
 
 def serialize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

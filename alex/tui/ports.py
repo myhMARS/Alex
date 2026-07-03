@@ -30,9 +30,9 @@ class _ControllerHost(Protocol):
     _skills_expanded: bool
     _tool_output_expanded: bool
 
-    # Optional MCP state
+    # MCP status — driven by MCPModule via ToolsProvided bus events
     _mcp_status_message: str
-    _mcp_pool: Any  # MCPClientPool | None — avoid import for optional dep
+    _mcp_servers: list[dict]
 
     # Mixin methods called within the mixin itself via self
     def _show_page(self, title: str, content: str, *, mode: str) -> None: ...

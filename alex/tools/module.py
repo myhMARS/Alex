@@ -10,8 +10,10 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 from alex.kernel.contracts.tools import (
@@ -36,6 +38,20 @@ from alex.tools.permissions import (
 from alex.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
+
+
+def _accepts_param(coroutine: Callable[..., Any], param_name: str) -> bool:
+    """Return True if *coroutine* accepts *param_name* as a keyword argument."""
+    try:
+        sig = inspect.signature(coroutine)
+        param = sig.parameters.get(param_name)
+        return param is not None and param.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+            inspect.Parameter.VAR_KEYWORD,
+        )
+    except (TypeError, ValueError):
+        return False
 
 
 class ToolsModule:
@@ -259,9 +275,13 @@ class ToolsModule:
                 tool_input=req.args,
             ))
 
-        # 执行工具
+        # 执行工具 — 注入 session 上下文，让工具能将定时任务关联到正确的 session
+        args = dict(req.args)
+        if req.session_id and _accepts_param(tool.coroutine, "_session_id"):
+            args["_session_id"] = req.session_id
+
         try:
-            result_str = await tool.invoke(req.args)
+            result_str = await tool.invoke(args)
             result = ToolResult(name=req.name, output=str(result_str), run_id=run_id)
         except Exception as e:
             result = ToolResult(name=req.name, error=f"{type(e).__name__}: {e}", run_id=run_id)

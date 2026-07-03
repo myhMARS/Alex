@@ -81,8 +81,8 @@ class Agent:
     # ── chat ────────────────────────────────────────────────────────
 
     async def chat_stream(self, user_message: str) -> None:
-        """执行用户 turn — 事件通过 bus 广播。"""
-        await self._chat.chat_stream(user_message)
+        """执行用户 turn — 事件通过 bus 广播。session_id 作为不可变参数传入。"""
+        await self._chat.chat_stream(user_message, session_id=self._session_id)
 
     @property
     def last_turn_result(self):
