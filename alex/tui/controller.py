@@ -341,6 +341,29 @@ class ChatControllerMixin:
         else:
             tool_node.add_leaf("[dim]输入参数: 无[/]")
 
+
+def _format_tool_schema(schema: dict[str, Any]) -> str:
+    """Format a tool input schema for display in the MCP tree."""
+    if not schema:
+        return ""
+    try:
+        return json.dumps(schema, ensure_ascii=False, indent=2, sort_keys=True)
+    except TypeError:
+        return str(schema)
+
+
+def _server_state_label(srv_status: str, error: str | None, enabled: bool) -> str:
+    """Rich markup label for a server's connection state."""
+    if not enabled:
+        return "[bold $text-disabled]DISABLED[/]"
+    if srv_status == "ERROR" or error:
+        return "[bold $error]ERROR[/]"
+    if srv_status in ("connected", "CONNECTED"):
+        return "[bold $success]CONNECTED[/]"
+    if srv_status == "connecting":
+        return "[italic]connecting[/]"
+    return srv_status.upper()
+
     # ── session management（通过 bus）──────────────────────────────────
 
     @work(exclusive=True)
@@ -397,15 +420,22 @@ class ChatControllerMixin:
     async def _resume_session(self, session_id: str) -> None:
         """Resume a saved session — restore memory first, then render UI."""
         try:
-            bundle = await self._bus.request(
+            messages = await self._bus.request(
                 LoadSession(session_id=session_id)
             )
         except Exception:
-            bundle = None
+            messages = None
 
-        if bundle is None:
+        if messages is None:
             self._notif.show_toast(f"会话 {session_id} 加载失败", duration=2)
             return
+
+        # LoadSession 返回的是消息列表，构造 bundle 格式
+        bundle = {
+            "session_id": session_id,
+            "messages": messages,
+            "cron_history": [],
+        }
 
         self._history = ChatHistory(session_id=session_id)
         self._history.restore_from_bundle(bundle)
@@ -487,26 +517,3 @@ class ChatControllerMixin:
             chat_view.mount(Static(f"  ✗ Merge failed: {e}"))
 
         chat_view.scroll_end()
-
-
-def _format_tool_schema(schema: dict[str, Any]) -> str:
-    """Format a tool input schema for display in the MCP tree."""
-    if not schema:
-        return ""
-    try:
-        return json.dumps(schema, ensure_ascii=False, indent=2, sort_keys=True)
-    except TypeError:
-        return str(schema)
-
-
-def _server_state_label(srv_status: str, error: str | None, enabled: bool) -> str:
-    """Rich markup label for a server's connection state."""
-    if not enabled:
-        return "[bold $text-disabled]DISABLED[/]"
-    if srv_status == "ERROR" or error:
-        return "[bold $error]ERROR[/]"
-    if srv_status in ("connected", "CONNECTED"):
-        return "[bold $success]CONNECTED[/]"
-    if srv_status == "connecting":
-        return "[italic]connecting[/]"
-    return srv_status.upper()
