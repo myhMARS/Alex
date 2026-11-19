@@ -1,0 +1,27 @@
+{
+  "name": "alex-ts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TypeScript rewrite of Alex — kernel, event bus, pluggable modules and the TUI module.",
+  "bin": {
+    "alex-ts": "./src/entry.ts"
+  },
+  "scripts": {
+    "dev": "bun run src/entry.ts",
+    "start": "bun run src/entry.ts --tui",
+    "build": "bun build src/entry.ts --target=bun --outfile=dist/alex-ts.js --external @opentui/core --external @opentui/react --external react",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opentui/core": "^0.4.2",
+    "@opentui/react": "^0.4.2",
+    "react": "^19.2.7"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/react": "^19.0.0",
+    "typescript": "^5.7.0"
+  }
+}

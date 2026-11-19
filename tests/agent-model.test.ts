@@ -1,0 +1,220 @@
+import { afterEach, describe, expect, test } from 'bun:test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { AsyncEventBus } from '../src/kernel/bus';
+import { AgentModule } from '../src/modules/agent/module';
+import { MemoryModule } from '../src/modules/memory/module';
+import { TuiModule } from '../src/modules/tui/module';
+import { ToolsModule } from '../src/tools/module';
+import { PermissionPolicy, AuditLogger } from '../src/tools/permissions';
+import type { ChatModel, ChatRequest, ChatStreamEvent, ToolCall } from '../src/llm/client';
+import {
+  TokenEmitted,
+  TokenUsageReported,
+  TurnCompleted,
+  TurnFailed,
+  TurnStarted,
+  UserTurnRequested,
+} from '../src/kernel/contracts/chat';
+import { ToolFinished, ToolStarted } from '../src/kernel/contracts/tools';
+import { GetContext } from '../src/kernel/contracts/memory';
+
+const tempDirs: string[] = [];
+
+afterEach(async () => {
+  while (tempDirs.length > 0) {
+    const dir = tempDirs.pop();
+    if (dir) await rm(dir, { recursive: true, force: true });
+  }
+});
+
+function toolCall(id: string, name: string, args: string): ToolCall {
+  return { id, type: 'function', function: { name, arguments: args } };
+}
+
+class ScriptedModel implements ChatModel {
+  readonly calls: ChatRequest[] = [];
+
+  async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
+    // Snapshot: the agent keeps mutating its messages array between rounds.
+    this.calls.push({ ...request, messages: [...request.messages] });
+    if (this.calls.length === 1) {
+      yield { type: 'content', delta: 'Checking. ' };
+      yield {
+        type: 'done',
+        result: {
+          content: 'Checking. ',
+          thinking: 'need the clock',
+          toolCalls: [toolCall('call_1', 'time', '{"timezone":"UTC"}')],
+          finishReason: 'tool_calls',
+        },
+      };
+      return;
+    }
+    yield { type: 'content', delta: 'It is now. ' };
+    yield {
+      type: 'done',
+      result: {
+        content: 'It is now. ',
+        thinking: 'done',
+        toolCalls: [],
+        finishReason: 'stop',
+        usage: { promptTokens: 120, completionTokens: 8, totalTokens: 128 },
+      },
+    };
+  }
+}
+
+async function setup(model: ChatModel, options: { maxIterations?: number } = {}) {
+  const dir = await mkdtemp(join(tmpdir(), 'alex-ts-agent-loop-'));
+  tempDirs.push(dir);
+  const bus = new AsyncEventBus();
+  const memory = new MemoryModule();
+  const tools = new ToolsModule({
+    roots: [dir],
+    policy: new PermissionPolicy({ allowed: ['read', 'network'], env: {} }),
+    audit: new AuditLogger(join(dir, 'audit.jsonl')),
+    approvalTimeoutMs: 1_000,
+    plugins: false,
+  });
+  const agent = new AgentModule({
+    model,
+    systemPrompt: 'SYS',
+    maxIterations: options.maxIterations ?? 5,
+  });
+  const tui = new TuiModule();
+  await memory.start(bus);
+  await tools.start(bus);
+  await agent.start(bus);
+  await tui.start(bus);
+  await bus.start();
+  return { bus, agent, tui, dir };
+}
+
+describe('AgentModule model loop', () => {
+  test('streams, executes a tool, feeds the result back and finishes', async () => {
+    const model = new ScriptedModel();
+    const { bus, agent, tui } = await setup(model);
+
+    const tokens: string[] = [];
+    const started: ToolStarted[] = [];
+    const finished: ToolFinished[] = [];
+    const completed: TurnCompleted[] = [];
+    const usage: TokenUsageReported[] = [];
+    await bus.subscribe(TokenEmitted, (event) => { tokens.push(event.delta); });
+    await bus.subscribe(ToolStarted, (event) => { started.push(event); });
+    await bus.subscribe(ToolFinished, (event) => { finished.push(event); });
+    await bus.subscribe(TurnCompleted, (event) => { completed.push(event); });
+    await bus.subscribe(TokenUsageReported, (event) => { usage.push(event); });
+
+    bus.publish(new UserTurnRequested({ sessionId: 's1', userText: 'what time is it' }));
+    await agent.whenIdle();
+    await bus.idle();
+
+    expect(model.calls).toHaveLength(2);
+    const first = model.calls[0]!;
+    expect(first.systemPrompt).toBe('SYS');
+    expect(first.messages.at(-1)).toMatchObject({ role: 'user', content: 'what time is it' });
+    expect(first.tools?.map((tool) => tool.function.name)).toEqual(
+      expect.arrayContaining(['time', 'read', 'write']),
+    );
+
+    const second = model.calls[1]!;
+    const assistantWithCalls = second.messages.find(
+      (message) => message.role === 'assistant' && Array.isArray(message.tool_calls) && message.tool_calls.length > 0,
+    );
+    expect(assistantWithCalls).toBeTruthy();
+    const toolMessage = second.messages.find((message) => message.role === 'tool');
+    expect(toolMessage?.tool_call_id).toBe('call_1');
+    expect(String(toolMessage?.content)).toContain('Current time');
+
+    expect(tokens.join('')).toBe('Checking. It is now. ');
+    expect(started).toHaveLength(1);
+    expect(started[0]?.toolName).toBe('time');
+    expect(finished).toHaveLength(1);
+    expect(completed[0]?.content).toBe('It is now. ');
+    expect(usage[0]).toMatchObject({ promptTokens: 120, completionTokens: 8, totalTokens: 128 });
+    expect(tui.viewState.lastUsage?.promptTokens).toBe(120);
+
+    const history = await bus.request(new GetContext({ sessionId: 's1' }));
+    expect(history.map((message) => message.role)).toEqual([
+      'user',
+      'assistant',
+      'tool',
+      'assistant',
+    ]);
+
+    // The view keeps all streamed segments in order (pre-tool + post-tool).
+    expect(tui.viewState.turns[0]?.content).toBe('Checking. It is now. ');
+    expect(tui.viewState.turns[0]?.parts.map((part) => part.kind)).toEqual([
+      'thinking',
+      'text',
+      'tool',
+      'text',
+    ]);
+    expect(tui.viewState.turns[0]?.tools[0]?.name).toBe('time');
+    expect(tui.viewState.turns[0]?.tools[0]?.done).toBe(true);
+
+    await bus.shutdown();
+  }, 20_000);
+
+  test('publishes TurnFailed when the model throws', async () => {
+    const broken: ChatModel = {
+      async *streamChat() {
+        throw new Error('model down');
+      },
+    };
+    const { bus, agent } = await setup(broken);
+    const failures: TurnFailed[] = [];
+    await bus.subscribe(TurnFailed, (event) => { failures.push(event); });
+
+    bus.publish(new UserTurnRequested({ sessionId: 's1', userText: 'hi' }));
+    await agent.whenIdle();
+    await bus.idle();
+
+    expect(failures[0]?.error).toContain('model down');
+    await bus.shutdown();
+  }, 20_000);
+
+  test('forces a final answer after max iterations', async () => {
+    class LoopModel implements ChatModel {
+      calls = 0;
+
+      async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
+        this.calls += 1;
+        if (request.tools && request.tools.length > 0) {
+          yield {
+            type: 'done',
+            result: {
+              content: '',
+              thinking: '',
+              toolCalls: [toolCall('call_x', 'time', '{"timezone":"UTC"}')],
+              finishReason: 'tool_calls',
+            },
+          };
+          return;
+        }
+        yield { type: 'content', delta: 'forced final' };
+        yield {
+          type: 'done',
+          result: { content: 'forced final', thinking: '', toolCalls: [], finishReason: 'stop' },
+        };
+      }
+    }
+
+    const alwaysTools = new LoopModel();
+    const { bus, agent } = await setup(alwaysTools, { maxIterations: 2 });
+    const completed: TurnCompleted[] = [];
+    await bus.subscribe(TurnCompleted, (event) => { completed.push(event); });
+
+    bus.publish(new UserTurnRequested({ sessionId: 's1', userText: 'loop' }));
+    await agent.whenIdle();
+    await bus.idle();
+
+    expect(completed[0]?.content).toBe('forced final');
+    expect(alwaysTools.calls).toBe(3);
+    await bus.shutdown();
+  }, 20_000);
+});
