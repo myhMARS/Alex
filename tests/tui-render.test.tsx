@@ -22,7 +22,7 @@ import {
   ToolStarted,
 } from '../src/kernel/contracts/tools';
 import { ListSkills } from '../src/kernel/contracts/skills';
-import { ListAgents } from '../src/kernel/contracts/agents';
+import { ListAgentTasks, ListAgents } from '../src/kernel/contracts/agents';
 import { GetToolCatalog, GetMCPStatus, ListDirectory } from '../src/kernel/contracts/tools';
 import {
   CompactContext,
@@ -61,6 +61,21 @@ async function mountedTui(): Promise<{
       sessionId: 's2',
       role: 'worker',
       status: 'running',
+    },
+  ]);
+  bus.provide(ListAgentTasks, () => [
+    {
+      taskId: 'task-sidebar',
+      agentId: 'worker-1',
+      sessionId: 's2',
+      prompt: 'sidebar work',
+      status: 'running',
+      result: '',
+      error: '',
+      parentSessionId: 's1',
+      teamId: 'default',
+      startedAt: 1,
+      finishedAt: null,
     },
   ]);
   const tui = new TuiModule();
@@ -134,9 +149,10 @@ describe('TUI renderer', () => {
     await setup.renderOnce();
     const frame = plain(setup.captureCharFrame());
     expect(frame).toContain('AGENTS');
-    expect(frame).toContain('CONVERSATION AGENT');
+    expect(frame).toContain('CONVERSATION AGENT (2)');
     expect(frame).toContain('main');
     expect(frame).toContain('worker-1');
+    expect(frame).toContain('×');
     await bus.shutdown();
   });
 
@@ -613,9 +629,10 @@ describe('TUI renderer', () => {
     await new Promise((resolve) => setTimeout(resolve, 40));
     await setup.renderOnce();
     let frame = plain(setup.captureCharFrame());
-    expect(frame).toContain('Commands');
+    expect(frame).toContain('Commands (');
     expect(frame).toContain('/help');
     expect(frame).toContain('/skills');
+    expect(frame).toContain('/task');
     expect(frame).toContain('❯ /help');
 
     setup.mockInput.pressArrow('down');
@@ -646,6 +663,24 @@ describe('TUI renderer', () => {
     await new Promise((resolve) => setTimeout(resolve, 80));
     await bus.idle();
     expect(tui.getSnapshot().page?.kind).toBe('skills');
+    await bus.shutdown();
+  });
+
+  test('command palette can find non-default commands such as /dispose', async () => {
+    const bus = new AsyncEventBus();
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+    const setup = await testRender(
+      <TuiApp tui={tui} sessionId="s1" toolCount={17} onQuit={() => {}} />,
+      { width: 100, height: 30 },
+    );
+    await setup.renderOnce();
+    await setup.mockInput.typeText('/dis');
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    await setup.renderOnce();
+    const frame = plain(setup.captureCharFrame());
+    expect(frame).toContain('/dispose');
     await bus.shutdown();
   });
 

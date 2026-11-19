@@ -26,6 +26,10 @@ export interface AgentMailboxEntry {
   teamId: string;
   content: string;
   replyTo?: string;
+  /** Session that sent the message. */
+  fromSessionId?: string;
+  /** Session that should consume the message. */
+  toSessionId?: string;
   at: string;
   /** Whether this message has been acknowledged. */
   read?: boolean;

@@ -95,9 +95,11 @@ export class AgentMailbox {
     agentId: string,
     limit = 20,
     unreadOnly = false,
+    sessionId?: string,
   ): AgentMailboxEntry[] {
     const matching = this.entries.filter((entry) => {
       if (entry.toAgentId !== agentId) return false;
+      if (sessionId && !this.inSession(entry, sessionId)) return false;
       if (unreadOnly && this.acks.has(entry.messageId)) return false;
       return true;
     });
@@ -109,11 +111,16 @@ export class AgentMailbox {
     }));
   }
 
-  async ack(agentId: string, messageIds?: string[]): Promise<number> {
+  async ack(
+    agentId: string,
+    messageIds?: string[],
+    sessionId?: string,
+  ): Promise<number> {
     const targets = new Set(messageIds ?? []);
     let acked = 0;
     for (const entry of this.entries) {
       if (entry.toAgentId !== agentId) continue;
+      if (sessionId && !this.inSession(entry, sessionId)) continue;
       if (targets.size > 0 && !targets.has(entry.messageId)) continue;
       if (this.acks.has(entry.messageId)) continue;
       this.acks.add(entry.messageId);
@@ -168,11 +175,16 @@ export class AgentMailbox {
     return revived;
   }
 
-  deadLetters(agentId: string, maxAttempts = 3): AgentMailboxEntry[] {
+  deadLetters(
+    agentId: string,
+    maxAttempts = 3,
+    sessionId?: string,
+  ): AgentMailboxEntry[] {
     return this.entries
       .filter(
         (entry) =>
           entry.toAgentId === agentId &&
+          (!sessionId || this.inSession(entry, sessionId)) &&
           !this.acks.has(entry.messageId) &&
           (this.attempts.get(entry.messageId) ?? 0) >= maxAttempts,
       )
@@ -184,7 +196,7 @@ export class AgentMailbox {
       }));
   }
 
-  status(agentId: string, maxAttempts = 3): {
+  status(agentId: string, maxAttempts = 3, sessionId?: string): {
     total: number;
     read: number;
     unread: number;
@@ -192,7 +204,11 @@ export class AgentMailbox {
     lastReadAt?: string;
     dead: number;
   } {
-    const entries = this.entries.filter((entry) => entry.toAgentId === agentId);
+    const entries = this.entries.filter(
+      (entry) =>
+        entry.toAgentId === agentId &&
+        (!sessionId || this.inSession(entry, sessionId)),
+    );
     const readEntries = entries.filter((entry) => this.acks.has(entry.messageId));
     const lastRead = readEntries[readEntries.length - 1];
     return {
@@ -207,6 +223,13 @@ export class AgentMailbox {
           (this.attempts.get(entry.messageId) ?? 0) >= maxAttempts,
       ).length,
     };
+  }
+
+  /** A message belongs to a session if either endpoint matches. */
+  private inSession(entry: AgentMailboxEntry, sessionId: string): boolean {
+    return (
+      entry.fromSessionId === sessionId || entry.toSessionId === sessionId
+    );
   }
 
   private async append(entry: AgentMailboxEntry): Promise<void> {

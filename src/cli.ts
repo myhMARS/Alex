@@ -1,6 +1,6 @@
 /** Minimal CLI argument parsing for the Alex TS entry point. */
 
-export const VERSION = '0.2.0';
+export const VERSION = '0.3.0';
 
 export type CliMode = 'auto' | 'tui' | 'demo';
 

@@ -28,7 +28,7 @@ interface PaletteCommand {
   run: () => void;
 }
 
-const PALETTE_MAX_VISIBLE = 6;
+const PALETTE_MAX_VISIBLE = 10;
 const SIDEBAR_WIDTH = 30;
 
 const PAGE_COMMANDS: Record<string, TuiPageKind> = {
@@ -126,8 +126,33 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
       },
       {
         name: '/tasks',
-        description: '查看 Agent task 详情',
+        description: '查看 Agent task 详情（当前 session）',
         run: () => void tui.showPage('tasks'),
+      },
+      {
+        name: '/task',
+        description: '查看单个 task 与关联 session 事件',
+        run: () => tui.setToast('用法：/task <task_id>'),
+      },
+      {
+        name: '/team',
+        description: '按 team 过滤 Agent / Task / Mailbox',
+        run: () => tui.setToast('用法：/team <team_id>（空=全部）'),
+      },
+      {
+        name: '/dispose',
+        description: 'dispose 一个 worker agent',
+        run: () => tui.setToast('用法：/dispose <agent_id>'),
+      },
+      {
+        name: '/set',
+        description: '修改设置，如 /set max_iterations 20',
+        run: () => tui.setToast('用法：/set <key> <value>'),
+      },
+      {
+        name: '/resume',
+        description: '恢复历史主会话',
+        run: () => void tui.showPage('sessions'),
       },
       {
         name: '/lineage',
@@ -645,8 +670,19 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
         return;
       }
 
+      const showAllTasks = lower === '/agents all' || lower === '/tasks all';
+      if (showAllTasks) {
+        tui.setTaskScope('all');
+        void tui.showPage(lower.startsWith('/agents') ? 'agents' : 'tasks');
+        clearInput();
+        return;
+      }
+
       const pageKind = PAGE_COMMANDS[lower];
       if (pageKind) {
+        if (pageKind === 'agents' || pageKind === 'tasks') {
+          tui.setTaskScope('session');
+        }
         void tui.showPage(pageKind);
         clearInput();
         return;
@@ -655,6 +691,16 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
         clearInput();
         setPendingAttachments([]);
         void tui.newSession();
+        return;
+      }
+      if (lower.startsWith('/dispose')) {
+        clearInput();
+        const agentId = text.slice('/dispose'.length).trim();
+        if (!agentId) {
+          tui.setToast('用法：/dispose <agent_id>');
+          return;
+        }
+        void tui.disposeAgent(agentId).then((result) => tui.setToast(result.message));
         return;
       }
       if (lower.startsWith('/')) {
@@ -747,6 +793,9 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
             agents={snapshot.sidebarAgents}
             viewAgentId={snapshot.viewAgentId}
             onAgentSelect={(agentId) => void tui.selectAgent(agentId)}
+            onAgentDispose={(agentId) =>
+              void tui.disposeAgent(agentId).then((result) => tui.setToast(result.message))
+            }
             fileTree={snapshot.fileTree}
             fileRows={snapshot.fileRows}
             fileSelected={snapshot.fileSelected}
@@ -850,9 +899,13 @@ function CommandPalette({
     >
       <box style={{ flexDirection: 'row' }}>
         <text fg={theme.accent}>
-          <strong>Commands</strong>
+          <strong>Commands ({total})</strong>
         </text>
-        <text fg={theme.muted}>  ↑↓ 选择 · Enter 执行 · Esc 关闭</text>
+        <text fg={theme.muted}>
+          {'  '}
+          {items.length > 0 ? `${start + 1}-${start + items.length}/${total}` : '0/'}
+          {' · ↑↓ 选择 · Enter 执行 · Esc 关闭'}
+        </text>
       </box>
       {items.map((command, index) => {
         const globalIndex = start + index;
@@ -873,7 +926,7 @@ function CommandPalette({
         );
       })}
       {total > items.length ? (
-        <text fg={theme.border}>  … {total - items.length} more</text>
+        <text fg={theme.border}>  … {total - items.length} more · 继续 ↑↓ 查看</text>
       ) : null}
     </box>
   );
@@ -1325,6 +1378,7 @@ function Sidebar({
   agents,
   viewAgentId,
   onAgentSelect,
+  onAgentDispose,
   fileTree,
   fileRows,
   fileSelected,
@@ -1337,6 +1391,7 @@ function Sidebar({
   agents: TuiSnapshot['sidebarAgents'];
   viewAgentId: string;
   onAgentSelect: (agentId: string) => void;
+  onAgentDispose: (agentId: string) => void;
   fileTree: TuiSnapshot['fileTree'];
   fileRows: TuiSnapshot['fileRows'];
   fileSelected: number;
@@ -1419,13 +1474,13 @@ function Sidebar({
         <scrollbox
           scrollX={false}
           style={{ flexGrow: 1, flexShrink: 1, flexBasis: 0, width: '100%' }}
-          scrollbarOptions={{ visible: false }}
+          scrollbarOptions={{ visible: true }}
         >
           <box style={{ flexDirection: 'column', width: SIDEBAR_WIDTH - 2 }}>
             <text fg={theme.accent}>
-              <strong>CONVERSATION AGENT</strong>
+              <strong>CONVERSATION AGENT ({agents.length})</strong>
             </text>
-            <text fg={theme.muted}>click to switch view</text>
+            <text fg={theme.muted}>click to switch · × to dispose</text>
             <box style={{ height: 1 }} />
             {agents.length === 0 ? (
               <text fg={theme.muted}>no agents</text>
@@ -1437,19 +1492,31 @@ function Sidebar({
                     key={agent.agentId}
                     onMouseDown={() => onAgentSelect(agent.agentId)}
                     style={{
+                      flexDirection: 'row',
                       paddingLeft: 1,
                       paddingRight: 1,
                       backgroundColor: selected ? '#313244' : undefined,
                     }}
                   >
-                    <text fg={selected ? theme.accent : theme.text}>
+                    <text fg={selected ? theme.accent : theme.text} style={{ width: 16 }}>
                       {selected ? '▸ ' : '  '}
-                      {truncate(agent.agentId, 14)}
+                      {'  '.repeat(agent.depth)}
+                      {truncate(agent.agentId, Math.max(6, 13 - agent.depth * 2))}
                     </text>
-                    <text fg={theme.muted}>
-                      {'  '}
-                      {agent.role} {agent.status === 'running' ? '●' : '○'}
+                    <text fg={theme.muted} style={{ width: 9 }}>
+                      {agent.role.slice(0, 5)} {agent.status === 'running' ? '●' : '○'}
                     </text>
+                    {agent.agentId !== 'main' ? (
+                      <text
+                        fg={theme.error}
+                        onMouseDown={(event) => {
+                          event.stopPropagation?.();
+                          onAgentDispose(agent.agentId);
+                        }}
+                      >
+                        ×
+                      </text>
+                    ) : null}
                   </box>
                 );
               })

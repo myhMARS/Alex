@@ -59,6 +59,7 @@ import {
 import {
   AgentDisposed,
   AgentSpawned,
+  DisposeAgent,
   AgentTaskFinished,
   AgentTaskStarted,
   ListAgentMessages,
@@ -173,6 +174,11 @@ export interface TuiPage {
 
 export type TuiSidebarTab = 'overview' | 'files' | 'agents';
 
+/** Sidebar agent row with tree depth for parent/child sessions. */
+export interface TuiSidebarAgent extends AgentInfo {
+  depth: number;
+}
+
 export interface TuiFileRow {
   path: string;
   name: string;
@@ -200,7 +206,7 @@ export interface TuiSnapshot {
   page: TuiPage | null;
   sessionId: string;
   sidebarTab: TuiSidebarTab;
-  sidebarAgents: AgentInfo[];
+  sidebarAgents: TuiSidebarAgent[];
   viewAgentId: string;
   fileTree: FileTreeSnapshot;
   fileRows: TuiFileRow[];
@@ -235,10 +241,11 @@ const HELP_TEXT = [
   '  /checkpoint      将当前会话 JSONL 刷盘',
   '  /prompt          查看 system prompt 组装结果',
   '  /reload-prompts  重新读取用户 prompt / AGENTS.md',
-  '  /agents          查看 Agent Team 与任务状态',
+  '  /agents [all]    查看 Agent Team 与任务状态（默认仅当前 session）',
+  '  /dispose <id>    dispose 一个 worker agent',
   '  /mailbox         查看 Agent mailbox（未读优先）',
   '  /lineage         查看 Agent / Session 谱系树',
-  '  /tasks           查看 Agent task 详情',
+  '  /tasks [all]     查看 Agent task 详情（默认仅当前 session）',
   '  /task <id>       查看单个 task 及关联 session 事件',
   '  /team [id]       过滤 Agent / Task / Mailbox / Lineage 的 team（空=全部）',
   '  /teams           查看所有 Team 汇总',
@@ -308,7 +315,8 @@ export class TuiModule implements Module {
   private agentsRefreshing = false;
   private teamFilter = '';
   private taskDetailId = '';
-  private sidebarAgents: AgentInfo[] = [];
+  private taskScope: 'session' | 'all' = 'session';
+  private sidebarAgents: TuiSidebarAgent[] = [];
   private viewAgentId = 'main';
   private mainSessionId = '';
 
@@ -448,6 +456,28 @@ export class TuiModule implements Module {
   }
 
   /** Load one agent's persisted session and mark its turns with that agent id. */
+  /** Dispose one worker agent; the main agent cannot be disposed from the UI. */
+  async disposeAgent(agentId: string): Promise<{ ok: boolean; message: string }> {
+    const bus = this.bus;
+    const id = agentId.trim();
+    if (!bus) return { ok: false, message: 'AgentRegistry 不可用' };
+    if (!id) return { ok: false, message: '用法：/dispose <agent_id>' };
+    if (id === 'main') return { ok: false, message: '不能 dispose main agent' };
+    try {
+      const disposed = await bus.request(new DisposeAgent({ agentId: id }));
+      await this.refreshSidebar();
+      if (this.page?.kind === 'agents') await this.refreshAgentsPage();
+      return disposed
+        ? { ok: true, message: `已 dispose ${id}` }
+        : { ok: false, message: `未找到 agent：${id}` };
+    } catch (error) {
+      return {
+        ok: false,
+        message: `dispose 失败：${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
   async loadAgentSession(agentId: string, sessionId: string): Promise<boolean> {
     const bus = this.bus;
     if (!bus) return false;
@@ -550,6 +580,72 @@ export class TuiModule implements Module {
 
   getTeamFilter(): string {
     return this.teamFilter;
+  }
+
+  /** Restrict task views to the current session (default) or show everything. */
+  setTaskScope(scope: 'session' | 'all'): void {
+    if (this.taskScope === scope) return;
+    this.taskScope = scope;
+    if (this.page?.kind === 'agents') void this.refreshAgentsPage();
+    else if (this.page?.kind === 'tasks') void this.showPage('tasks');
+  }
+
+  getTaskScope(): 'session' | 'all' {
+    return this.taskScope;
+  }
+
+  private tasksForCurrentSession(tasks: AgentTaskInfo[]): AgentTaskInfo[] {
+    if (this.taskScope === 'all' || !this.sessionId) return tasks;
+    return tasks.filter(
+      (task) =>
+        task.parentSessionId === this.sessionId ||
+        task.sessionId === this.sessionId,
+    );
+  }
+
+  /**
+   * Sidebar tree: main plus every child session reachable from the current
+   * root session. A worker can spawn its own worker, so this walks task
+   * parentSessionId → sessionId chains recursively.
+   */
+  private sidebarAgentsForSession(
+    agents: AgentInfo[],
+    tasks: AgentTaskInfo[],
+  ): TuiSidebarAgent[] {
+    const rootSession = this.mainSessionId || this.sessionId;
+    if (!rootSession) {
+      return agents.map((agent) => ({ ...agent, depth: 0 }));
+    }
+    const byAgent = new Map(agents.map((agent) => [agent.agentId, agent]));
+    const rows: TuiSidebarAgent[] = [];
+    const addedAgents = new Set<string>();
+    const visitedSessions = new Set<string>([rootSession]);
+    const main =
+      byAgent.get('main') ??
+      agents.find((agent) => agent.sessionId === rootSession);
+    if (main) {
+      rows.push({ ...main, depth: 0 });
+      addedAgents.add(main.agentId);
+    }
+    const queue: Array<{ sessionId: string; depth: number }> = [
+      { sessionId: rootSession, depth: 0 },
+    ];
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      for (const task of tasks) {
+        if (task.parentSessionId !== current.sessionId) continue;
+        if (!task.sessionId || visitedSessions.has(task.sessionId)) continue;
+        const child = byAgent.get(task.agentId) ??
+          agents.find((agent) => agent.sessionId === task.sessionId);
+        if (child && !addedAgents.has(child.agentId)) {
+          rows.push({ ...child, depth: current.depth + 1 });
+          addedAgents.add(child.agentId);
+        }
+        visitedSessions.add(task.sessionId);
+        queue.push({ sessionId: task.sessionId, depth: current.depth + 1 });
+      }
+    }
+    return rows;
   }
 
   /** Fork the current session and load the copy. */
@@ -1046,17 +1142,18 @@ export class TuiModule implements Module {
         return fallback;
       }
     };
-    const [catalog, skills, cron, mcp, agents] = await Promise.all([
+    const [catalog, skills, cron, mcp, agents, tasks] = await Promise.all([
       safe(bus.request(new GetToolCatalog()), []),
       safe(bus.request(new ListSkills({ includeDeprecated: false })), []),
       safe(bus.request(new ListCronJobs()), []),
       safe(bus.request(new GetMCPStatus()), { servers: [], statusMessage: '' }),
       safe(bus.request(new ListAgents()), [] as AgentInfo[]),
+      safe(bus.request(new ListAgentTasks()), [] as AgentTaskInfo[]),
     ]);
-    this.sidebarAgents = agents;
+    this.sidebarAgents = this.sidebarAgentsForSession(agents, tasks);
     if (
       this.viewAgentId !== 'main' &&
-      !agents.some((agent) => agent.agentId === this.viewAgentId)
+      !this.sidebarAgents.some((agent) => agent.agentId === this.viewAgentId)
     ) {
       this.viewAgentId = 'main';
     }
@@ -1205,18 +1302,30 @@ export class TuiModule implements Module {
         ),
         bus.request(new ListAgentTasks()).catch(() => [] as AgentTaskInfo[]),
       ]);
-      if (agents.length === 0) return '当前没有注册的 Agent。';
+      const scopedTasks = this.tasksForCurrentSession(tasks);
+      if (agents.length === 0 && scopedTasks.length === 0) {
+        return this.taskScope === 'all'
+          ? '当前没有注册的 Agent。'
+          : '当前 session 没有相关 Agent/task（/agents all 查看全部）。';
+      }
       const lines = ['Agents:'];
       for (const agent of agents) {
         lines.push(
           `- ${agent.agentId} [${agent.status}] role=${agent.role} team=${agent.teamId || '-'} parent=${agent.parentAgentId || '-'}`,
         );
       }
-      lines.push('', 'Tasks:');
-      if (tasks.length === 0) {
-        lines.push('  （无任务）');
+      lines.push(
+        '',
+        this.taskScope === 'all' ? 'Tasks (all):' : 'Tasks (current session):',
+      );
+      if (scopedTasks.length === 0) {
+        lines.push(
+          this.taskScope === 'all'
+            ? '  （无任务）'
+            : '  （当前 session 无任务；/agents all 查看全部）',
+        );
       } else {
-        for (const task of tasks.slice(-20)) {
+        for (const task of scopedTasks.slice(-20)) {
           lines.push(
             `- ${task.taskId} [${task.status}] ${task.agentId}: ${task.result || task.error || task.prompt}`,
           );
@@ -1319,7 +1428,12 @@ export class TuiModule implements Module {
       if (this.teamFilter) {
         tasks = tasks.filter((task) => task.teamId === this.teamFilter);
       }
-      if (tasks.length === 0) return '当前没有 task。';
+      tasks = this.tasksForCurrentSession(tasks);
+      if (tasks.length === 0) {
+        return this.taskScope === 'all'
+          ? '当前没有 task。'
+          : '当前 session 没有 task（/tasks all 查看全部）。';
+      }
       return tasks
         .slice(-30)
         .map((task) => {
@@ -1421,7 +1535,11 @@ export class TuiModule implements Module {
         let messages: Array<{ read?: boolean; fromAgentId: string; content: string }> = [];
         try {
           messages = await bus.request(
-            new ListAgentMessages({ agentId: agent.agentId, limit: 20 }),
+            new ListAgentMessages({
+              agentId: agent.agentId,
+              limit: 20,
+              sessionId: this.sessionId,
+            }),
           );
         } catch {
           continue;

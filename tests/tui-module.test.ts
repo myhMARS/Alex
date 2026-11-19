@@ -23,9 +23,12 @@ import { ListSkills } from '../src/kernel/contracts/skills';
 import { GetPromptInfo } from '../src/kernel/contracts/prompt';
 import {
   AgentTaskFinished,
+  DisposeAgent,
   ListAgentMessages,
   ListAgents,
   ListAgentTasks,
+  type AgentInfo,
+  type AgentTaskInfo,
 } from '../src/kernel/contracts/agents';
 import {
   GetSessionProjection,
@@ -291,7 +294,7 @@ describe('TuiModule as a bus module', () => {
     await tui.start(bus);
     await bus.start();
     await tui.showPage('agents');
-    expect(tui.getSnapshot().page?.body).toContain('（无任务）');
+    expect(tui.getSnapshot().page?.body).toContain('当前 session 无任务');
 
     tasks = [
       {
@@ -929,6 +932,21 @@ describe('TuiModule as a bus module', () => {
       };
     });
     bus.provide(ReplaceSessionEvents, (req) => ({ replaced: req.events.length }));
+    bus.provide(ListAgentTasks, () => [
+      {
+        taskId: 'task-worker-switch',
+        agentId: 'worker-1',
+        sessionId: 'worker-session',
+        prompt: 'worker question',
+        status: 'completed',
+        result: 'worker answer',
+        error: '',
+        parentSessionId: 'main-session',
+        teamId: 'default',
+        startedAt: 1,
+        finishedAt: 2,
+      },
+    ]);
     const tui = new TuiModule();
     await tui.start(bus);
     await bus.start();
@@ -950,6 +968,255 @@ describe('TuiModule as a bus module', () => {
     const contents = tui.getSnapshot().turns.map((turn) => turn.content).join('\n');
     expect(contents).toContain('main answer');
     expect(contents).not.toContain('worker answer');
+    await bus.shutdown();
+  });
+
+  test('disposes a worker from the TUI and refreshes the sidebar', async () => {
+    const bus = new AsyncEventBus();
+    let agents: AgentInfo[] = [
+      {
+        agentId: 'main',
+        parentAgentId: '',
+        teamId: 'default',
+        sessionId: 'main-session',
+        role: 'lead',
+        status: 'idle',
+      },
+      {
+        agentId: 'worker-1',
+        parentAgentId: 'main',
+        teamId: 'default',
+        sessionId: 'worker-session',
+        role: 'worker',
+        status: 'running',
+      },
+    ];
+    bus.provide(ListAgents, () => agents);
+    bus.provide(DisposeAgent, (req) => {
+      const before = agents.length;
+      agents = agents.filter((agent) => agent.agentId !== req.agentId);
+      return agents.length < before;
+    });
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+    await tui.refreshSidebar();
+    expect(tui.getSnapshot().sidebarAgents.map((agent) => agent.agentId)).toContain('worker-1');
+
+    const result = await tui.disposeAgent('worker-1');
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain('worker-1');
+    expect(tui.getSnapshot().sidebarAgents.map((agent) => agent.agentId)).not.toContain(
+      'worker-1',
+    );
+    expect((await tui.disposeAgent('main')).ok).toBe(false);
+    await bus.shutdown();
+  });
+
+  test('task pages default to the current session and support all', async () => {
+    const bus = new AsyncEventBus();
+    const tasks: AgentTaskInfo[] = [
+      {
+        taskId: 'task-current',
+        agentId: 'worker-1',
+        sessionId: 'worker-session-1',
+        prompt: 'current work',
+        status: 'completed',
+        result: 'current result',
+        error: '',
+        parentSessionId: 'current-session',
+        teamId: 'default',
+        startedAt: 1,
+        finishedAt: 2,
+      },
+      {
+        taskId: 'task-other',
+        agentId: 'worker-2',
+        sessionId: 'worker-session-2',
+        prompt: 'other work',
+        status: 'failed',
+        result: '',
+        error: 'other error',
+        parentSessionId: 'other-session',
+        teamId: 'default',
+        startedAt: 3,
+        finishedAt: 4,
+      },
+    ];
+    bus.provide(ListAgentTasks, () => tasks);
+    bus.provide(ListAgents, () => [
+      {
+        agentId: 'main',
+        parentAgentId: '',
+        teamId: 'default',
+        sessionId: 'current-session',
+        role: 'lead',
+        status: 'idle',
+      },
+    ]);
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+    tui.setSessionId('current-session');
+
+    await tui.showPage('tasks');
+    let body = tui.getSnapshot().page?.body ?? '';
+    expect(body).toContain('task-current');
+    expect(body).not.toContain('task-other');
+
+    tui.setTaskScope('all');
+    await tui.showPage('tasks');
+    body = tui.getSnapshot().page?.body ?? '';
+    expect(body).toContain('task-current');
+    expect(body).toContain('task-other');
+
+    tui.setTaskScope('session');
+    await tui.showPage('agents');
+    body = tui.getSnapshot().page?.body ?? '';
+    expect(body).toContain('Tasks (current session):');
+    expect(body).not.toContain('task-other');
+    await bus.shutdown();
+  });
+
+  test('sidebar only lists agents related to the current session', async () => {
+    const bus = new AsyncEventBus();
+    const agents: AgentInfo[] = [
+      {
+        agentId: 'main',
+        parentAgentId: '',
+        teamId: 'default',
+        sessionId: 'current-session',
+        role: 'lead',
+        status: 'idle',
+      },
+      {
+        agentId: 'worker-current',
+        parentAgentId: 'main',
+        teamId: 'default',
+        sessionId: 'worker-current-session',
+        role: 'worker',
+        status: 'idle',
+      },
+      {
+        agentId: 'worker-other',
+        parentAgentId: 'main',
+        teamId: 'default',
+        sessionId: 'worker-other-session',
+        role: 'worker',
+        status: 'idle',
+      },
+      {
+        agentId: 'worker-grandchild',
+        parentAgentId: 'worker-current',
+        teamId: 'default',
+        sessionId: 'worker-grandchild-session',
+        role: 'worker',
+        status: 'idle',
+      },
+    ];
+    bus.provide(ListAgents, () => agents);
+    bus.provide(ListAgentTasks, () => [
+      {
+        taskId: 'task-current',
+        agentId: 'worker-current',
+        sessionId: 'worker-current-session',
+        prompt: 'current',
+        status: 'completed',
+        result: 'ok',
+        error: '',
+        parentSessionId: 'current-session',
+        teamId: 'default',
+        startedAt: 1,
+        finishedAt: 2,
+      },
+      {
+        taskId: 'task-other',
+        agentId: 'worker-other',
+        sessionId: 'worker-other-session',
+        prompt: 'other',
+        status: 'completed',
+        result: 'ok',
+        error: '',
+        parentSessionId: 'other-session',
+        teamId: 'default',
+        startedAt: 3,
+        finishedAt: 4,
+      },
+      {
+        taskId: 'task-grandchild',
+        agentId: 'worker-grandchild',
+        sessionId: 'worker-grandchild-session',
+        prompt: 'nested',
+        status: 'completed',
+        result: 'ok',
+        error: '',
+        parentSessionId: 'worker-current-session',
+        teamId: 'default',
+        startedAt: 5,
+        finishedAt: 6,
+      },
+    ]);
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+    tui.setSessionId('current-session');
+    await tui.refreshSidebar();
+    const rows = tui.getSnapshot().sidebarAgents;
+    const ids = rows.map((agent) => agent.agentId);
+    expect(ids).toEqual(['main', 'worker-current', 'worker-grandchild']);
+    expect(ids).not.toContain('worker-other');
+    expect(rows.map((agent) => agent.depth)).toEqual([0, 1, 2]);
+    await bus.shutdown();
+  });
+
+  test('sidebar excludes disposed/resumable agents', async () => {
+    const bus = new AsyncEventBus();
+    bus.provide(ListAgents, (req) => {
+      const active: AgentInfo[] = [
+        {
+          agentId: 'main',
+          parentAgentId: '',
+          teamId: 'default',
+          sessionId: 'main-session',
+          role: 'lead',
+          status: 'idle',
+        },
+      ];
+      if (!req.includeResumable) return active;
+      return [
+        ...active,
+        {
+          agentId: 'worker-disposed',
+          parentAgentId: 'main',
+          teamId: 'default',
+          sessionId: 'worker-disposed-session',
+          role: 'worker',
+          status: 'resumable',
+        },
+      ];
+    });
+    bus.provide(ListAgentTasks, () => [
+      {
+        taskId: 'task-disposed',
+        agentId: 'worker-disposed',
+        sessionId: 'worker-disposed-session',
+        prompt: 'old',
+        status: 'completed',
+        result: 'ok',
+        error: '',
+        parentSessionId: 'main-session',
+        teamId: 'default',
+        startedAt: 1,
+        finishedAt: 2,
+      },
+    ]);
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+    tui.setSessionId('main-session');
+    await tui.refreshSidebar();
+    const ids = tui.getSnapshot().sidebarAgents.map((agent) => agent.agentId);
+    expect(ids).not.toContain('worker-disposed');
     await bus.shutdown();
   });
 

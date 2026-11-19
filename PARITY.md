@@ -42,7 +42,7 @@ Legend: ✅ parity · 🟡 core ported, gaps documented · ⏳ not ported / inte
 | Approval previews | unified diff for write/edit | unified diff for write/edit | ✅ `src/tools/diff.ts` + 审批弹窗展示 |
 | CLI | `alex --tui ink` | `alex-ts --tui/--demo/--help/--version/--session/--no-mcp` | ✅ flags + `bun link` install; bundle via `bun run build` |
 | Packaging | uv tool + bundled node runtime zip | `bun link` / `dist/alex-ts.js` | 🟡 single-file binary blocked by OpenTUI native FFI (documented) |
-| Tests | 388 pytest (removed with legacy tree) | 285 bun tests | ✅ frozen Python contract/tool/JSON snapshots retained as fixtures |
+| Tests | 388 pytest (removed with legacy tree) | 291 bun tests | ✅ frozen Python contract/tool/JSON snapshots retained as fixtures |
 
 ## P6 finish line (ordered)
 

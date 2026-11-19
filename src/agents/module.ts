@@ -211,10 +211,20 @@ export class AgentRegistryModule implements Module {
       [...this.tasks.values()].map(({ info }) => ({ ...info })),
     );
     bus.provide(ListAgentMessages, (req) =>
-      this.mailbox?.read(req.targetAgentId, req.limit, req.unreadOnly) ?? [],
+      this.mailbox?.read(
+        req.targetAgentId,
+        req.limit,
+        req.unreadOnly,
+        req.sessionId || undefined,
+      ) ?? [],
     );
     bus.provide(AckAgentMessages, async (req) => ({
-      acked: (await this.mailbox?.ack(req.targetAgentId, req.messageIds)) ?? 0,
+      acked:
+        (await this.mailbox?.ack(
+          req.targetAgentId,
+          req.messageIds,
+          req.sessionId || undefined,
+        )) ?? 0,
     }));
     bus.provide(
       GetAgentMailboxStatus,
@@ -222,6 +232,7 @@ export class AgentRegistryModule implements Module {
         this.mailbox?.status(
           req.targetAgentId,
           this.options.mailboxMaxAttempts ?? 3,
+          req.sessionId || undefined,
         ) ?? {
           total: 0,
           read: 0,
@@ -241,7 +252,13 @@ export class AgentRegistryModule implements Module {
       if (!this.agents.has(req.toAgentId)) {
         throw new Error(`unknown agent: ${req.toAgentId}`);
       }
-      return this.sendMessage(req.fromAgentId, req.toAgentId, req.content, req.replyTo);
+      return this.sendMessage(
+        req.fromAgentId,
+        req.toAgentId,
+        req.content,
+        req.replyTo,
+        req.sessionId || undefined,
+      );
     });
     if (this.options.registerTools !== false) await this.registerTeamTools();
     await this.loadTasks();
@@ -297,6 +314,7 @@ export class AgentRegistryModule implements Module {
     toAgentId: string,
     content: string,
     replyTo?: string,
+    fromSessionId?: string,
   ): { messageId: string } {
     const bus = this.bus;
     if (!bus) throw new Error('AgentRegistryModule is not started');
@@ -310,12 +328,15 @@ export class AgentRegistryModule implements Module {
         `cross-team message denied: ${sender.info.teamId} -> ${target.info.teamId}`,
       );
     }
+    const toSessionId = target.info.sessionId || fromSessionId || '';
     const message = new AgentTeamMessage({
-      teamId: this.agents.get(toAgentId)?.info.teamId ?? this.options.defaultTeamId,
+      teamId: target.info.teamId || this.options.defaultTeamId,
+      sessionId: toSessionId,
       fromAgentId: fromAgentId || this.options.defaultAgentId || '',
       toAgentId,
       content,
       replyTo,
+      fromSessionId,
     });
     bus.publish(message);
     const entry: AgentMailboxEntry = {
@@ -325,6 +346,8 @@ export class AgentRegistryModule implements Module {
       teamId: message.teamId ?? '',
       content: message.content,
       replyTo: message.replyTo,
+      fromSessionId: message.fromSessionId,
+      toSessionId: toSessionId || undefined,
       at: new Date().toISOString(),
     };
     this.mailbox?.record(entry);
@@ -762,17 +785,27 @@ export class AgentRegistryModule implements Module {
             },
             required: ['agent_id'],
           },
-          callable: async (args: Record<string, unknown>) => {
+          callable: async (
+            args: Record<string, unknown>,
+            ctx: { sessionId?: string },
+          ) => {
             const agentId = String(args.agent_id ?? '');
             if (!agentId) return 'Error: agent_id is required';
             const limit = Number(args.limit ?? 20);
             const unreadOnly = args.unread_only === true;
-            const entries = this.mailbox?.read(agentId, limit, unreadOnly) ?? [];
+            const entries =
+              this.mailbox?.read(
+                agentId,
+                limit,
+                unreadOnly,
+                ctx.sessionId,
+              ) ?? [];
             if (entries.length === 0) return 'No messages.';
             if (args.mark_read === true) {
               await this.mailbox?.ack(
                 agentId,
                 entries.map((entry) => entry.messageId),
+                ctx.sessionId,
               );
             }
             return entries
@@ -793,12 +826,16 @@ export class AgentRegistryModule implements Module {
             properties: { agent_id: { type: 'string' } },
             required: ['agent_id'],
           },
-          callable: async (args: Record<string, unknown>) => {
+          callable: async (
+            args: Record<string, unknown>,
+            ctx: { sessionId?: string },
+          ) => {
             const agentId = String(args.agent_id ?? '');
             if (!agentId) return 'Error: agent_id is required';
             const status = this.mailbox?.status(
               agentId,
               this.options.mailboxMaxAttempts ?? 3,
+              ctx.sessionId,
             ) ?? {
               total: 0,
               read: 0,
@@ -829,13 +866,17 @@ export class AgentRegistryModule implements Module {
             },
             required: ['agent_id'],
           },
-          callable: async (args: Record<string, unknown>) => {
+          callable: async (
+            args: Record<string, unknown>,
+            ctx: { sessionId?: string },
+          ) => {
             const agentId = String(args.agent_id ?? '');
             if (!agentId) return 'Error: agent_id is required';
             const ids = Array.isArray(args.message_ids)
               ? args.message_ids.map((id) => String(id))
               : undefined;
-            const acked = (await this.mailbox?.ack(agentId, ids)) ?? 0;
+            const acked =
+              (await this.mailbox?.ack(agentId, ids, ctx.sessionId)) ?? 0;
             return `Acked: ${acked}`;
           },
         }),
@@ -905,13 +946,17 @@ export class AgentRegistryModule implements Module {
             properties: { agent_id: { type: 'string' } },
             required: ['agent_id'],
           },
-          callable: async (args: Record<string, unknown>) => {
+          callable: async (
+            args: Record<string, unknown>,
+            ctx: { sessionId?: string },
+          ) => {
             const agentId = String(args.agent_id ?? '');
             if (!agentId) return 'Error: agent_id is required';
             const messages =
               this.mailbox?.deadLetters(
                 agentId,
                 this.options.mailboxMaxAttempts ?? 3,
+                ctx.sessionId,
               ) ?? [];
             if (messages.length === 0) return 'No dead letters.';
             return messages
@@ -935,14 +980,21 @@ export class AgentRegistryModule implements Module {
             },
             required: ['agent_id'],
           },
-          callable: async (args: Record<string, unknown>) => {
+          callable: async (
+            args: Record<string, unknown>,
+            ctx: { sessionId?: string },
+          ) => {
             const agentId = String(args.agent_id ?? '');
             if (!agentId) return 'Error: agent_id is required';
             if (!this.mailbox) return 'Error: mailbox persistence is disabled';
             const ids = Array.isArray(args.message_ids)
               ? args.message_ids.map((id) => String(id))
               : this.mailbox
-                  .deadLetters(agentId, this.options.mailboxMaxAttempts ?? 3)
+                  .deadLetters(
+                    agentId,
+                    this.options.mailboxMaxAttempts ?? 3,
+                    ctx.sessionId,
+                  )
                   .map((entry) => entry.messageId);
             const revived = await this.mailbox.revive(ids);
             return `Revived: ${revived}`;
@@ -961,11 +1013,14 @@ export class AgentRegistryModule implements Module {
             },
             required: ['agent_id'],
           },
-          callable: async (args: Record<string, unknown>) => {
+          callable: async (
+            args: Record<string, unknown>,
+            ctx: { sessionId?: string },
+          ) => {
             const agentId = String(args.agent_id ?? '');
             if (!agentId) return 'Error: agent_id is required';
             const limit = Number(args.limit ?? 10);
-            const result = await this.replayMailbox(agentId, limit);
+            const result = await this.replayMailbox(agentId, limit, ctx.sessionId);
             return `Replayed: ${result.replayed}, Dead: ${result.dead}`;
           },
         }),
@@ -1013,7 +1068,10 @@ export class AgentRegistryModule implements Module {
             },
             required: ['agent_id', 'content'],
           },
-          callable: async (args: Record<string, unknown>) => {
+          callable: async (
+            args: Record<string, unknown>,
+            ctx: { sessionId?: string },
+          ) => {
             const to = String(args.agent_id ?? '');
             const content = String(args.content ?? '');
             if (!to) return 'Error: agent_id is required';
@@ -1023,6 +1081,8 @@ export class AgentRegistryModule implements Module {
                 String(args.from_agent_id ?? this.options.defaultAgentId ?? ''),
                 to,
                 content,
+                undefined,
+                ctx.sessionId,
               );
               return `Delivered: ${sent.messageId}`;
             } catch (error) {
@@ -1065,13 +1125,14 @@ export class AgentRegistryModule implements Module {
   private async replayMailbox(
     agentId: string,
     limit = 10,
+    sessionId?: string,
   ): Promise<{ replayed: number; dead: number }> {
     const bus = this.bus;
     if (!bus || !this.mailbox) return { replayed: 0, dead: 0 };
     const target = this.agents.get(agentId);
     if (!target) return { replayed: 0, dead: 0 };
     const maxAttempts = this.options.mailboxMaxAttempts ?? 3;
-    const messages = this.mailbox.read(agentId, limit, true);
+    const messages = this.mailbox.read(agentId, limit, true, sessionId);
     let replayed = 0;
     let dead = 0;
     for (const entry of messages) {
@@ -1089,6 +1150,7 @@ export class AgentRegistryModule implements Module {
           toAgentId: entry.toAgentId,
           content: entry.content,
           replyTo: entry.replyTo,
+          fromSessionId: entry.fromSessionId,
         }),
       );
       replayed += 1;

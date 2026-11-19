@@ -16,6 +16,8 @@ export class AgentTeamMessage extends Event {
   toAgentId: string;
   content: string;
   replyTo?: string;
+  /** Session that sent the message. */
+  fromSessionId?: string;
 
   constructor(
     init: MessageContext & {
@@ -24,6 +26,7 @@ export class AgentTeamMessage extends Event {
       toAgentId?: string;
       content?: string;
       replyTo?: string;
+      fromSessionId?: string;
     } = {},
   ) {
     super({
@@ -36,6 +39,7 @@ export class AgentTeamMessage extends Event {
     this.toAgentId = init.toAgentId ?? '';
     this.content = init.content ?? '';
     this.replyTo = init.replyTo;
+    this.fromSessionId = init.fromSessionId;
   }
 }
 

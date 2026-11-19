@@ -153,6 +153,40 @@ describe('agent mailbox persistence', () => {
     expect(mailbox.deadLetters('worker', 3)).toHaveLength(0);
   });
 
+  test('filters same-name agent messages by session', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'alex-ts-mailbox-session-'));
+    dirs.push(dir);
+    const mailbox = new AgentMailbox(join(dir, 'mailbox.jsonl'));
+    const base = {
+      toAgentId: 'worker',
+      teamId: 'default',
+      content: 'hello',
+      at: '2026-01-01T00:00:00Z',
+    };
+    mailbox.record({
+      ...base,
+      messageId: 'm-a',
+      fromAgentId: 'main',
+      fromSessionId: 'session-a',
+      toSessionId: 'worker-a',
+    });
+    mailbox.record({
+      ...base,
+      messageId: 'm-b',
+      fromAgentId: 'main',
+      fromSessionId: 'session-b',
+      toSessionId: 'worker-b',
+    });
+    expect(mailbox.read('worker', 20, false, 'session-a').map((m) => m.messageId)).toEqual([
+      'm-a',
+    ]);
+    expect(mailbox.read('worker', 20, false, 'session-b').map((m) => m.messageId)).toEqual([
+      'm-b',
+    ]);
+    expect(mailbox.read('worker', 20, false, 'session-c')).toEqual([]);
+    expect(mailbox.read('worker')).toHaveLength(2);
+  });
+
   test('failed consumption counts retries and becomes a dead letter', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'alex-ts-mailbox-fail-'));
     dirs.push(dir);
