@@ -27,6 +27,11 @@ export function mergeSkillsPrompt(skills: MergeSkillInput[]): string {
     '"Ignore first", "Placeholder ignore", "Ignore trivial" = SAME scenario',
     '- When merging, use the best pattern and instruction from the group',
     '- Combine tags from all merged skills',
+    '- Only merge skills that share the same trigger AND essentially the same workflow; related domains are not automatically the same skill',
+    '- Use ONLY ids present in the input; each id may appear at most once',
+    '- keep_id must NOT also appear in merge_ids',
+    '- Only deprecate a skill when it is fully covered by a merged keeper',
+    '- Empty result is valid and expected when no merge is needed',
     '',
     '## Skills to consolidate:',
     '',
@@ -44,6 +49,9 @@ export function mergeSkillsPrompt(skills: MergeSkillInput[]): string {
     'Respond with ONLY this JSON structure (no other text):',
     '',
     '{"merged_groups": [{"keep_id": "id_to_keep", "merge_ids": ["id1", "id2"], "updated_name": "name", "updated_pattern": "pattern", "updated_instruction": "instruction", "updated_tags": ["t1", "t2"]}], "deprecate_ids": ["useless_id"]}',
+    '',
+    'If no consolidation is needed, respond with:',
+    '{"merged_groups": [], "deprecate_ids": []}',
   );
   return lines.join('\n');
 }

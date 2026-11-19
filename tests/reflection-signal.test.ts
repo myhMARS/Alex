@@ -2,6 +2,10 @@ import { describe, expect, test } from 'bun:test';
 
 import { analyzeReflectionSignal } from '../src/skill/reflection-signal';
 import { buildReflectionTranscript } from '../src/skill/reflector';
+import { buildReflectionPrompt } from '../src/prompts/reflection';
+import { mergeSkillsPrompt } from '../src/prompts/merge-skills';
+import { parseMergeResponse } from '../src/skill/merge';
+import { createSkill } from '../src/skill/models';
 import type { MessageDTO } from '../src/kernel/dto/message';
 
 function toolCall(id: string, name: string): MessageDTO['tool_calls'] {
@@ -66,5 +70,34 @@ describe('reflection signal', () => {
     expect(transcript).toContain('[tool_call name=bash args={"command":"make deploy"}]');
     expect(transcript).toContain('[tool_result id=call-1 error]');
     expect(transcript).toContain('[assistant] I fixed the command.');
+  });
+});
+
+describe('reflection and merge prompts', () => {
+  test('reflection prompt includes existing skill instructions and tags', () => {
+    const skill = createSkill({
+      name: 'debug-import-error',
+      pattern: 'python import errors',
+      instruction: '1. reproduce\n2. inspect traceback',
+      tags: ['python', 'debug'],
+    });
+    const prompt = buildReflectionPrompt([skill], []);
+    expect(prompt).toContain('instruction: 1. reproduce');
+    expect(prompt).toContain('["python","debug"]');
+    expect(prompt).toContain('untrusted data');
+    expect(prompt).not.toContain('0 rounds');
+  });
+
+  test('merge prompt documents the valid empty result', () => {
+    const prompt = mergeSkillsPrompt([]);
+    expect(prompt).toContain('{"merged_groups": [], "deprecate_ids": []}');
+    expect(prompt).toContain('each id may appear at most once');
+  });
+
+  test('merge parser treats an empty result as a valid no-op', () => {
+    expect(parseMergeResponse('{"merged_groups":[],"deprecate_ids":[]}')).toEqual({
+      groups: [],
+      deprecateIds: [],
+    });
   });
 });

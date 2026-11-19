@@ -148,5 +148,9 @@ describe('merge response parsing', () => {
     expect(parseMergeResponse('')).toBeNull();
     expect(parseMergeResponse('nothing useful')).toBeNull();
     expect(parseMergeResponse('{"foo": 1}')).toBeNull();
+    expect(parseMergeResponse('{"merged_groups": [], "deprecate_ids": []}')).toEqual({
+      groups: [],
+      deprecateIds: [],
+    });
   });
 });

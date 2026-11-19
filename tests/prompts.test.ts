@@ -12,7 +12,9 @@ describe('prompt builders', () => {
     const prompt = buildReflectionPrompt([skill], [
       { query: 'fix import', toolsUsed: ['read'], outcome: 'fixed' },
     ]);
-    expect(prompt).toContain(`[${skill.id}] debug-import: python import error`);
+    expect(prompt).toContain(`[${skill.id}] debug-import`);
+    expect(prompt).toContain('pattern: python import error');
+    expect(prompt).toContain('instruction:');
     expect(prompt).toContain('new_skills');
     expect(prompt).toContain('Round 1');
     expect(prompt).toContain('fix import');

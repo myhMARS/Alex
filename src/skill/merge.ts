@@ -42,6 +42,9 @@ export function parseMergeResponse(text: string): ParsedMerge | null {
   }
   if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
   const record = data as Record<string, unknown>;
+  if (!Array.isArray(record.merged_groups) && !Array.isArray(record.deprecate_ids)) {
+    return null;
+  }
   const groupsRaw = Array.isArray(record.merged_groups) ? record.merged_groups : [];
   const groups: MergeGroup[] = [];
   for (const item of groupsRaw) {
@@ -68,7 +71,7 @@ export function parseMergeResponse(text: string): ParsedMerge | null {
   const deprecateIds = Array.isArray(record.deprecate_ids)
     ? record.deprecate_ids.map(String)
     : [];
-  if (groups.length === 0 && deprecateIds.length === 0) return null;
+  // An empty consolidation is a valid no-op, not a parse failure.
   return { groups, deprecateIds };
 }
 
