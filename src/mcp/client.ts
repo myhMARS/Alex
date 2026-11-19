@@ -67,6 +67,7 @@ export function formatMCPToolResult(result: ToolCallResult): string {
 }
 
 export class MCPClient {
+  private serverInstructions = '';
   private readonly transport: JsonRpcTransport;
   private readonly config: MCPServerConfig;
   private readonly options: MCPClientOptions;
@@ -85,16 +86,23 @@ export class MCPClient {
 
   /** Handshake: initialize + notifications/initialized. */
   async initialize(): Promise<void> {
-    await this.transport.request(
+    const result = await this.transport.request<{ instructions?: unknown }>(
       'initialize',
       {
         protocolVersion: '2025-03-26',
         capabilities: {},
-        clientInfo: { name: 'alex-ts', version: '0.1.0' },
+        clientInfo: { name: 'alex-ts', version: '0.4.1' },
       },
       this.timeoutMs,
     );
+    this.serverInstructions =
+      typeof result?.instructions === 'string' ? result.instructions : '';
     await this.transport.notify('notifications/initialized', {});
+  }
+
+  /** Literal instructions advertised by the MCP server, if any. */
+  get instructions(): string {
+    return this.serverInstructions;
   }
 
   /** List tools, following pagination cursors. */

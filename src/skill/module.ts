@@ -36,10 +36,7 @@ import { GetSessionProjection } from '../kernel/contracts/session';
 import { SettingsUpdated } from '../kernel/contracts/settings';
 import type { MessageDTO } from '../kernel/dto/message';
 import { RegisterTool } from '../kernel/contracts/tools';
-import {
-  RegisterPromptSection,
-  UnregisterPromptSection,
-} from '../kernel/contracts/prompt';
+import { RuntimeContextNotice } from '../kernel/contracts/prompt';
 import { skillsSectionPrompt } from '../prompts/skills-section';
 import type { MergeSkillsResult } from '../kernel/dto/skill';
 import type { ChatModel } from '../llm/client';
@@ -126,27 +123,14 @@ export class SkillModule implements Module {
 
     await bus.subscribe(UserTurnRequested, async (cmd) => {
       const skills = retrieveSkills(this.store, cmd.userText, 3).map(skillToCard);
-      const id = `skills:${cmd.sessionId}`;
-      if (skills.length === 0) {
-        bus.publish(new UnregisterPromptSection({ id }));
-        return;
-      }
       bus.publish(
-        new RegisterPromptSection({
-          section: {
-            id,
-            content: skillsSectionPrompt(skills),
-            order: 30,
-            source: 'skill',
-          },
+        new RuntimeContextNotice({
+          sessionId: cmd.sessionId,
+          key: 'skills',
+          source: 'skill',
+          text: skills.length === 0 ? '' : skillsSectionPrompt(skills).trim(),
         }),
       );
-    });
-    await bus.subscribe(TurnCompleted, (cmd) => {
-      bus.publish(new UnregisterPromptSection({ id: `skills:${cmd.sessionId}` }));
-    });
-    await bus.subscribe(TurnFailed, (cmd) => {
-      bus.publish(new UnregisterPromptSection({ id: `skills:${cmd.sessionId}` }));
     });
     await bus.subscribe(ReflectSkills, (cmd) =>
       this.reflect(cmd.sessionId, cmd.signal, cmd.force),

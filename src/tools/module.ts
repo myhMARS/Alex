@@ -107,6 +107,7 @@ export class ToolsModule implements Module {
   private readonly providerNames = new Map<string, Set<string>>();
   private pluginResult: PluginLoadResult = { loaded: [], errors: [] };
   private bus: AsyncEventBus | null = null;
+  private toolsPromptRegistered = false;
 
   constructor(options: ToolsModuleOptions = {}) {
     this.roots = (options.roots ?? [process.cwd()]).map((root) => resolve(root));
@@ -181,15 +182,23 @@ export class ToolsModule implements Module {
     if (!this.bus) return;
     const names = this.catalog().map((spec) => spec.name);
     if (names.length === 0) {
-      this.bus.publish(new UnregisterPromptSection({ id: 'tools' }));
+      if (this.toolsPromptRegistered) {
+        this.toolsPromptRegistered = false;
+        this.bus.publish(new UnregisterPromptSection({ id: 'tools' }));
+      }
       return;
     }
+    if (this.toolsPromptRegistered) return;
+    this.toolsPromptRegistered = true;
+    // Tool names live in the tool schema, not in the system prompt. Keeping
+    // this section static prevents MCP/tool availability changes from
+    // invalidating the prompt-cache prefix.
     const content = [
       '## Tool Runtime',
       '',
       '- Only call tools when they are necessary for the task.',
       '- Side-effect tools require user approval; read-only tools may run directly.',
-      `- Available tools: ${names.join(', ')}`,
+      '- Use the provided tool schemas for available tool names and arguments.',
     ].join('\n');
     this.bus.publish(
       new RegisterPromptSection({

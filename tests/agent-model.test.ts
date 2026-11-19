@@ -21,6 +21,7 @@ import {
 import { ToolFinished, ToolStarted } from '../src/kernel/contracts/tools';
 import { SettingsUpdated, type SettingsSnapshot } from '../src/kernel/contracts/settings';
 import { GetSessionProjection } from '../src/kernel/contracts/session';
+import { RuntimeContextNotice } from '../src/kernel/contracts/prompt';
 
 const tempDirs: string[] = [];
 
@@ -220,6 +221,28 @@ describe('AgentModule model loop', () => {
     expect(alwaysTools.calls).toBe(3);
     await bus.shutdown();
   }, 20_000);
+
+  test('injects runtime context notices into the next model request', async () => {
+    const model = new ScriptedModel();
+    const { bus, agent } = await setup(model);
+    bus.publish(
+      new RuntimeContextNotice({
+        key: 'mcp:demo',
+        source: 'mcp',
+        text: "MCP server 'demo' is now available.",
+      }),
+    );
+    await bus.idle();
+    bus.publish(new UserTurnRequested({ sessionId: 's-notice', userText: 'hello' }));
+    await agent.whenIdle();
+    await bus.idle();
+    expect(model.calls[0]?.systemPrompt).not.toContain('Runtime context');
+    const last = model.calls[0]?.messages.at(-1) as { role?: string; content?: unknown };
+    expect(last?.role).toBe('user');
+    expect(String(last?.content)).toContain('<system-reminder>');
+    expect(String(last?.content)).toContain("MCP server 'demo' is now available.");
+    await bus.shutdown();
+  });
 
   test('applies maxIterations changes from settings at runtime', async () => {
     class LoopModel implements ChatModel {

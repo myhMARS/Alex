@@ -18,6 +18,7 @@ import {
   GetPromptInfo,
   GetPromptSections,
   RegisterPromptSection,
+  RuntimeContextNotice,
   ReloadPrompts,
   SetUserPrompt,
   UnregisterPromptSection,
@@ -150,7 +151,7 @@ describe('PromptModule', () => {
 
     const systemPrompt = await bus.request(new GetSystemPrompt());
     expect(systemPrompt).toContain('Tool Runtime');
-    expect(systemPrompt).toContain('Available tools');
+    expect(systemPrompt).toContain('provided tool schemas');
     const sections = await bus.request(new GetPromptSections());
     expect(sections.some((section) => section.id === 'tools')).toBe(true);
   });
@@ -205,7 +206,7 @@ describe('PromptModule', () => {
     expect(calls[0]?.systemPrompt).not.toContain('STATIC FALLBACK');
   });
 
-  test('SkillModule registers and unregisters the per-turn skills section', async () => {
+  test('SkillModule emits the per-turn skill catalog as runtime context', async () => {
     const dir = await tempDir();
     const bus = new AsyncEventBus();
     const prompt = new PromptModule({
@@ -236,23 +237,18 @@ describe('PromptModule', () => {
     await skills.start(bus);
     await bus.start();
 
+    const notices: string[] = [];
+    await bus.subscribe(RuntimeContextNotice, (event) => {
+      if (event.key === 'skills') notices.push(event.text);
+    });
     bus.publish(
       new UserTurnRequested({ sessionId: 's1', userText: 'python import error' }),
     );
     await bus.idle();
-    let systemPrompt = await bus.request(new GetSystemPrompt({ sessionId: 's1' }));
-    expect(systemPrompt).toContain('Available Skills');
-    expect(systemPrompt).toContain('debug-import');
-
-    bus.publish(
-      new TurnCompleted({
-        sessionId: 's1',
-        turnId: 't1',
-        messages: [],
-      }),
-    );
-    await bus.idle();
-    systemPrompt = await bus.request(new GetSystemPrompt({ sessionId: 's1' }));
+    const systemPrompt = await bus.request(new GetSystemPrompt({ sessionId: 's1' }));
+    expect(systemPrompt).not.toContain('Available Skills');
     expect(systemPrompt).not.toContain('debug-import');
+    expect(notices[0]).toContain('Available Skills');
+    expect(notices[0]).toContain('debug-import');
   });
 });

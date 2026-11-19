@@ -7,6 +7,8 @@ import { AsyncEventBus } from '../src/kernel/bus';
 import { ToolsModule } from '../src/tools/module';
 import { PermissionPolicy, AuditLogger } from '../src/tools/permissions';
 import { MCPModule, qualifyMcpToolName, type MCPModuleOptions } from '../src/mcp/module';
+import { PromptModule } from '../src/prompts/module';
+import { GetPromptSections } from '../src/kernel/contracts/prompt';
 import { parseMcpConfig, type MCPServerConfig } from '../src/mcp/config';
 import { parseSseResponse } from '../src/mcp/transport';
 import {
@@ -14,6 +16,11 @@ import {
   GetMCPStatus,
   GetToolCatalog,
 } from '../src/kernel/contracts/tools';
+import {
+  RegisterPromptSection,
+  RuntimeContextNotice,
+  UnregisterPromptSection,
+} from '../src/kernel/contracts/prompt';
 
 const tempDirs: string[] = [];
 const fixture = resolve(import.meta.dir, 'fixtures', 'mcp-stdio-server.ts');
@@ -60,7 +67,9 @@ async function setup(
     plugins: false,
   });
   const mcp = new MCPModule({ configs, connectTimeoutMs: 10_000, requestTimeoutMs: 10_000, ...mcpOptions });
+  const prompt = new PromptModule();
   await tools.start(bus);
+  await prompt.start(bus);
   await mcp.start(bus);
   await bus.start();
   return { bus, tools, mcp, dir };
@@ -288,7 +297,11 @@ describe('MCP health check', () => {
             {
               jsonrpc: '2.0',
               id: body.id,
-              result: { protocolVersion: '2025-03-26', capabilities: { tools: {} } },
+              result: {
+                protocolVersion: '2025-03-26',
+                capabilities: { tools: {} },
+                instructions: 'Health server instructions.',
+              },
             },
             { headers },
           );
@@ -334,6 +347,15 @@ describe('MCP health check', () => {
       const { bus, mcp } = await setup([config], { healthCheck: false });
       await mcp.whenIdle();
       await bus.idle();
+      const unregistered: string[] = [];
+      const notices: string[] = [];
+      await bus.subscribe(RegisterPromptSection, () => undefined);
+      await bus.subscribe(UnregisterPromptSection, (event) => {
+        if (event.id === 'mcp') unregistered.push(event.id);
+      });
+      await bus.subscribe(RuntimeContextNotice, (event) => {
+        notices.push(event.text);
+      });
       expect(qualifyMcpToolName('health-demo', 'echo')).toBe('mcp__health-demo__echo');
       let catalog = await bus.request(new GetToolCatalog());
       expect(catalog.map((spec) => spec.name)).toContain('mcp__health-demo__echo');
@@ -347,6 +369,13 @@ describe('MCP health check', () => {
       let status = await bus.request(new GetMCPStatus());
       expect(status.servers[0]?.status).toBe('CONNECTED');
       expect(status.servers[0]?.toolCount).toBe(1);
+      const sections = await bus.request(new GetPromptSections());
+      const mcpSection = sections.find((section) => section.id === 'mcp');
+      expect(mcpSection?.content).toContain('health-demo');
+      expect(mcpSection?.content).not.toContain('ERROR');
+      const toolsSection = sections.find((section) => section.id === 'tools');
+      expect(toolsSection?.content).toContain('Use the provided tool schemas');
+      expect(toolsSection?.content).not.toContain('mcp__health-demo__echo');
 
       server.stop(true);
       await mcp.refreshHealth();
@@ -355,6 +384,10 @@ describe('MCP health check', () => {
       expect(status.servers[0]?.status).toBe('ERROR');
       catalog = await bus.request(new GetToolCatalog());
       expect(catalog.map((spec) => spec.name)).not.toContain('mcp__health-demo__echo2');
+      expect(unregistered.length).toBeGreaterThan(0);
+      expect(notices.some((text) => text.includes('unavailable'))).toBe(true);
+      const afterStop = await bus.request(new GetPromptSections());
+      expect(afterStop.some((section) => section.id === 'mcp')).toBe(false);
 
       await mcp.stop();
       await bus.shutdown();

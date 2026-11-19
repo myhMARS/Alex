@@ -4,7 +4,7 @@
 
 [![Bun](https://img.shields.io/badge/Bun-1.4-black?logo=bun)](https://bun.sh)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue?logo=typescript)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-296%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-297%20passing-brightgreen)](#development)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 Alex runs an LLM agent loop in your terminal, with streaming replies, tool calling,
@@ -20,7 +20,7 @@ just another module.
 - **Durable sessions** — append-only JSONL event log, resume, fork, compact, repair
 - **Agent teams** — spawn workers, task queues, mailbox, lineage, per-agent permissions
 - **Skills** — retrieval, explicit loading, reflection, deduplication and merge
-- **MCP** — stdio and streamable HTTP / SSE tool servers
+- **MCP** — stdio and streamable HTTP / SSE servers; unavailable servers are excluded from the prompt and status changes are injected into the next model request
 - **Cron** — persistent scheduled turns with retry/backoff
 - **Model agnostic** — any OpenAI-compatible endpoint, with DeepSeek DSML support
 - **Safe tools** — allow/deny/ask permission policy, approval previews, audit log

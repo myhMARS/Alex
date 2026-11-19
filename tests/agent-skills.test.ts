@@ -129,8 +129,12 @@ describe('Agent + Skill integration', () => {
 
     const first = model.calls[0]!;
     expect(first.systemPrompt).toContain('SYS');
-    expect(first.systemPrompt).toContain('Available Skills');
-    expect(first.systemPrompt).toContain('debug-import');
+    expect(first.systemPrompt).not.toContain('Available Skills');
+    const skillContext = first.messages.find((message) =>
+      String(message.content).includes('Available Skills'),
+    );
+    expect(skillContext?.role).toBe('user');
+    expect(String(skillContext?.content)).toContain('debug-import');
 
     expect(loaded).toHaveLength(1);
     expect(loaded[0]?.skillName).toBe('debug-import');

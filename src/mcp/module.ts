@@ -19,6 +19,7 @@ import {
 import type { MCPServerConfig } from './config';
 import {
   RegisterPromptSection,
+  RuntimeContextNotice,
   UnregisterPromptSection,
 } from '../kernel/contracts/prompt';
 import { loadMcpConfig } from './config';
@@ -51,6 +52,7 @@ interface ServerState {
   status: string;
   toolCount: number;
   tools: ServerToolDetail[];
+  instructions: string;
   error: string | null;
 }
 
@@ -83,6 +85,8 @@ export class MCPModule implements Module {
   private connectTask: Promise<void> | null = null;
   private healthTimer: ReturnType<typeof setInterval> | null = null;
   private bus: AsyncEventBus | null = null;
+  private lastAvailability = new Map<string, { status: string; tools: string }>();
+  private lastPromptContent = '';
 
   constructor(options: MCPModuleOptions = {}) {
     this.options = options;
@@ -269,6 +273,7 @@ export class MCPModule implements Module {
       );
       const tools = client.tools;
       this.clients.set(config.name, client);
+      state.instructions = client.instructions;
       state.status = 'CONNECTED';
       state.toolCount = tools.length;
       state.error = null;
@@ -352,6 +357,7 @@ export class MCPModule implements Module {
       status: config.enabled ? 'connecting' : 'DISABLED',
       toolCount: 0,
       tools: [],
+      instructions: '',
       error: null,
     };
   }
@@ -359,20 +365,30 @@ export class MCPModule implements Module {
   /** Publish/refresh the MCP section consumed by PromptModule. */
   private refreshPromptSection(): void {
     if (!this.bus) return;
-    if (this.serverState.length === 0) {
-      this.bus.publish(new UnregisterPromptSection({ id: 'mcp' }));
+    // Only healthy servers belong in the prompt. Failed/connecting servers are
+    // surfaced through a one-shot context notice when their state changes.
+    const available = this.serverState.filter(
+      (state) => state.status === 'CONNECTED' && state.instructions.trim().length > 0,
+    );
+    if (available.length === 0) {
+      if (this.lastPromptContent) {
+        this.lastPromptContent = '';
+        this.bus.publish(new UnregisterPromptSection({ id: 'mcp' }));
+      }
       return;
     }
-    const lines = this.serverState.map((state) => {
-      const tools = state.tools.length > 0 ? ` (${state.tools.length} tools)` : '';
-      return `- ${state.name}: ${state.status}${tools}`;
-    });
+    const lines = available.map(
+      (state) => `### ${state.name}\n${state.instructions.trim()}`,
+    );
+    const content = ['## MCP Servers', '', ...lines].join('\n');
+    if (content === this.lastPromptContent) return;
+    this.lastPromptContent = content;
     this.bus.publish(
       new RegisterPromptSection({
         section: {
           id: 'mcp',
           title: 'MCP Servers',
-          content: ['## MCP Servers', '', ...lines].join('\n'),
+          content,
           order: 40,
           source: 'mcp',
         },
@@ -380,9 +396,50 @@ export class MCPModule implements Module {
     );
   }
 
+  /** Emit one context notice when a server becomes available/unavailable or changes tools. */
+  private publishAvailabilityChanges(): void {
+    if (!this.bus) return;
+    const next = new Map<string, { status: string; tools: string }>();
+    for (const state of this.serverState) {
+      const signature = state.tools.map((tool) => tool.name).sort().join(',');
+      next.set(state.name, { status: state.status, tools: signature });
+      const previous = this.lastAvailability.get(state.name);
+      const wasAvailable = previous?.status === 'CONNECTED';
+      const isAvailable = state.status === 'CONNECTED';
+      const toolList = state.tools.map((tool) => tool.name).join(', ');
+      if (!wasAvailable && isAvailable) {
+        this.bus.publish(
+          new RuntimeContextNotice({
+            key: `mcp:${state.name}`,
+            source: 'mcp',
+            text: `MCP server '${state.name}' is now available. Tools: ${toolList || '(none)'}.`,
+          }),
+        );
+      } else if (wasAvailable && !isAvailable) {
+        this.bus.publish(
+          new RuntimeContextNotice({
+            key: `mcp:${state.name}`,
+            source: 'mcp',
+            text: `MCP server '${state.name}' is unavailable; its tools were removed. Do not call them.`,
+          }),
+        );
+      } else if (wasAvailable && isAvailable && previous?.tools !== signature) {
+        this.bus.publish(
+          new RuntimeContextNotice({
+            key: `mcp:${state.name}`,
+            source: 'mcp',
+            text: `MCP server '${state.name}' tool list changed. Available tools: ${toolList || '(none)'}.`,
+          }),
+        );
+      }
+    }
+    this.lastAvailability = next;
+  }
+
   private publishToolsProvided(status: string): void {
     if (!this.bus) return;
     const specs = this.tools;
+    this.publishAvailabilityChanges();
     this.refreshPromptSection();
     this.bus.publish(
       new ToolsProvided({

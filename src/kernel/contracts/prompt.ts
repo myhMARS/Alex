@@ -66,3 +66,19 @@ export class SystemPromptUpdated extends Event {
     this.reason = init.reason ?? '';
   }
 }
+
+/** Ephemeral runtime context injected into the next model request. */
+export class RuntimeContextNotice extends Event {
+  text: string;
+  override source: string;
+  key: string;
+
+  constructor(
+    init: { text?: string; source?: string; key?: string; sessionId?: string } = {},
+  ) {
+    super(init);
+    this.text = init.text ?? '';
+    this.source = init.source ?? '';
+    this.key = init.key ?? this.source;
+  }
+}

@@ -19,14 +19,13 @@ import type { AttachmentDTO, MessageDTO } from '../../kernel/dto/message';
 import { buildUserContent } from '../../attachments/loader';
 import { resolveAttachmentRef, ATTACHMENT_URL_PREFIX } from '../../attachments/images';
 import type { ModelEffort } from '../../kernel/contracts/settings';
+import { RuntimeContextNotice } from '../../kernel/contracts/prompt';
 import { SettingsUpdated } from '../../kernel/contracts/settings';
 import { assistantMessage, userMessage } from '../../kernel/dto/message';
 import type { ToolResult, ToolSpec } from '../../kernel/dto/tool';
-import type { SkillCard } from '../../kernel/dto/skill';
 import {
   LoadSkill,
   ReflectSkills,
-  RetrieveSkills,
   SkillLoaded,
 } from '../../kernel/contracts/skills';
 import {
@@ -81,7 +80,6 @@ import type {
   ToolCall,
   ToolSchema,
 } from '../../llm/client';
-import { skillsSectionPrompt } from '../../prompts/skills-section';
 import { ensureToolCallResponses } from './tool-history';
 
 export interface RespondInput {
@@ -197,6 +195,7 @@ export class AgentModule implements Module {
   private readonly compactRetainRatio: number;
   private lastPromptTokens = 0;
   private restoredHeader: Record<string, unknown> | null = null;
+  private readonly pendingRuntimeNotices = new Map<string, string>();
   private thinkingEnabled = true;
   private effort: ModelEffort = 'high';
   private readonly imageMaxDimension: number;
@@ -261,6 +260,14 @@ export class AgentModule implements Module {
     this.disposers.push(await bus.subscribe(SettingsUpdated, (event) => {
       const next = Math.max(1, Math.floor(event.settings.maxIterations));
       if (Number.isFinite(next)) this.maxIterations = next;
+    }));
+    this.disposers.push(await bus.subscribe(RuntimeContextNotice, (event) => {
+      const key = `${event.sessionId || '*'}\u0000${event.key || event.source || 'runtime'}`;
+      if (!event.text.trim()) {
+        this.pendingRuntimeNotices.delete(key);
+        return;
+      }
+      this.pendingRuntimeNotices.set(key, event.text);
     }));
     bus.provide(SetModelEffort, (req) => {
       this.thinkingEnabled = req.thinkingEnabled;
@@ -593,15 +600,30 @@ export class AgentModule implements Module {
       await this.appendSessionLog(sessionId, [userMsg]);
 
       const messages: MessageDTO[] = [...history, userMsg];
+      // Runtime context is request-only user-role context (DSH-style snapshot),
+      // not a system-prompt mutation: stable prompt prefixes stay cacheable.
+      const sessionPrefix = `${sessionId}\u0000`;
+      const runtimeNotices: string[] = [];
+      for (const [key, text] of this.pendingRuntimeNotices) {
+        if (!key.startsWith(sessionPrefix) && !key.startsWith('*\u0000')) continue;
+        runtimeNotices.push(text);
+        this.pendingRuntimeNotices.delete(key);
+      }
+      if (runtimeNotices.length > 0) {
+        messages.push({
+          role: 'user',
+          content:
+            '<system-reminder>\nThe following information describes your current runtime context.\n' +
+            runtimeNotices.map((notice) => `- ${notice}`).join('\n') +
+            '\n</system-reminder>',
+          alex_runtime_context: true,
+        });
+      }
       const batch: MessageDTO[] = [];
       const catalog = await bus.request(new GetToolCatalog({ ...this.agentContext() }));
       const tools = catalog.map(toToolSchema);
       const assembled = await this.assembledSystemPrompt(bus, sessionId);
-      const skills =
-        assembled === undefined
-          ? await this.retrieveSkills(bus, sessionId, userText)
-          : [];
-      let systemPrompt = assembled ?? this.composeSystemPrompt(skills);
+      let systemPrompt = assembled ?? this.composeSystemPrompt();
       let requestTools = tools;
       let requestThinking = this.thinkingEnabled;
       let requestEffort = this.effort;
@@ -759,18 +781,6 @@ export class AgentModule implements Module {
     }
   }
 
-  private async retrieveSkills(
-    bus: AsyncEventBus,
-    sessionId: string,
-    query: string,
-  ): Promise<SkillCard[]> {
-    try {
-      return await bus.request(new RetrieveSkills({ ...this.agentContext(), sessionId, query, topK: 3 }));
-    } catch {
-      return [];
-    }
-  }
-
   /** PromptModule owns the assembled prompt; Agent keeps a static fallback for tests. */
   private async assembledSystemPrompt(
     bus: AsyncEventBus,
@@ -786,12 +796,8 @@ export class AgentModule implements Module {
     }
   }
 
-  private composeSystemPrompt(skills: SkillCard[]): string | undefined {
-    if (skills.length === 0) return this.systemPrompt;
-    const section = skillsSectionPrompt(skills);
-    return this.systemPrompt?.trim()
-      ? `${this.systemPrompt.trim()}\n${section}`
-      : section.trim();
+  private composeSystemPrompt(): string | undefined {
+    return this.systemPrompt;
   }
 
   /** Prefer the event-sourced projection; fall back to memory for legacy tests. */
