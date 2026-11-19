@@ -149,11 +149,13 @@ async function main(): Promise<void> {
     ),
   );
   host.register(
-    new SkillModule(
-      demo && sessionsDir
-        ? { model, skillsPath: join(sessionsDir, 'skills.json') }
-        : { model },
-    ),
+    new SkillModule({
+      model,
+      ...(demo && sessionsDir ? { skillsPath: join(sessionsDir, 'skills.json') } : {}),
+      autoReflect: settings.autoReflect,
+      reflectionMinTools: settings.reflectionMinTools,
+      reflectionMinWriteTools: settings.reflectionMinWriteTools,
+    }),
   );
   host.register(agent);
   host.register(tui);

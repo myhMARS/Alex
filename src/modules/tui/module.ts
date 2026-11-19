@@ -28,7 +28,13 @@ import {
   SetPromptPressure,
   SetRequestHeader,
 } from '../../kernel/contracts/chat';
-import { SkillLoaded, SkillsReflected, SkillReflectError } from '../../kernel/contracts/skills';
+import {
+  MergeSkills,
+  ReflectSkills,
+  SkillLoaded,
+  SkillsReflected,
+  SkillReflectError,
+} from '../../kernel/contracts/skills';
 import {
   CompactContext,
   CompactionFailed,
@@ -214,6 +220,8 @@ export interface TuiSnapshot {
   thinkingExpanded: boolean;
   skillsExpanded: boolean;
   toolOutputExpanded: boolean;
+  /** Turn ids whose tool-call group is manually expanded. */
+  toolTurnsExpanded: string[];
   sidebarCollapsed: boolean;
   toast: string | null;
   thinkingEnabled: boolean;
@@ -227,6 +235,8 @@ const HELP_TEXT = [
   '',
   '  /help            显示本帮助',
   '  /skills          技能列表（name / status / pattern）',
+  '  /reflect         立即触发一次技能反思',
+  '  /merge           合并语义重复的 skills',
   '  /cron            定时任务列表',
   '  /mcp             MCP 服务器状态',
   '  /sessions        已持久化会话列表',
@@ -304,6 +314,7 @@ export class TuiModule implements Module {
   private thinkingExpanded = false;
   private skillsExpanded = false;
   private toolOutputExpanded = false;
+  private readonly expandedToolTurns = new Set<string>();
   private sidebarCollapsed = true;
   private toast: string | null = null;
   private toastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -737,6 +748,46 @@ export class TuiModule implements Module {
     return this.toolOutputExpanded;
   }
 
+  /** Force one reflection pass for the current session. */
+  reflectSkills(): { ok: boolean; message: string } {
+    const bus = this.bus;
+    if (!bus) return { ok: false, message: '技能服务不可用' };
+    if (!this.sessionId) return { ok: false, message: '当前没有 session' };
+    bus.publish(new ReflectSkills({ sessionId: this.sessionId, force: true }));
+    return { ok: true, message: '已触发技能反思，完成后会显示结果' };
+  }
+
+  /** Run an explicit skill consolidation pass. */
+  async mergeSkills(): Promise<{ ok: boolean; message: string }> {
+    const bus = this.bus;
+    if (!bus) return { ok: false, message: '技能服务不可用' };
+    try {
+      const result = await bus.request(new MergeSkills());
+      if (this.page?.kind === 'skills') await this.showPage('skills');
+      return {
+        ok: !result.error,
+        message: result.error
+          ? `✗ merge 失败：${result.error}`
+          : `已合并 ${result.merged} 个 skill · 剩余 ${result.remaining} 个 active`,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        message: `✗ merge 失败：${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
+  /** Expand/collapse the tool-call group of one completed turn. */
+  toggleToolTurn(turnId: string): boolean {
+    if (!turnId) return false;
+    const next = !this.expandedToolTurns.has(turnId);
+    if (next) this.expandedToolTurns.add(turnId);
+    else this.expandedToolTurns.delete(turnId);
+    this.refresh();
+    return next;
+  }
+
   setToast(message: string, durationMs = 2_500): void {
     this.toast = message;
     if (this.toastTimer) clearTimeout(this.toastTimer);
@@ -768,6 +819,7 @@ export class TuiModule implements Module {
     this.page = null;
     this.sessionChoices = [];
     this.viewState.reset();
+    this.expandedToolTurns.clear();
     this.refresh();
     const bus = this.bus;
     if (bus) {
@@ -793,6 +845,7 @@ export class TuiModule implements Module {
 
   resetView(): void {
     this.viewState.reset();
+    this.expandedToolTurns.clear();
     this.page = null;
     this.refresh();
   }
@@ -1000,6 +1053,27 @@ export class TuiModule implements Module {
         return { ok: false, message: `无效的 max_iterations：${value}（1~1000 的整数）` };
       }
       patch.maxIterations = parsed;
+    } else if (normalized === 'autoreflect') {
+      const raw = value.trim().toLowerCase();
+      if (!['on', 'off', 'true', 'false', '1', '0'].includes(raw)) {
+        return { ok: false, message: `无效的 auto_reflect：${value}（on/off）` };
+      }
+      patch.autoReflect = ['on', 'true', '1'].includes(raw);
+    } else if (
+      normalized === 'reflectionmintools' ||
+      normalized === 'reflectionmintoolcalls'
+    ) {
+      const parsed = Number(value);
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 100) {
+        return { ok: false, message: `无效的 reflection_min_tools：${value}（1~100）` };
+      }
+      patch.reflectionMinTools = parsed;
+    } else if (normalized === 'reflectionminwritetools') {
+      const parsed = Number(value);
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 100) {
+        return { ok: false, message: `无效的 reflection_min_write_tools：${value}（1~100）` };
+      }
+      patch.reflectionMinWriteTools = parsed;
     } else {
       return { ok: false, message: `未知设置项：${key}` };
     }
@@ -1025,7 +1099,10 @@ export class TuiModule implements Module {
     const runtime =
       patch.thinkingEnabled !== undefined ||
       patch.effort !== undefined ||
-      patch.maxIterations !== undefined;
+      patch.maxIterations !== undefined ||
+      patch.autoReflect !== undefined ||
+      patch.reflectionMinTools !== undefined ||
+      patch.reflectionMinWriteTools !== undefined;
     return {
       ok: true,
       message: `已保存 ${key} = ${value}（${runtime ? '已即时生效' : '重启后生效'}）`,
@@ -1591,9 +1668,12 @@ export class TuiModule implements Module {
           `effort        ${settings.thinkingEnabled ? settings.effort : 'nothinking（thinking 关闭）'}`,
           `image_max     ${settings.imageMaxDimension} px（请求时图片最大边）`,
           `max_iterations ${settings.maxIterations}（单轮最多工具循环次数）`,
+          `auto_reflect   ${settings.autoReflect ? 'on' : 'off'}（turn 完成后自动反思）`,
+          `reflection_min_tools ${settings.reflectionMinTools}（自动反思所需工具调用数）`,
+          `reflection_min_write_tools ${settings.reflectionMinWriteTools}（含 write/edit 时的工具调用数）`,
           '',
-          '可用键：provider · model · api_key · base_url · max_context · max_output · compact_threshold · thinking · effort · image_max · max_iterations',
-          '示例：/set max_context 1M   /set max_output 64K   /set max_iterations 20   /set api_key sk-…',
+          '可用键：provider · model · api_key · base_url · max_context · max_output · compact_threshold · thinking · effort · image_max · max_iterations · auto_reflect · reflection_min_tools · reflection_min_write_tools',
+          '示例：/set max_context 1M   /set max_iterations 20   /set auto_reflect off   /set reflection_min_tools 3',
           '',
           '单位：K = 1,024，M = 1,048,576（二进制）；也可直接输入精确值，',
           '      如 /set max_context 131072（= 128K）。',
@@ -1773,6 +1853,7 @@ export class TuiModule implements Module {
       thinkingExpanded: this.thinkingExpanded,
       skillsExpanded: this.skillsExpanded,
       toolOutputExpanded: this.toolOutputExpanded,
+      toolTurnsExpanded: [...this.expandedToolTurns],
       sidebarCollapsed: this.sidebarCollapsed,
       toast: this.toast,
       thinkingEnabled: this.thinkingEnabled,

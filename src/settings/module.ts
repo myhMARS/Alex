@@ -38,6 +38,9 @@ export class SettingsModule implements Module {
       thinkingEnabled: true,
       effort: 'high',
       maxIterations: 10,
+      autoReflect: true,
+      reflectionMinTools: 3,
+      reflectionMinWriteTools: 2,
     };
     this.path = options.path;
     this.env = options.env ?? process.env;

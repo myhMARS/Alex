@@ -24,24 +24,59 @@ export interface SkillReflectorOptions {
 
 import { buildReflectionPrompt, type ReflectionEpisode } from '../prompts/reflection';
 
-function mapMessages(messages: MessageDTO[]): MessageDTO[] {
-  const mapped: MessageDTO[] = [];
+function contentText(message: MessageDTO): string {
+  if (typeof message.content === 'string') return message.content;
+  if (!Array.isArray(message.content)) return '';
+  return message.content
+    .map((part) =>
+      part && typeof part === 'object' && (part as { type?: string }).type === 'text'
+        ? String((part as { text?: unknown }).text ?? '')
+        : '[attachment]',
+    )
+    .join('\n');
+}
+
+function toolName(call: unknown): string {
+  if (!call || typeof call !== 'object') return '';
+  const fn = (call as { function?: { name?: unknown } }).function;
+  return typeof fn?.name === 'string' ? fn.name : '';
+}
+
+function toolArgs(call: unknown): string {
+  if (!call || typeof call !== 'object') return '';
+  const fn = (call as { function?: { arguments?: unknown } }).function;
+  return typeof fn?.arguments === 'string' ? fn.arguments : '';
+}
+
+/**
+ * Build a tool-aware transcript. The reflection model needs to see which
+ * commands/files were used and whether they succeeded, not just chat text.
+ */
+export function buildReflectionTranscript(messages: MessageDTO[]): string {
+  const lines: string[] = [];
   for (const message of messages) {
-    const content = typeof message.content === 'string' ? message.content : '';
-    if (message.role === 'tool') {
-      mapped.push({
-        role: 'user',
-        content: `[tool_result id=${String(message.tool_call_id ?? '')}] ${content}`,
-      });
-    } else if (message.role === 'system') {
-      mapped.push({ role: 'system', content });
-    } else if (message.role === 'assistant') {
-      mapped.push({ role: 'assistant', content });
-    } else {
-      mapped.push({ role: 'user', content });
+    if (message.role === 'assistant') {
+      const content = contentText(message).trim();
+      if (content) lines.push(`[assistant] ${content}`);
+      for (const call of message.tool_calls ?? []) {
+        lines.push(
+          `[tool_call name=${toolName(call)} args=${toolArgs(call).slice(0, 800)}]`,
+        );
+      }
+      continue;
     }
+    if (message.role === 'tool') {
+      const content = contentText(message).trim();
+      const failed = /^\s*Error:/i.test(content);
+      lines.push(
+        `[tool_result id=${String(message.tool_call_id ?? '')} ${failed ? 'error' : 'ok'}] ${content.slice(0, 1_200)}`,
+      );
+      continue;
+    }
+    const content = contentText(message).trim();
+    if (content) lines.push(`[${message.role}] ${content}`);
   }
-  return mapped;
+  return lines.join('\n');
 }
 
 export class SkillReflector {
@@ -55,12 +90,15 @@ export class SkillReflector {
 
   async reflect(input: ReflectionInput): Promise<ReflectionResult> {
     const prompt = buildReflectionPrompt(input.existing, input.episodes ?? []);
+    const transcript = buildReflectionTranscript(input.messages.slice(-20));
     const messages: MessageDTO[] = [
       { role: 'system', content: prompt },
-      ...mapMessages(input.messages.slice(-20)),
       {
         role: 'user',
-        content: 'Extract execution workflows from this conversation. Output only JSON.',
+        content:
+          'Conversation episode (tool-aware transcript):\n' +
+          transcript +
+          '\n\nExtract only reusable execution workflows. Output only JSON.',
       },
     ];
 

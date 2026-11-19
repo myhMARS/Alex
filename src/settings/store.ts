@@ -12,6 +12,9 @@ export const DEFAULT_COMPACT_THRESHOLD_RATIO = 0.8;
 export const DEFAULT_EFFORT: ModelEffort = 'high';
 export const DEFAULT_IMAGE_MAX_DIMENSION = 2_048;
 export const DEFAULT_MAX_ITERATIONS = 10;
+export const DEFAULT_AUTO_REFLECT = true;
+export const DEFAULT_REFLECTION_MIN_TOOLS = 3;
+export const DEFAULT_REFLECTION_MIN_WRITE_TOOLS = 2;
 
 export interface AlexSettings extends SettingsSnapshot {}
 
@@ -116,6 +119,11 @@ function normalize(partial: Partial<AlexSettings>, base: AlexSettings): AlexSett
     effort: partial.effort ?? base.effort,
     imageMaxDimension: partial.imageMaxDimension ?? base.imageMaxDimension,
     maxIterations: partial.maxIterations ?? base.maxIterations,
+    autoReflect: partial.autoReflect ?? base.autoReflect,
+    reflectionMinTools:
+      partial.reflectionMinTools ?? base.reflectionMinTools,
+    reflectionMinWriteTools:
+      partial.reflectionMinWriteTools ?? base.reflectionMinWriteTools,
   };
 }
 
@@ -140,6 +148,21 @@ export async function loadSettings(
       DEFAULT_IMAGE_MAX_DIMENSION,
     ),
     maxIterations: envInt(env, 'ALEX_MAX_ITERATIONS', DEFAULT_MAX_ITERATIONS, 1, 1_000),
+    autoReflect: envBool(env, 'ALEX_AUTO_REFLECT', DEFAULT_AUTO_REFLECT),
+    reflectionMinTools: envInt(
+      env,
+      'ALEX_REFLECTION_MIN_TOOLS',
+      DEFAULT_REFLECTION_MIN_TOOLS,
+      1,
+      100,
+    ),
+    reflectionMinWriteTools: envInt(
+      env,
+      'ALEX_REFLECTION_MIN_WRITE_TOOLS',
+      DEFAULT_REFLECTION_MIN_WRITE_TOOLS,
+      1,
+      100,
+    ),
   };
   try {
     const raw = JSON.parse(await readFile(path, 'utf8')) as Partial<AlexSettings>;

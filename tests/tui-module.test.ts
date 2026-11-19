@@ -11,7 +11,7 @@ import {
   TurnStarted,
   UserTurnRequested,
 } from '../src/kernel/contracts/chat';
-import { SkillLoaded, SkillsReflected } from '../src/kernel/contracts/skills';
+import { ReflectSkills, SkillLoaded, SkillsReflected } from '../src/kernel/contracts/skills';
 import {
   ToolApprovalResolved,
   ToolFinished,
@@ -1220,6 +1220,22 @@ describe('TuiModule as a bus module', () => {
     await bus.shutdown();
   });
 
+  test('/reflect publishes a forced reflection command', async () => {
+    const bus = new AsyncEventBus();
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+    tui.setSessionId('session-reflect');
+    const seen: ReflectSkills[] = [];
+    await bus.subscribe(ReflectSkills, (event) => { seen.push(event); });
+    const result = tui.reflectSkills();
+    await bus.idle();
+    expect(result.ok).toBe(true);
+    expect(seen[0]?.force).toBe(true);
+    expect(seen[0]?.sessionId).toBe('session-reflect');
+    await bus.shutdown();
+  });
+
   test('prompt page shows the assembled prompt sections', async () => {
     const bus = new AsyncEventBus();
     bus.provide(GetPromptInfo, () => ({
@@ -1316,6 +1332,9 @@ describe('TuiModule as a bus module', () => {
       thinkingEnabled: true,
       effort: 'high',
       maxIterations: 10,
+      autoReflect: true,
+      reflectionMinTools: 3,
+      reflectionMinWriteTools: 2,
     };
     bus.provide(GetSettings, () => ({ ...current }));
     bus.provide(UpdateSettings, (req) => {
@@ -1339,6 +1358,8 @@ describe('TuiModule as a bus module', () => {
     expect(body).toContain('thinking      on');
     expect(body).toContain('effort        high');
     expect(body).toContain('max_iterations 10');
+    expect(body).toContain('auto_reflect   on');
+    expect(body).toContain('reflection_min_tools 3');
 
     const ok = await tui.updateSetting('max_context', '1M');
     expect(ok.ok).toBe(true);
@@ -1360,6 +1381,13 @@ describe('TuiModule as a bus module', () => {
     expect(tui.getSnapshot().page?.body).toContain('max_iterations 3');
     const badIterations = await tui.updateSetting('max_iterations', '0');
     expect(badIterations.ok).toBe(false);
+
+    const autoReflect = await tui.updateSetting('auto_reflect', 'off');
+    expect(autoReflect.ok).toBe(true);
+    expect(current.autoReflect).toBe(false);
+    const minTools = await tui.updateSetting('reflection_min_tools', '5');
+    expect(minTools.ok).toBe(true);
+    expect(current.reflectionMinTools).toBe(5);
 
     const max = await tui.setEffort('max');
     expect(max.ok).toBe(true);

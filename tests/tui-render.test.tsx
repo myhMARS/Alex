@@ -365,8 +365,13 @@ describe('TUI renderer', () => {
     let frame = plain(setup.captureCharFrame());
     expect(frame).toContain('Thinking (');
     expect(frame).not.toContain('deep-thought-xyz');
-    // Large output is collapsed to a line count for readability.
+    expect(frame).toContain('Tools (1) · done · click to expand');
     expect(frame).not.toContain('file-body-xyz');
+
+    tui.toggleToolTurn('exp-1');
+    await setup.renderOnce();
+    frame = plain(setup.captureCharFrame());
+    // Large output is collapsed to a line count for readability.
     expect(frame).toContain('5 line(s) · Ctrl+O');
 
     await setup.mockInput.pressKey('t', { ctrl: true });
@@ -429,6 +434,7 @@ describe('TUI renderer', () => {
     bus.publish(new TokenEmitted({ sessionId: 's1', turnId: 'order-1', delta: 'second-part' }));
     bus.publish(new TurnCompleted({ sessionId: 's1', turnId: 'order-1', content: 'first-part second-part', messages: [] }));
     await bus.idle();
+    tui.toggleToolTurn('order-1');
 
     const setup = await testRender(
       <TuiApp tui={tui} sessionId="s1" toolCount={17} onQuit={() => {}} />,
@@ -572,12 +578,13 @@ describe('TUI renderer', () => {
   });
 
   test('renders user/assistant/tool bubbles', async () => {
-    const { bus, setup } = await mountedTui();
+    const { bus, tui, setup } = await mountedTui();
     bus.publish(new TurnStarted({ sessionId: 's1', turnId: 'bub-1', userInput: 'check file' }));
     bus.publish(new ToolStarted({ sessionId: 's1', turnId: 'bub-1', toolId: 't-1', toolName: 'read', toolInput: {} }));
     bus.publish(new ToolFinished({ sessionId: 's1', turnId: 'bub-1', toolId: 't-1', output: 'body' }));
     bus.publish(new TurnCompleted({ sessionId: 's1', turnId: 'bub-1', content: 'done', messages: [] }));
     await bus.idle();
+    tui.toggleToolTurn('bub-1');
     await setup.renderOnce();
     const frame = plain(setup.captureCharFrame());
     expect(frame).toContain('◆ Alex');
@@ -632,7 +639,7 @@ describe('TUI renderer', () => {
     expect(frame).toContain('Commands (');
     expect(frame).toContain('/help');
     expect(frame).toContain('/skills');
-    expect(frame).toContain('/task');
+    expect(frame).toContain('/reflect');
     expect(frame).toContain('❯ /help');
 
     setup.mockInput.pressArrow('down');

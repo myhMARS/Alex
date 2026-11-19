@@ -22,6 +22,12 @@ export interface SettingsSnapshot {
   imageMaxDimension: number;
   /** Maximum tool-call iterations per agent turn. */
   maxIterations: number;
+  /** Whether completed turns may trigger skill reflection automatically. */
+  autoReflect: boolean;
+  /** Minimum tool calls for an automatic reflection. */
+  reflectionMinTools: number;
+  /** Minimum tool calls when the turn includes write/edit. */
+  reflectionMinWriteTools: number;
 }
 
 export class GetSettings extends Request<SettingsSnapshot> {}

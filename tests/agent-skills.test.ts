@@ -155,7 +155,7 @@ describe('Agent + Skill integration', () => {
     await bus.shutdown();
   }, 20_000);
 
-  test('auto-reflects after a turn that loaded no skill', async () => {
+  test('skips auto-reflection for a simple chat turn', async () => {
     const reflector = new JsonModel(
       JSON.stringify({
         new_skills: [
@@ -178,9 +178,8 @@ describe('Agent + Skill integration', () => {
     await agent.whenIdle();
     await bus.idle();
 
-    expect(reflected).toHaveLength(1);
-    expect(reflected[0]?.created).toBe(1);
-    expect(store.findByName('answer-plainly')?.status).toBe('CANDIDATE');
+    expect(reflected).toHaveLength(0);
+    expect(store.findByName('answer-plainly')).toBeUndefined();
     await bus.shutdown();
   }, 20_000);
 });

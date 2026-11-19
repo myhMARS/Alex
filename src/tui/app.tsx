@@ -13,6 +13,7 @@ import type { TuiModule, TuiPageKind, TuiSnapshot } from '../modules/tui/module'
 import type {
   ApprovalView,
   CompactionPart,
+  ToolCallView,
   TurnPart,
   TurnView,
 } from '../modules/tui/view-state';
@@ -102,6 +103,19 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
     () => [
       { name: '/help', description: '显示命令帮助', run: () => void tui.showPage('help') },
       { name: '/skills', description: '已学习技能列表', run: () => void tui.showPage('skills') },
+      {
+        name: '/reflect',
+        description: '立即触发一次技能反思',
+        run: () => {
+          const result = tui.reflectSkills();
+          tui.setToast(result.message);
+        },
+      },
+      {
+        name: '/merge',
+        description: '合并语义重复的 skills',
+        run: () => void tui.mergeSkills().then((result) => tui.setToast(result.message)),
+      },
       { name: '/cron', description: '定时任务列表', run: () => void tui.showPage('cron') },
       { name: '/mcp', description: 'MCP 服务器状态', run: () => void tui.showPage('mcp') },
       {
@@ -670,6 +684,18 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
         return;
       }
 
+      if (lower === '/reflect') {
+        clearInput();
+        const result = tui.reflectSkills();
+        tui.setToast(result.message);
+        return;
+      }
+      if (lower === '/merge') {
+        clearInput();
+        void tui.mergeSkills().then((result) => tui.setToast(result.message));
+        return;
+      }
+
       const showAllTasks = lower === '/agents all' || lower === '/tasks all';
       if (showAllTasks) {
         tui.setTaskScope('all');
@@ -780,6 +806,8 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
                 thinkingExpanded={snapshot.thinkingExpanded}
                 skillsExpanded={snapshot.skillsExpanded}
                 toolOutputExpanded={snapshot.toolOutputExpanded}
+                toolTurnsExpanded={snapshot.toolTurnsExpanded}
+                onToggleToolTurn={(turnId) => tui.toggleToolTurn(turnId)}
               />
             </scrollbox>
           )}
@@ -1023,12 +1051,16 @@ function Chat({
   thinkingExpanded,
   skillsExpanded,
   toolOutputExpanded,
+  toolTurnsExpanded,
+  onToggleToolTurn,
 }: {
   turns: TurnView[];
   width: number;
   thinkingExpanded: boolean;
   skillsExpanded: boolean;
   toolOutputExpanded: boolean;
+  toolTurnsExpanded: string[];
+  onToggleToolTurn: (turnId: string) => void;
 }) {
   if (turns.length === 0) return null;
   return (
@@ -1041,6 +1073,8 @@ function Chat({
           thinkingExpanded={thinkingExpanded}
           skillsExpanded={skillsExpanded}
           toolOutputExpanded={toolOutputExpanded}
+          toolGroupExpanded={toolTurnsExpanded.includes(turn.turnId)}
+          onToggleToolGroup={() => onToggleToolTurn(turn.turnId)}
         />
       ))}
     </box>
@@ -1089,18 +1123,93 @@ function CompactionBlock({
   );
 }
 
+function ToolCallBlock({
+  tool,
+  width,
+  toolOutputExpanded,
+}: {
+  tool: ToolCallView;
+  width: number;
+  toolOutputExpanded: boolean;
+}) {
+  const args = summarizeToolArgs(tool.input);
+  const preview = tool.output
+    ? formatToolOutput(tool.output, width - 6, toolOutputExpanded ? 14 : 3)
+    : null;
+  const shortOutput =
+    preview !== null && preview.hidden === 0 && preview.lines.length <= 3;
+  const failedTool = tool.done && tool.failed;
+  const toolColor = failedTool ? theme.error : theme.tool;
+  return (
+    <box
+      style={{
+        flexDirection: 'column',
+        border: ['left'],
+        borderColor: toolColor,
+        paddingLeft: 1,
+        width,
+      }}
+    >
+      <text fg={toolColor} style={{ width: width - 1 }}>
+        ⚙ {tool.name} {tool.done ? (failedTool ? '✗' : '✓') : '…'}
+        {args ? <span fg={theme.muted}> · {args}</span> : null}
+      </text>
+      {tool.done && preview && (shortOutput || failedTool) ? (
+        <box style={{ flexDirection: 'column', width: width - 1 }}>
+          {preview.lines.map((line, lineIndex) => (
+            <text
+              key={lineIndex}
+              fg={failedTool ? theme.error : theme.muted}
+              style={{ width: width - 2 }}
+            >
+              ┆ {line}
+            </text>
+          ))}
+          {failedTool && preview.hidden > 0 ? (
+            <text fg={theme.border} style={{ width: width - 2 }}>
+              ⎿ 还有 {preview.hidden} line(s) · Ctrl+O 查看完整错误
+            </text>
+          ) : null}
+        </box>
+      ) : null}
+      {tool.done && preview && !shortOutput && !failedTool ? (
+        <box style={{ flexDirection: 'column', width: width - 1 }}>
+          {toolOutputExpanded
+            ? preview.lines.map((line, lineIndex) => (
+                <text key={lineIndex} fg={theme.muted} style={{ width: width - 2 }}>
+                  ┆ {line}
+                </text>
+              ))
+            : null}
+          <text fg={theme.border} style={{ width: width - 2 }}>
+            {toolOutputExpanded
+              ? preview.hidden > 0
+                ? `┆ … ${preview.hidden} more line(s)（完整内容见 session 历史）`
+                : ''
+              : `⎿ ${preview.lines.length + preview.hidden} line(s) · Ctrl+O 展开`}
+          </text>
+        </box>
+      ) : null}
+    </box>
+  );
+}
+
 function TurnBlock({
   turn,
   width,
   thinkingExpanded,
   skillsExpanded,
   toolOutputExpanded,
+  toolGroupExpanded,
+  onToggleToolGroup,
 }: {
   turn: TurnView;
   width: number;
   thinkingExpanded: boolean;
   skillsExpanded: boolean;
   toolOutputExpanded: boolean;
+  toolGroupExpanded: boolean;
+  onToggleToolGroup: () => void;
 }) {
   if (turn.kind === 'compaction') {
     const part = turn.parts.find((item) => item.kind === 'compaction');
@@ -1223,67 +1332,57 @@ function TurnBlock({
               }
 
               if (part.kind === 'tool') {
-                const tool = part.tool;
-                const args = summarizeToolArgs(tool.input);
-                const preview = tool.output
-                  ? formatToolOutput(tool.output, width - 6, toolOutputExpanded ? 14 : 3)
-                  : null;
-                const shortOutput =
-                  preview !== null && preview.hidden === 0 && preview.lines.length <= 3;
-                const failedTool = tool.done && tool.failed;
-                const toolColor = failedTool ? theme.error : theme.tool;
+                if (index > 0 && parts[index - 1]?.kind === 'tool') return null;
+                const group: ToolCallView[] = [];
+                for (let next = index; next < parts.length; next += 1) {
+                  const item = parts[next];
+                  if (item?.kind !== 'tool') break;
+                  group.push(item.tool);
+                }
+                const failedCount = group.filter((tool) => tool.done && tool.failed).length;
+                const running = group.some((tool) => !tool.done);
+                const expanded =
+                  streaming ||
+                  toolGroupExpanded ||
+                  turn.error !== undefined ||
+                  failedCount > 0;
                 return (
                   <box
-                    key={`tool-${tool.toolId}`}
-                    style={{
-                      flexDirection: 'column',
-                      border: ['left'],
-                      borderColor: toolColor,
-                      paddingLeft: 1,
-                      marginTop: 1,
-                      width: width - 2,
-                    }}
+                    key={`tools-${index}`}
+                    style={{ flexDirection: 'column', marginTop: 1, width: width - 2 }}
                   >
-                    <text fg={toolColor} style={{ width: width - 3 }}>
-                      ⚙ {tool.name} {tool.done ? (failedTool ? '✗' : '✓') : '…'}
-                      {args ? <span fg={theme.muted}> · {args}</span> : null}
+                    <text
+                      fg={failedCount > 0 ? theme.error : theme.tool}
+                      style={{ width: width - 3 }}
+                      onMouseDown={() => {
+                        if (!streaming) onToggleToolGroup();
+                      }}
+                    >
+                      {expanded ? '▾' : '▸'} ⚙ Tools ({group.length})
+                      {running
+                        ? ' · running'
+                        : failedCount > 0
+                          ? ` · ${failedCount} failed`
+                          : ' · done'}
+                      {expanded ? '' : ' · click to expand'}
                     </text>
-                    {tool.done && preview && (shortOutput || failedTool) ? (
-                      <box style={{ flexDirection: 'column', width: width - 3 }}>
-                        {preview.lines.map((line, lineIndex) => (
-                          <text
-                            key={lineIndex}
-                            fg={failedTool ? theme.error : theme.muted}
-                            style={{ width: width - 4 }}
+                    {expanded
+                      ? group.map((tool, toolIndex) => (
+                          <box
+                            key={`tool-${tool.toolId}`}
+                            style={{ flexDirection: 'row', width: width - 2 }}
                           >
-                            ┆ {line}
-                          </text>
-                        ))}
-                        {failedTool && preview.hidden > 0 ? (
-                          <text fg={theme.border} style={{ width: width - 4 }}>
-                            ⎿ 还有 {preview.hidden} line(s) · Ctrl+O 查看完整错误
-                          </text>
-                        ) : null}
-                      </box>
-                    ) : null}
-                    {tool.done && preview && !shortOutput && !failedTool ? (
-                      <box style={{ flexDirection: 'column', width: width - 3 }}>
-                        {toolOutputExpanded
-                          ? preview.lines.map((line, lineIndex) => (
-                              <text key={lineIndex} fg={theme.muted} style={{ width: width - 4 }}>
-                                ┆ {line}
-                              </text>
-                            ))
-                          : null}
-                        <text fg={theme.border} style={{ width: width - 4 }}>
-                          {toolOutputExpanded
-                            ? preview.hidden > 0
-                              ? `┆ … ${preview.hidden} more line(s)（完整内容见 session 历史）`
-                              : ''
-                            : `⎿ ${preview.lines.length + preview.hidden} line(s) · Ctrl+O 展开`}
-                        </text>
-                      </box>
-                    ) : null}
+                            <text fg={theme.border}>
+                              {toolIndex === group.length - 1 ? '└ ' : '├ '}
+                            </text>
+                            <ToolCallBlock
+                              tool={tool}
+                              width={width - 4}
+                              toolOutputExpanded={toolOutputExpanded}
+                            />
+                          </box>
+                        ))
+                      : null}
                   </box>
                 );
               }

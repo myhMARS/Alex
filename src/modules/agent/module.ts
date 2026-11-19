@@ -750,7 +750,7 @@ export class AgentModule implements Module {
       );
 
       if (this.autoReflect && kind === 'user' && loadedSkills.size === 0) {
-        bus.publish(new ReflectSkills({ ...this.agentContext(), sessionId }));
+        bus.publish(new ReflectSkills({ ...this.agentContext(), sessionId, auto: true }));
       }
       return { content: finalContent, ok: true };
     } catch (error) {

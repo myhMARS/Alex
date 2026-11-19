@@ -42,6 +42,21 @@ async function tempDir(prefix = 'alex-ts-skill-'): Promise<string> {
   return dir;
 }
 
+class SequenceModel implements ChatModel {
+  readonly calls: ChatRequest[] = [];
+  constructor(private readonly payloads: string[]) {}
+
+  async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
+    this.calls.push(request);
+    const payload = this.payloads[Math.min(this.calls.length - 1, this.payloads.length - 1)] ?? '';
+    yield { type: 'content', delta: payload };
+    yield {
+      type: 'done',
+      result: { content: payload, thinking: '', toolCalls: [], finishReason: 'stop' },
+    };
+  }
+}
+
 class JsonModel implements ChatModel {
   readonly calls: ChatRequest[] = [];
   constructor(private readonly payload: string) {}
@@ -60,6 +75,8 @@ async function setupModule(options: {
   dir: string;
   model?: ChatModel;
   seed?: ReturnType<typeof createSkill>[];
+  autoReflect?: boolean;
+  reflectionMinTools?: number;
 }): Promise<{ bus: AsyncEventBus; skills: SkillModule; store: SkillStore; tools: ToolsModule }> {
   const store = new SkillStore({ path: join(options.dir, 'skills', 'skills.json') });
   for (const skill of options.seed ?? []) await store.add(skill);
@@ -75,6 +92,8 @@ async function setupModule(options: {
     store,
     model: options.model,
     registerTools: true,
+    autoReflect: options.autoReflect,
+    reflectionMinTools: options.reflectionMinTools,
   });
   await tools.start(bus);
   await skills.start(bus);
@@ -247,6 +266,79 @@ describe('SkillModule over the bus', () => {
     expect(store.findByName('write-tests')?.status).toBe('CANDIDATE');
     expect(store.get(existing.id)?.version).toBe(2);
     expect(store.get(existing.id)?.pattern).toContain('module error');
+    await bus.shutdown();
+  });
+
+  test('reflection automatically merges after creating a new skill', async () => {
+    const dir = await tempDir();
+    const keep = seedSkill('keep-one', 'first workflow', ['a']);
+    const deprecate = seedSkill('drop-one', 'second workflow', ['b']);
+    const reflection = JSON.stringify({
+      new_skills: [
+        {
+          name: 'new-workflow',
+          pattern: 'new workflow',
+          instruction: 'do the new workflow',
+          tags: ['new'],
+        },
+      ],
+      updated_skills: [],
+      deprecated_ids: [],
+    });
+    const merge = JSON.stringify({
+      merged_groups: [],
+      deprecate_ids: [deprecate.id],
+    });
+    const model = new SequenceModel([reflection, merge]);
+    const { bus, store } = await setupModule({
+      dir,
+      model,
+      seed: [keep, deprecate],
+    });
+    const events: SkillsReflected[] = [];
+    await bus.subscribe(SkillsReflected, (event) => { events.push(event); });
+
+    bus.publish(new ReflectSkills({ sessionId: 's1' }));
+    await bus.idle();
+
+    expect(model.calls).toHaveLength(2);
+    expect(events[0]?.created).toBe(1);
+    expect(events[0]?.merged).toBe(0);
+    expect(events[0]?.remaining).toBe(2);
+    expect(store.get(deprecate.id)?.status).toBe('DEPRECATED');
+    expect(store.get(keep.id)?.status).not.toBe('DEPRECATED');
+    await bus.shutdown();
+  });
+
+  test('automatic reflection is gated by task complexity, explicit reflection is not', async () => {
+    const dir = await tempDir();
+    const payload = JSON.stringify({ new_skills: [], updated_skills: [], deprecated_ids: [] });
+    const model = new JsonModel(payload);
+    const { bus } = await setupModule({ dir, model });
+
+    bus.publish(new ReflectSkills({ sessionId: 'plain-chat', auto: true }));
+    await bus.idle();
+    expect(model.calls).toHaveLength(0);
+
+    bus.publish(new ReflectSkills({ sessionId: 'plain-chat' }));
+    await bus.idle();
+    expect(model.calls).toHaveLength(1);
+    await bus.shutdown();
+  });
+
+  test('respects the auto_reflect setting', async () => {
+    const dir = await tempDir();
+    const payload = JSON.stringify({ new_skills: [], updated_skills: [], deprecated_ids: [] });
+    const model = new JsonModel(payload);
+    const { bus } = await setupModule({ dir, model, autoReflect: false });
+
+    bus.publish(new ReflectSkills({ sessionId: 's1', auto: true }));
+    await bus.idle();
+    expect(model.calls).toHaveLength(0);
+
+    bus.publish(new ReflectSkills({ sessionId: 's1', force: true }));
+    await bus.idle();
+    expect(model.calls).toHaveLength(1);
     await bus.shutdown();
   });
 

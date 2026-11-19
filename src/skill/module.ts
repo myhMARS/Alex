@@ -30,8 +30,10 @@ import {
   RetrieveSkills,
   SkillReflectError,
   SkillsReflected,
+  type ReflectionSignal,
 } from '../kernel/contracts/skills';
 import { GetSessionProjection } from '../kernel/contracts/session';
+import { SettingsUpdated } from '../kernel/contracts/settings';
 import type { MessageDTO } from '../kernel/dto/message';
 import { RegisterTool } from '../kernel/contracts/tools';
 import {
@@ -44,6 +46,10 @@ import type { ChatModel } from '../llm/client';
 import { SkillStore } from './store';
 import { retrieveSkills } from './retriever';
 import { SkillReflector, type ReflectionResult } from './reflector';
+import {
+  analyzeReflectionSignal,
+  type ReflectionGateOptions,
+} from './reflection-signal';
 import { requestMerge } from './merge';
 import { evolveSkills } from './evolution';
 import {
@@ -60,6 +66,9 @@ export interface SkillModuleOptions {
   model?: ChatModel;
   reflector?: SkillReflector;
   registerTools?: boolean;
+  autoReflect?: boolean;
+  reflectionMinTools?: number;
+  reflectionMinWriteTools?: number;
 }
 
 export class SkillModule implements Module {
@@ -70,6 +79,8 @@ export class SkillModule implements Module {
   private readonly reflector: SkillReflector | null;
   private readonly model: ChatModel | null;
   private readonly registerTools: boolean;
+  private autoReflect: boolean;
+  private reflectionGate: ReflectionGateOptions;
   private bus: AsyncEventBus | null = null;
 
   constructor(options: SkillModuleOptions = {}) {
@@ -82,6 +93,11 @@ export class SkillModule implements Module {
       options.reflector ?? (options.model ? new SkillReflector(options.model) : null);
     this.model = options.model ?? null;
     this.registerTools = options.registerTools !== false;
+    this.autoReflect = options.autoReflect ?? true;
+    this.reflectionGate = {
+      minToolCalls: options.reflectionMinTools ?? 3,
+      minWriteToolCalls: options.reflectionMinWriteTools ?? 2,
+    };
   }
 
   async start(bus: AsyncEventBus): Promise<void> {
@@ -132,9 +148,18 @@ export class SkillModule implements Module {
     await bus.subscribe(TurnFailed, (cmd) => {
       bus.publish(new UnregisterPromptSection({ id: `skills:${cmd.sessionId}` }));
     });
-    await bus.subscribe(ReflectSkills, (cmd) => this.reflect(cmd.sessionId));
+    await bus.subscribe(ReflectSkills, (cmd) =>
+      this.reflect(cmd.sessionId, cmd.signal, cmd.force),
+    );
+    await bus.subscribe(SettingsUpdated, (event) => {
+      this.autoReflect = event.settings.autoReflect;
+      this.reflectionGate = {
+        minToolCalls: event.settings.reflectionMinTools,
+        minWriteToolCalls: event.settings.reflectionMinWriteTools,
+      };
+    });
     await bus.subscribe(FeedbackSubmitted, (cmd) => {
-      if (!cmd.positive) return this.reflect(cmd.sessionId);
+      if (!cmd.positive) return this.reflect(cmd.sessionId, undefined, true);
       return undefined;
     });
 
@@ -213,6 +238,10 @@ export class SkillModule implements Module {
   }
 
   /** LLM consolidation when a model is available, deterministic dedupe otherwise. */
+  private activeSkillCount(): number {
+    return this.store.listAll().filter((skill) => skill.status !== 'DEPRECATED').length;
+  }
+
   private async mergeSkills(): Promise<MergeSkillsResult> {
     const active = this.store.listAll().filter((skill) => skill.status !== 'DEPRECATED');
     if (active.length < 2) {
@@ -302,7 +331,11 @@ export class SkillModule implements Module {
 
   // ── reflection ─────────────────────────────────────────────────────────
 
-  async reflect(sessionId: string): Promise<void> {
+  async reflect(
+    sessionId: string,
+    signal?: ReflectionSignal,
+    force = false,
+  ): Promise<void> {
     const bus = this.bus;
     if (!bus) return;
     let messages: MessageDTO[] = [];
@@ -312,6 +345,12 @@ export class SkillModule implements Module {
       } catch {
         messages = [];
       }
+    }
+    if (!force) {
+      if (!this.autoReflect) return;
+      const gate =
+        signal ?? analyzeReflectionSignal(messages, this.reflectionGate);
+      if (!gate.qualified) return;
     }
     if (!this.reflector) {
       bus.publish(new SkillReflectError({ sessionId, error: 'skill reflector is not configured' }));
@@ -323,6 +362,20 @@ export class SkillModule implements Module {
         existing: this.store.listAll().filter((skill) => skill.status !== 'DEPRECATED'),
       });
       const applied = await this.applyReflection(result);
+      let merged: number | undefined;
+      let remaining: number | undefined;
+      let mergeError: string | undefined;
+      if (applied.created > 0) {
+        const merge = await this.mergeSkills().catch((error: unknown) => ({
+          merged: 0,
+          deprecated: 0,
+          remaining: this.activeSkillCount(),
+          error: error instanceof Error ? error.message : String(error),
+        }));
+        merged = merge.merged;
+        remaining = merge.remaining;
+        mergeError = merge.error;
+      }
       bus.publish(
         new SkillsReflected({
           sessionId,
@@ -331,6 +384,9 @@ export class SkillModule implements Module {
           deprecated: applied.deprecated,
           names: applied.names,
           updatedNames: applied.updatedNames,
+          merged,
+          remaining,
+          mergeError,
         }),
       );
     } catch (error) {

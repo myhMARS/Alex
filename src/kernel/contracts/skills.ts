@@ -23,8 +23,39 @@ export class LoadSkill extends Request<SkillCard> {
   }
 }
 
+export interface ReflectionSignal {
+  score: number;
+  qualified: boolean;
+  reasons: string[];
+  toolCalls: number;
+  failedTools: number;
+  distinctTools: number;
+  hasWrite: boolean;
+  hasShell: boolean;
+  userTurns: number;
+}
+
 /** Trigger skill reflection (fire-and-forget; results via SkillsReflected). */
-export class ReflectSkills extends Command {}
+export class ReflectSkills extends Command {
+  /** Automatic post-turn reflection (subject to the complexity gate). */
+  auto: boolean;
+  /** Explicit user/negative-feedback request bypasses the gate. */
+  force: boolean;
+  signal?: ReflectionSignal;
+
+  constructor(
+    init: MessageContext & {
+      auto?: boolean;
+      force?: boolean;
+      signal?: ReflectionSignal;
+    } = {},
+  ) {
+    super(init);
+    this.auto = init.auto ?? false;
+    this.force = init.force ?? !this.auto;
+    this.signal = init.signal;
+  }
+}
 
 export class SkillsReflected extends Event {
   /** Number of newly created skills (Python field: `new`). */
@@ -33,6 +64,12 @@ export class SkillsReflected extends Event {
   deprecated: number;
   names: string[];
   updatedNames: string[];
+  /** Skills consolidated by the automatic post-reflection merge. */
+  merged?: number;
+  /** Active skill count after merge. */
+  remaining?: number;
+  /** Merge failure detail, when merge was attempted but failed. */
+  mergeError?: string;
 
   constructor(
     init: MessageContext & {
@@ -41,6 +78,9 @@ export class SkillsReflected extends Event {
       deprecated?: number;
       names?: string[];
       updatedNames?: string[];
+      merged?: number;
+      remaining?: number;
+      mergeError?: string;
     } = {},
   ) {
     super(init);
@@ -49,6 +89,9 @@ export class SkillsReflected extends Event {
     this.deprecated = init.deprecated ?? 0;
     this.names = init.names ?? [];
     this.updatedNames = init.updatedNames ?? [];
+    this.merged = init.merged;
+    this.remaining = init.remaining;
+    this.mergeError = init.mergeError;
   }
 
   get toast(): string {
@@ -62,6 +105,9 @@ export class SkillsReflected extends Event {
       );
     }
     if (this.deprecated) parts.push(`${this.deprecated} deprecated`);
+    if (this.merged) parts.push(`${this.merged} merged`);
+    if (this.remaining !== undefined) parts.push(`${this.remaining} active`);
+    if (this.mergeError) parts.push(`merge failed: ${this.mergeError}`);
     return parts.length ? `Skills refined — ${parts.join('; ')}` : 'Skills refined';
   }
 }
