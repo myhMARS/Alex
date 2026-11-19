@@ -55,3 +55,17 @@ describe('formatMarkdown', () => {
     expect(tokens.find((token) => token.link)?.text).toBe('docs (https://x.dev)');
   });
 });
+
+describe('Markdown block spacing', () => {
+  test('marks blocks separated by blank lines without spacing list items', () => {
+    const blocks = parseMarkdown(
+      ['first', '', 'second', '', '- a', '- b', '', '# Heading', '', '```ts', 'x', '```'].join('\n'),
+    );
+    expect(blocks[0]?.gapBefore).toBeUndefined();
+    expect(blocks[1]?.gapBefore).toBe(true);
+    expect(blocks[2]?.gapBefore).toBe(true);
+    expect(blocks[3]?.gapBefore).toBeUndefined();
+    expect(blocks[4]?.gapBefore).toBe(true);
+    expect(blocks[5]?.gapBefore).toBe(true);
+  });
+});

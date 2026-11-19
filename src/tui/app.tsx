@@ -1039,7 +1039,6 @@ function Welcome({ width }: { width: number }) {
         </text>
       )}
       <text fg={theme.muted}> </text>
-      <text fg={theme.text}>event-driven agent · tools · skills · cron</text>
       <text fg={theme.border}>Type a message  ·  /help for commands  ·  Ctrl+S toggles sidebar</text>
     </box>
   );
@@ -1395,7 +1394,11 @@ function TurnBlock({
               ) : (
                 <box
                   key={`text-${index}`}
-                  style={{ marginTop: 1, flexDirection: 'column', width: width - 2 }}
+                  style={{
+                    marginTop: index > 0 ? 1 : 0,
+                    flexDirection: 'column',
+                    width: width - 2,
+                  }}
                 >
                   <MarkdownText text={part.text} width={width - 3} />
                 </box>

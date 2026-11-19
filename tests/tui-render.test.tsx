@@ -7,6 +7,7 @@ import { testRender } from '@opentui/react/test-utils';
 import { AsyncEventBus } from '../src/kernel/bus';
 import { TuiModule } from '../src/modules/tui/module';
 import { TuiApp } from '../src/tui/app';
+import { MarkdownText } from '../src/tui/markdown-view';
 import {
   ThinkingUpdated,
   TokenEmitted,
@@ -593,6 +594,29 @@ describe('TUI renderer', () => {
     await bus.shutdown();
   });
 
+  test('separates Markdown paragraphs with a blank line', async () => {
+    const setup = await testRender(<MarkdownText text={'first\n\nsecond'} width={40} />, {
+      width: 40,
+      height: 10,
+    });
+    await setup.renderOnce();
+    const lines = setup.captureCharFrame().split('\n').map((line) => line.trimEnd());
+    expect(lines[0]?.trim()).toBe('first');
+    expect(lines[1]?.trim()).toBe('');
+    expect(lines[2]?.trim()).toBe('second');
+  });
+
+  test('keeps Markdown headings adjacent to their content', async () => {
+    const setup = await testRender(<MarkdownText text={'# Heading\n\nbody'} width={40} />, {
+      width: 40,
+      height: 10,
+    });
+    await setup.renderOnce();
+    const lines = setup.captureCharFrame().split('\n').map((line) => line.trimEnd());
+    expect(lines[0]?.trim()).toBe('Heading');
+    expect(lines[1]?.trim()).toBe('body');
+  });
+
   test('renders assistant Markdown as styled blocks', async () => {
     const bus = new AsyncEventBus();
     const tui = new TuiModule();
@@ -729,7 +753,8 @@ describe('TUI renderer', () => {
     let frame = plain(setup.captureCharFrame());
     expect(frame).toContain('◆ ALEX');
     expect(frame).toContain('● ready');
-    expect(frame).toContain('event-driven agent');
+    expect(frame).not.toContain('event-driven agent');
+    expect(frame).toContain('Type a message');
     expect(frame).toContain('effort high');
     expect(frame).toContain('ctx -');
     expect(frame).not.toContain('STATUS');

@@ -50,9 +50,14 @@ export function MarkdownText({ text, width }: { text: string; width: number }) {
   return (
     <box style={{ flexDirection: 'column', width }}>
       {blocks.map((block, index) => {
+        const previous = index > 0 ? blocks[index - 1] : undefined;
+        // Keep a blank line between major blocks, but let headings flow into
+        // their following content instead of adding an extra row after them.
+        const marginTop =
+          index > 0 && block.gapBefore && previous?.type !== 'heading' ? 1 : 0;
         if (block.type === 'heading') {
           return (
-            <text key={index} fg={theme.accent}>
+            <text key={index} fg={theme.accent} style={{ marginTop }}>
               <strong>
                 <InlineText tokens={block.tokens} />
               </strong>
@@ -61,7 +66,7 @@ export function MarkdownText({ text, width }: { text: string; width: number }) {
         }
         if (block.type === 'list') {
           return (
-            <text key={index} fg={theme.text}>
+            <text key={index} fg={theme.text} style={{ marginTop }}>
               <span>• </span>
               <InlineText tokens={block.tokens} />
             </text>
@@ -69,7 +74,7 @@ export function MarkdownText({ text, width }: { text: string; width: number }) {
         }
         if (block.type === 'quote') {
           return (
-            <text key={index} fg={theme.muted}>
+            <text key={index} fg={theme.muted} style={{ marginTop }}>
               <span>│ </span>
               <InlineText tokens={block.tokens} />
             </text>
@@ -77,7 +82,7 @@ export function MarkdownText({ text, width }: { text: string; width: number }) {
         }
         if (block.type === 'code') {
           return (
-            <box key={index} style={{ flexDirection: 'column', width }}>
+            <box key={index} style={{ flexDirection: 'column', width, marginTop }}>
               {block.content.split('\n').map((line, lineIndex) => (
                 <text key={lineIndex}>
                   <span fg={theme.border}>│ </span>
@@ -95,13 +100,13 @@ export function MarkdownText({ text, width }: { text: string; width: number }) {
         }
         if (block.type === 'hr') {
           return (
-            <text key={index} fg={theme.border}>
+            <text key={index} fg={theme.border} style={{ marginTop }}>
               ────
             </text>
           );
         }
         return (
-          <text key={index} fg={theme.text}>
+          <text key={index} fg={theme.text} style={{ marginTop }}>
             <InlineText tokens={block.tokens} />
           </text>
         );

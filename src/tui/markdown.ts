@@ -8,12 +8,12 @@ export interface InlineToken {
 }
 
 export type MarkdownBlock =
-  | { type: 'heading'; level: number; tokens: InlineToken[] }
-  | { type: 'paragraph'; tokens: InlineToken[] }
-  | { type: 'list'; tokens: InlineToken[] }
-  | { type: 'quote'; tokens: InlineToken[] }
-  | { type: 'code'; language: string; content: string }
-  | { type: 'hr' };
+  | { type: 'heading'; level: number; tokens: InlineToken[]; gapBefore?: boolean }
+  | { type: 'paragraph'; tokens: InlineToken[]; gapBefore?: boolean }
+  | { type: 'list'; tokens: InlineToken[]; gapBefore?: boolean }
+  | { type: 'quote'; tokens: InlineToken[]; gapBefore?: boolean }
+  | { type: 'code'; language: string; content: string; gapBefore?: boolean }
+  | { type: 'hr'; gapBefore?: boolean };
 
 function cleanInline(text: string): string {
   return text
@@ -97,13 +97,20 @@ export function parseInline(text: string): InlineToken[] {
 export function parseMarkdown(text: string): MarkdownBlock[] {
   const blocks: MarkdownBlock[] = [];
   let fence: { language: string; lines: string[] } | null = null;
+  let gapBefore = false;
 
   for (const line of text.split('\n')) {
     const fenceMatch = line.match(/^\s*```(.*)$/);
     if (fenceMatch) {
       if (fence) {
-        blocks.push({ type: 'code', language: fence.language, content: fence.lines.join('\n') });
+        blocks.push({
+          type: 'code',
+          language: fence.language,
+          content: fence.lines.join('\n'),
+          ...(gapBefore ? { gapBefore: true } : {}),
+        });
         fence = null;
+        gapBefore = false;
       } else {
         fence = { language: (fenceMatch[1] ?? '').trim(), lines: [] };
       }
@@ -113,7 +120,10 @@ export function parseMarkdown(text: string): MarkdownBlock[] {
       fence.lines.push(line);
       continue;
     }
-    if (!line.trim()) continue;
+    if (!line.trim()) {
+      gapBefore = true;
+      continue;
+    }
 
     const heading = line.match(/^\s{0,3}(#{1,6})\s+(.*)$/);
     if (heading) {
@@ -121,27 +131,50 @@ export function parseMarkdown(text: string): MarkdownBlock[] {
         type: 'heading',
         level: (heading[1] ?? '#').length,
         tokens: parseInline(heading[2] ?? ''),
+        ...(gapBefore ? { gapBefore: true } : {}),
       });
+      gapBefore = false;
       continue;
     }
     if (/^\s*([-*_])\1{2,}\s*$/.test(line)) {
-      blocks.push({ type: 'hr' });
+      blocks.push({ type: 'hr', ...(gapBefore ? { gapBefore: true } : {}) });
+      gapBefore = false;
       continue;
     }
     const quote = line.match(/^\s*>\s?(.*)$/);
     if (quote) {
-      blocks.push({ type: 'quote', tokens: parseInline(quote[1] ?? '') });
+      blocks.push({
+        type: 'quote',
+        tokens: parseInline(quote[1] ?? ''),
+        ...(gapBefore ? { gapBefore: true } : {}),
+      });
+      gapBefore = false;
       continue;
     }
     const bullet = line.match(/^\s*[-*+]\s+(.*)$/);
     if (bullet) {
-      blocks.push({ type: 'list', tokens: parseInline(bullet[1] ?? '') });
+      blocks.push({
+        type: 'list',
+        tokens: parseInline(bullet[1] ?? ''),
+        ...(gapBefore ? { gapBefore: true } : {}),
+      });
+      gapBefore = false;
       continue;
     }
-    blocks.push({ type: 'paragraph', tokens: parseInline(line) });
+    blocks.push({
+      type: 'paragraph',
+      tokens: parseInline(line),
+      ...(gapBefore ? { gapBefore: true } : {}),
+    });
+    gapBefore = false;
   }
   if (fence) {
-    blocks.push({ type: 'code', language: fence.language, content: fence.lines.join('\n') });
+    blocks.push({
+      type: 'code',
+      language: fence.language,
+      content: fence.lines.join('\n'),
+      ...(gapBefore ? { gapBefore: true } : {}),
+    });
   }
   return blocks;
 }
