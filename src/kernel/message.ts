@@ -16,6 +16,12 @@ export interface MessageContext {
   turnId?: string;
   source?: string;
   traceId?: string;
+  /** Agent emitting or owning this message (agent-team scope). */
+  agentId?: string;
+  parentAgentId?: string;
+  teamId?: string;
+  /** Point-to-point target; filters scoped subscriptions. */
+  targetAgentId?: string;
 }
 
 let idCounter = 0;
@@ -32,6 +38,10 @@ export abstract class Message {
   turnId: string;
   source: string;
   traceId: string;
+  agentId: string;
+  parentAgentId: string;
+  teamId: string;
+  targetAgentId: string;
 
   constructor(ctx: MessageContext = {}) {
     this.eventId = nextId();
@@ -40,6 +50,10 @@ export abstract class Message {
     this.turnId = ctx.turnId ?? '';
     this.source = ctx.source ?? '';
     this.traceId = ctx.traceId ?? '';
+    this.agentId = ctx.agentId ?? '';
+    this.parentAgentId = ctx.parentAgentId ?? '';
+    this.teamId = ctx.teamId ?? '';
+    this.targetAgentId = ctx.targetAgentId ?? '';
   }
 }
 
@@ -53,6 +67,9 @@ export interface RequestContext {
   sessionId?: string;
   turnId?: string;
   traceId?: string;
+  agentId?: string;
+  parentAgentId?: string;
+  teamId?: string;
 }
 
 /** Point-to-point call with a returned value. */
@@ -60,6 +77,9 @@ export abstract class Request<TResult = unknown> {
   sessionId: string;
   turnId: string;
   traceId: string;
+  agentId: string;
+  parentAgentId: string;
+  teamId: string;
   /** Set by the bus right before dispatch. */
   _correlationId = '';
 
@@ -70,6 +90,9 @@ export abstract class Request<TResult = unknown> {
     this.sessionId = ctx.sessionId ?? '';
     this.turnId = ctx.turnId ?? '';
     this.traceId = ctx.traceId ?? '';
+    this.agentId = ctx.agentId ?? '';
+    this.parentAgentId = ctx.parentAgentId ?? '';
+    this.teamId = ctx.teamId ?? '';
   }
 }
 

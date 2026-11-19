@@ -4,7 +4,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { basename, extname, resolve } from 'node:path';
 
 import { attachmentStoreDir, storeFileBytes } from './store';
-import { normalizeImage } from './images';
+import { ATTACHMENT_URL_PREFIX, normalizeImage } from './images';
 
 import type { AttachmentDTO, ContentPart } from '../kernel/dto/message';
 
@@ -68,9 +68,14 @@ export function buildUserContent(
   const parts: ContentPart[] = [];
   if (text.trim()) parts.push({ type: 'text', text });
   for (const attachment of attachments) {
-    if (attachment.kind === 'image' && attachment.dataUrl) {
-      parts.push({ type: 'image_url', image_url: { url: attachment.dataUrl } });
-      continue;
+    if (attachment.kind === 'image') {
+      const reference = attachment.hash
+        ? `${ATTACHMENT_URL_PREFIX}${attachment.hash}`
+        : attachment.dataUrl;
+      if (reference) {
+        parts.push({ type: 'image_url', image_url: { url: reference } });
+        continue;
+      }
     }
     parts.push({
       type: 'text',

@@ -4,18 +4,9 @@ import { buildReflectionPrompt } from '../src/prompts/reflection';
 import { skillsSectionPrompt } from '../src/prompts/skills-section';
 import { mergeSkillsPrompt } from '../src/prompts/merge-skills';
 import { skillCardPrompt } from '../src/prompts/skill-card';
-import { getSystemPrompt } from '../src/prompts/system';
 import { createSkill } from '../src/skill/models';
 
 describe('prompt builders', () => {
-  test('system prompt keeps the core rules', () => {
-    const prompt = getSystemPrompt('- hint');
-    expect(prompt).toContain('You are Alex');
-    expect(prompt).toContain('# Tools');
-    expect(prompt).toContain('- hint');
-    expect(prompt).toContain('# Style');
-  });
-
   test('reflection prompt lists existing skills and rules', () => {
     const skill = createSkill({ name: 'debug-import', pattern: 'python import error' });
     const prompt = buildReflectionPrompt([skill], [

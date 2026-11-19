@@ -143,6 +143,60 @@ describe('ChatClient streaming', () => {
     }
   });
 
+  test('converts DSML content into tool calls and hides the raw markup', async () => {
+    const dsml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="pwsh">
+<｜｜DSML｜｜ parameter name="command" string="true">Get-ChildItem -Force</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`;
+    const chunks = [dsml.slice(0, 12), dsml.slice(12, 55), dsml.slice(55)];
+    const body = [
+      ...chunks.map(
+        (chunk) =>
+          `data: ${JSON.stringify({ choices: [{ delta: { content: chunk } }] })}`,
+      ),
+      'data: [DONE]',
+      '',
+    ].join('\n');
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        return sseResponse(body, 5);
+      },
+    });
+    try {
+      const client = new ChatClient(
+        loadLLMConfig({}, {
+          baseUrl: `http://127.0.0.1:${server.port}`,
+          apiKey: 'test-key',
+          model: 'mock',
+        }),
+      );
+      const events: ChatStreamEvent[] = [];
+      for await (const event of client.streamChat({
+        messages: [{ role: 'user', content: 'hi' }],
+      })) {
+        events.push(event);
+      }
+      const content = events
+        .filter((event) => event.type === 'content')
+        .map((event) => (event as { delta: string }).delta)
+        .join('');
+      expect(content).not.toContain('invoke');
+      expect(content).not.toContain('calls>');
+      const done = events.find((event) => event.type === 'done') as {
+        result: { toolCalls: Array<{ function: { name: string; arguments: string } }> };
+      };
+      expect(done.result.toolCalls).toHaveLength(1);
+      expect(done.result.toolCalls[0]?.function.name).toBe('pwsh');
+      expect(JSON.parse(done.result.toolCalls[0]!.function.arguments)).toEqual({
+        command: 'Get-ChildItem -Force',
+      });
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test('throws on non-2xx responses', async () => {
     const server = Bun.serve({
       port: 0,

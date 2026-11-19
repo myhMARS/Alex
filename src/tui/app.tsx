@@ -3,12 +3,12 @@
 import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useKeyboard, useTerminalDimensions } from '@opentui/react';
+import { useKeyboard, useRenderer, useTerminalDimensions } from '@opentui/react';
 import type { InputRenderable, PasteEvent } from '@opentui/core';
 
 import type { AttachmentDTO } from '../kernel/dto/message';
 import { attachmentLabel, loadAttachment } from '../attachments/loader';
-import { readClipboardImagePath } from '../attachments/clipboard';
+import { copyTextToClipboard, readClipboardImagePath } from '../attachments/clipboard';
 import type { TuiModule, TuiPageKind, TuiSnapshot } from '../modules/tui/module';
 import type {
   ApprovalView,
@@ -46,6 +46,13 @@ const PAGE_COMMANDS: Record<string, TuiPageKind> = {
   '/ctx': 'context',
   '/settings': 'settings',
   '/config': 'settings',
+  '/log': 'log',
+  '/prompt': 'prompt',
+  '/agents': 'agents',
+  '/mailbox': 'mailbox',
+  '/lineage': 'lineage',
+  '/tasks': 'tasks',
+  '/teams': 'teams',
 };
 
 export interface TuiAppProps {
@@ -58,6 +65,7 @@ export interface TuiAppProps {
 export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
   const snapshot = React.useSyncExternalStore(tui.subscribe, tui.getSnapshot, tui.getSnapshot);
   const { width, height } = useTerminalDimensions();
+  const renderer = useRenderer();
   const inputRef = useRef<InputRenderable | null>(null);
   const approval = snapshot.approvals[0] ?? null;
   const page = snapshot.page;
@@ -112,6 +120,69 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
         run: () => void tui.showPage('context'),
       },
       {
+        name: '/teams',
+        description: '查看所有 Team 汇总',
+        run: () => void tui.showPage('teams'),
+      },
+      {
+        name: '/tasks',
+        description: '查看 Agent task 详情',
+        run: () => void tui.showPage('tasks'),
+      },
+      {
+        name: '/lineage',
+        description: '查看 Agent / Session 谱系树',
+        run: () => void tui.showPage('lineage'),
+      },
+      {
+        name: '/mailbox',
+        description: '查看 Agent mailbox',
+        run: () => void tui.showPage('mailbox'),
+      },
+      {
+        name: '/agents',
+        description: '查看 Agent Team 与任务状态',
+        run: () => void tui.showPage('agents'),
+      },
+      {
+        name: '/prompt',
+        description: '查看 system prompt 组装结果',
+        run: () => void tui.showPage('prompt'),
+      },
+      {
+        name: '/reload-prompts',
+        description: '重新读取用户 prompt / AGENTS.md',
+        run: () => {
+          void tui.reloadPrompts().then((result) => tui.setToast(result.message));
+        },
+      },
+      {
+        name: '/log',
+        description: '当前会话事件日志（含压缩前原始事件）',
+        run: () => void tui.showPage('log'),
+      },
+      {
+        name: '/checkpoint',
+        description: '将当前会话 JSONL 刷盘',
+        run: () => {
+          void tui.checkpointSession().then((result) => tui.setToast(result.message));
+        },
+      },
+      {
+        name: '/repair',
+        description: '修复当前会话 JSONL 的损坏尾部',
+        run: () => {
+          void tui.repairSession().then((result) => tui.setToast(result.message));
+        },
+      },
+      {
+        name: '/fork',
+        description: '从当前会话复制一个新会话',
+        run: () => {
+          void tui.forkSession();
+        },
+      },
+      {
         name: '/compact',
         description: '手动压缩上下文（较早历史摘要）',
         run: () => {
@@ -151,7 +222,7 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
           void tui.setEffort('').then((result) => tui.setToast(result.message));
         },
       },
-      { name: '/clear', description: '清空当前对话视图', run: () => tui.resetView() },
+      { name: '/new', description: '新建会话', run: () => void tui.newSession() },
       { name: '/quit', description: '退出 Alex', run: onQuit },
     ],
     [tui, onQuit],
@@ -194,6 +265,14 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
 
   useKeyboard((key) => {
     if (key.ctrl && key.name === 'c') {
+      const selected = renderer.getSelection()?.getSelectedText() ?? '';
+      if (selected.trim()) {
+        renderer.clearSelection();
+        void copyTextToClipboard(selected).then((ok) => {
+          tui.setToast(ok ? `已复制 ${selected.length} 字符` : '✗ 复制失败：没有可用的剪贴板命令');
+        });
+        return;
+      }
       onQuit();
       return;
     }
@@ -218,15 +297,27 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
       tui.setToast('文件树已刷新');
       return;
     }
-    if (key.name === 'f1' || key.name === 'f2' || (key.ctrl && (key.name === '1' || key.name === '2'))) {
+    if (
+      key.name === 'f1' ||
+      key.name === 'f2' ||
+      key.name === 'f3' ||
+      (key.ctrl && (key.name === '1' || key.name === '2' || key.name === '3'))
+    ) {
       if (snapshot.sidebarCollapsed) tui.toggleSidebar();
       const wantsFiles = key.name === 'f2' || key.name === '2';
-      void tui.setSidebarTab(wantsFiles ? 'files' : 'overview');
+      const wantsAgents = key.name === 'f3' || key.name === '3';
+      void tui.setSidebarTab(wantsAgents ? 'agents' : wantsFiles ? 'files' : 'overview');
       return;
     }
     if (key.ctrl && key.name === 'tab') {
       if (snapshot.sidebarCollapsed) tui.toggleSidebar();
-      void tui.setSidebarTab(snapshot.sidebarTab === 'files' ? 'overview' : 'files');
+      const next =
+        snapshot.sidebarTab === 'overview'
+          ? 'files'
+          : snapshot.sidebarTab === 'files'
+            ? 'agents'
+            : 'overview';
+      void tui.setSidebarTab(next);
       return;
     }
     if (key.ctrl && key.name === 's') {
@@ -498,6 +589,45 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
         return;
       }
 
+      if (lower === '/task' || lower.startsWith('/task ')) {
+        const taskId = text.slice('/task'.length).trim();
+        clearInput();
+        void tui.showTaskDetail(taskId);
+        return;
+      }
+
+      if (lower === '/team' || lower.startsWith('/team ')) {
+        const value = text.slice('/team'.length).trim();
+        clearInput();
+        tui.setTeamFilter(value);
+        tui.setToast(value ? `Team 过滤：${value}` : 'Team 过滤：全部');
+        return;
+      }
+
+      if (lower === '/reload-prompts') {
+        clearInput();
+        void tui.reloadPrompts().then((result) => tui.setToast(result.message));
+        return;
+      }
+
+      if (lower === '/checkpoint') {
+        clearInput();
+        void tui.checkpointSession().then((result) => tui.setToast(result.message));
+        return;
+      }
+
+      if (lower === '/repair') {
+        clearInput();
+        void tui.repairSession().then((result) => tui.setToast(result.message));
+        return;
+      }
+
+      if (lower === '/fork') {
+        clearInput();
+        void tui.forkSession();
+        return;
+      }
+
       if (lower === '/compact') {
         clearInput();
         void tui
@@ -521,9 +651,10 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
         clearInput();
         return;
       }
-      if (lower === '/clear') {
-        tui.resetView();
+      if (lower === '/new') {
         clearInput();
+        setPendingAttachments([]);
+        void tui.newSession();
         return;
       }
       if (lower.startsWith('/')) {
@@ -613,6 +744,9 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
             sessionId={activeSessionId}
             reflection={snapshot.reflection}
             tab={snapshot.sidebarTab}
+            agents={snapshot.sidebarAgents}
+            viewAgentId={snapshot.viewAgentId}
+            onAgentSelect={(agentId) => void tui.selectAgent(agentId)}
             fileTree={snapshot.fileTree}
             fileRows={snapshot.fileRows}
             fileSelected={snapshot.fileSelected}
@@ -1043,32 +1177,43 @@ function TurnBlock({
                   : null;
                 const shortOutput =
                   preview !== null && preview.hidden === 0 && preview.lines.length <= 3;
+                const failedTool = tool.done && tool.failed;
+                const toolColor = failedTool ? theme.error : theme.tool;
                 return (
                   <box
                     key={`tool-${tool.toolId}`}
                     style={{
                       flexDirection: 'column',
                       border: ['left'],
-                      borderColor: theme.tool,
+                      borderColor: toolColor,
                       paddingLeft: 1,
                       marginTop: 1,
                       width: width - 2,
                     }}
                   >
-                    <text fg={theme.tool} style={{ width: width - 3 }}>
-                      ⚙ {tool.name} {tool.done ? '✓' : '…'}
+                    <text fg={toolColor} style={{ width: width - 3 }}>
+                      ⚙ {tool.name} {tool.done ? (failedTool ? '✗' : '✓') : '…'}
                       {args ? <span fg={theme.muted}> · {args}</span> : null}
                     </text>
-                    {tool.done && preview && shortOutput ? (
+                    {tool.done && preview && (shortOutput || failedTool) ? (
                       <box style={{ flexDirection: 'column', width: width - 3 }}>
                         {preview.lines.map((line, lineIndex) => (
-                          <text key={lineIndex} fg={theme.muted} style={{ width: width - 4 }}>
+                          <text
+                            key={lineIndex}
+                            fg={failedTool ? theme.error : theme.muted}
+                            style={{ width: width - 4 }}
+                          >
                             ┆ {line}
                           </text>
                         ))}
+                        {failedTool && preview.hidden > 0 ? (
+                          <text fg={theme.border} style={{ width: width - 4 }}>
+                            ⎿ 还有 {preview.hidden} line(s) · Ctrl+O 查看完整错误
+                          </text>
+                        ) : null}
                       </box>
                     ) : null}
-                    {tool.done && preview && !shortOutput ? (
+                    {tool.done && preview && !shortOutput && !failedTool ? (
                       <box style={{ flexDirection: 'column', width: width - 3 }}>
                         {toolOutputExpanded
                           ? preview.lines.map((line, lineIndex) => (
@@ -1106,6 +1251,21 @@ function TurnBlock({
             });
           })()}
 
+          {turn.error ? (
+            <box
+              style={{
+                flexDirection: 'column',
+                marginTop: 1,
+                width: width - 2,
+              }}
+            >
+              {turn.error.split('\n').map((line, index) => (
+                <text key={`error-${index}`} fg={theme.error} style={{ width: width - 3 }}>
+                  {line || ' '}
+                </text>
+              ))}
+            </box>
+          ) : null}
         </box>
       ) : null}
     </box>
@@ -1162,6 +1322,9 @@ function Sidebar({
   sessionId,
   reflection,
   tab,
+  agents,
+  viewAgentId,
+  onAgentSelect,
   fileTree,
   fileRows,
   fileSelected,
@@ -1171,6 +1334,9 @@ function Sidebar({
   sessionId: string;
   reflection: TuiSnapshot['reflection'];
   tab: TuiSnapshot['sidebarTab'];
+  agents: TuiSnapshot['sidebarAgents'];
+  viewAgentId: string;
+  onAgentSelect: (agentId: string) => void;
   fileTree: TuiSnapshot['fileTree'];
   fileRows: TuiSnapshot['fileRows'];
   fileSelected: number;
@@ -1235,9 +1401,65 @@ function Sidebar({
             <strong>FILES</strong>
           </text>
         </box>
+        <box
+          onMouseDown={() => onTabSelect('agents')}
+          style={{
+            paddingLeft: 1,
+            paddingRight: 1,
+            backgroundColor: tab === 'agents' ? '#313244' : undefined,
+          }}
+        >
+          <text fg={tab === 'agents' ? theme.accent : theme.muted}>
+            <strong>AGENTS</strong>
+          </text>
+        </box>
       </box>
 
-      {tab === 'overview' ? (
+      {tab === 'agents' ? (
+        <scrollbox
+          scrollX={false}
+          style={{ flexGrow: 1, flexShrink: 1, flexBasis: 0, width: '100%' }}
+          scrollbarOptions={{ visible: false }}
+        >
+          <box style={{ flexDirection: 'column', width: SIDEBAR_WIDTH - 2 }}>
+            <text fg={theme.accent}>
+              <strong>CONVERSATION AGENT</strong>
+            </text>
+            <text fg={theme.muted}>click to switch view</text>
+            <box style={{ height: 1 }} />
+            {agents.length === 0 ? (
+              <text fg={theme.muted}>no agents</text>
+            ) : (
+              agents.map((agent) => {
+                const selected = agent.agentId === viewAgentId;
+                return (
+                  <box
+                    key={agent.agentId}
+                    onMouseDown={() => onAgentSelect(agent.agentId)}
+                    style={{
+                      paddingLeft: 1,
+                      paddingRight: 1,
+                      backgroundColor: selected ? '#313244' : undefined,
+                    }}
+                  >
+                    <text fg={selected ? theme.accent : theme.text}>
+                      {selected ? '▸ ' : '  '}
+                      {truncate(agent.agentId, 14)}
+                    </text>
+                    <text fg={theme.muted}>
+                      {'  '}
+                      {agent.role} {agent.status === 'running' ? '●' : '○'}
+                    </text>
+                  </box>
+                );
+              })
+            )}
+            <box style={{ height: 1 }} />
+            <text fg={theme.muted}>view: {truncate(viewAgentId, 20)}</text>
+            <KeyHint keys="F3" label="agents tab" />
+          </box>
+        </scrollbox>
+      ) : tab === 'overview' ? (
         <scrollbox
           scrollX={false}
           style={{ flexGrow: 1, flexShrink: 1, flexBasis: 0, width: '100%' }}
@@ -1278,10 +1500,10 @@ function Sidebar({
             <text fg={theme.accent}>
               <strong>KEYS</strong>
             </text>
-            <KeyHint keys="Ctrl+C" label="quit" />
+            <KeyHint keys="Ctrl+C" label="copy / quit" />
             <KeyHint keys="Ctrl+G/B" label="feedback" />
             <KeyHint keys="Ctrl+T/K/O" label="expand" />
-            <KeyHint keys="F1 / F2" label="sidebar tabs" />
+            <KeyHint keys="F1-F3" label="sidebar tabs" />
             <KeyHint keys="Ctrl+S" label="collapse" />
             <KeyHint keys="/help" label="commands" />
             <KeyHint keys=":q" label="close page" />

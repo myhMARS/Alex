@@ -69,6 +69,7 @@ export interface AuditEntry {
   remember: boolean;
   preview?: string;
   sessionId?: string;
+  agentId?: string;
 }
 
 export class AuditLogger {

@@ -48,7 +48,14 @@ function matchAll(text: string, pattern: RegExp): string[] {
 
 function pythonContractClasses(): string[] {
   // Frozen from Python before the legacy implementation was removed.
-  return pythonSnapshot().contractClasses;
+  // Memory contracts were intentionally removed when MemoryModule was deleted.
+  const removed = new Set([
+    'AppendMessages',
+    'ClearMemory',
+    'GetContext',
+    'ReplaceMemory',
+  ]);
+  return pythonSnapshot().contractClasses.filter((name) => !removed.has(name));
 }
 
 function typescriptContractClasses(): string[] {
@@ -97,7 +104,7 @@ describe('frozen Python ↔ TS parity', () => {
     const typescript = new Set(typescriptContractClasses());
     const missing = python.filter((name) => !typescript.has(name));
     expect(missing, `missing TS contracts: ${missing.join(', ')}`).toEqual([]);
-    expect(python.length).toBeGreaterThanOrEqual(40);
+    expect(python.length).toBeGreaterThanOrEqual(35);
   });
 
   test('every Python built-in tool (frozen snapshot) is in the TS catalog', async () => {
@@ -110,21 +117,33 @@ describe('frozen Python ↔ TS parity', () => {
     expect(extra).toEqual(['list_skills', 'load_skill']);
   });
 
-  test('loads a Python-shaped session file', async () => {
+  test('loads the latest v3 session file', async () => {
     const dir = await tempDir('alex-ts-parity-session-');
     await mkdir(join(dir, 'sessions'), { recursive: true });
     await writeFile(
-      join(dir, 'sessions', 'py-session.json'),
-      JSON.stringify({
-        session_id: 'py-session',
-        created_at: '2026-01-01T00:00:00+00:00',
-        first_message: 'hello from python',
-        messages: [
-          { role: 'user', content: 'hello from python' },
-          { role: 'assistant', content: 'hi', reasoning_content: '' },
-        ],
-        cron_history: [],
-      }),
+      join(dir, 'sessions', 'py-session.jsonl'),
+      [
+        JSON.stringify({
+          kind: 'session',
+          format_version: 3,
+          session_id: 'py-session',
+          created_at: '2026-01-01T00:00:00+00:00',
+          first_message: 'hello from python',
+          cron_history: [],
+        }),
+        JSON.stringify({
+          seq: 1,
+          type: 'user_message',
+          at: '2026-01-01T00:00:00Z',
+          data: { message: { role: 'user', content: 'hello from python' } },
+        }),
+        JSON.stringify({
+          seq: 2,
+          type: 'assistant_message',
+          at: '2026-01-01T00:00:01Z',
+          data: { message: { role: 'assistant', content: 'hi', reasoning_content: '' } },
+        }),
+      ].join('\n') + '\n',
       'utf8',
     );
     const bus = new AsyncEventBus();

@@ -144,3 +144,61 @@ export async function normalizedImageDataUrl(path: string): Promise<string> {
   const bytes = await readFile(path);
   return `data:image/webp;base64,${bytes.toString('base64')}`;
 }
+
+export const ATTACHMENT_URL_PREFIX = 'alex-attachment:';
+
+/** Resolve a persisted image reference to its request-time data URL. */
+export async function resolveAttachmentRef(
+  ref: string,
+  maxDimension = 0,
+): Promise<string> {
+  const hash = ref.startsWith(ATTACHMENT_URL_PREFIX)
+    ? ref.slice(ATTACHMENT_URL_PREFIX.length)
+    : ref;
+  if (!/^[a-f0-9]{64}$/i.test(hash)) throw new Error(`无效的图片引用：${ref}`);
+  const dir = join(attachmentStoreDir(), 'images');
+  const path = join(dir, `${hash}.webp`);
+  let bytes: Uint8Array;
+  try {
+    bytes = await readFile(path);
+    const actual = createHash('sha256').update(bytes).digest('hex');
+    if (actual !== hash.toLowerCase()) throw new Error('digest mismatch');
+  } catch {
+    throw new Error(`图片附件不存在或已损坏：${hash.slice(0, 16)}`);
+  }
+  const canonical = `data:image/webp;base64,${Buffer.from(bytes).toString('base64')}`;
+  if (!Number.isFinite(maxDimension) || maxDimension <= 0) return canonical;
+
+  const variantPath = join(dir, `${hash}@${Math.floor(maxDimension)}.webp`);
+  try {
+    const cached = await readFile(variantPath);
+    return `data:image/webp;base64,${cached.toString('base64')}`;
+  } catch {
+    // build the route-specific variant below
+  }
+  try {
+    const ImageCtor = imageConstructor();
+    const image = new ImageCtor(bytes);
+    const meta = await image.metadata();
+    const target = fitImageDimensions(
+      meta.width,
+      meta.height,
+      Math.floor(maxDimension) * Math.floor(maxDimension),
+      Math.floor(maxDimension),
+    );
+    if (target.width === meta.width && target.height === meta.height) {
+      return canonical;
+    }
+    const encoded = await encodeLadder(
+      target.width === meta.width && target.height === meta.height
+        ? image
+        : await image.resize(target.width, target.height),
+    );
+    await mkdir(dir, { recursive: true });
+    await writeFile(variantPath, encoded.bytes);
+    return `data:image/webp;base64,${Buffer.from(encoded.bytes).toString('base64')}`;
+  } catch {
+    // Best-effort: fall back to the canonical image when a variant cannot be built.
+    return canonical;
+  }
+}

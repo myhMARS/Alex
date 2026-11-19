@@ -25,6 +25,8 @@ import {
   TurnStarted,
   UserTurnRequested,
   SetModelEffort,
+  SetPromptPressure,
+  SetRequestHeader,
 } from '../../kernel/contracts/chat';
 import { SkillLoaded, SkillsReflected, SkillReflectError } from '../../kernel/contracts/skills';
 import {
@@ -50,12 +52,36 @@ import {
   type FileTreeSnapshot,
 } from '../../kernel/contracts/tools';
 import { ListSkills } from '../../kernel/contracts/skills';
-import { ListSessions, LoadSession, type SessionMeta } from '../../kernel/contracts/session';
 import {
-  GetContext,
-  GetMemoryStatus,
-  ReplaceMemory,
-} from '../../kernel/contracts/memory';
+  GetPromptInfo,
+  ReloadPrompts,
+} from '../../kernel/contracts/prompt';
+import {
+  AgentDisposed,
+  AgentSpawned,
+  AgentTaskFinished,
+  AgentTaskStarted,
+  ListAgentMessages,
+  ListAgents,
+  ListAgentTasks,
+  type AgentInfo,
+  type AgentTaskInfo,
+} from '../../kernel/contracts/agents';
+import {
+  AppendSessionEvents,
+  CheckpointSession,
+  ForkSession,
+  GetSessionProjection,
+  ListSessions,
+  LoadSession,
+  RepairSession,
+  ReplaceSessionEvents,
+  type SessionMeta,
+} from '../../kernel/contracts/session';
+import {
+  projectSessionEvents,
+  projectSessionSurface,
+} from '../../session/projector';
 import {
   GetSettings,
   UpdateSettings,
@@ -129,7 +155,15 @@ export type TuiPageKind =
   | 'sessions'
   | 'reflections'
   | 'context'
-  | 'settings';
+  | 'settings'
+  | 'log'
+  | 'prompt'
+  | 'agents'
+  | 'mailbox'
+  | 'lineage'
+  | 'tasks'
+  | 'teams'
+  | 'task';
 
 export interface TuiPage {
   kind: TuiPageKind;
@@ -137,7 +171,7 @@ export interface TuiPage {
   body: string;
 }
 
-export type TuiSidebarTab = 'overview' | 'files';
+export type TuiSidebarTab = 'overview' | 'files' | 'agents';
 
 export interface TuiFileRow {
   path: string;
@@ -166,6 +200,8 @@ export interface TuiSnapshot {
   page: TuiPage | null;
   sessionId: string;
   sidebarTab: TuiSidebarTab;
+  sidebarAgents: AgentInfo[];
+  viewAgentId: string;
   fileTree: FileTreeSnapshot;
   fileRows: TuiFileRow[];
   fileSelected: number;
@@ -193,11 +229,24 @@ const HELP_TEXT = [
   '  /settings        模型设置（API Key / 上下文 / 输出 token）',
   '  /set <key> <val> 修改设置，如 /set max_context 1M',
   '  /compact         手动压缩上下文（较早历史摘要为一条消息）',
+  '  /fork            从当前会话复制一个新会话',
+  '  /log             查看当前会话的事件日志',
+  '  /repair          修复当前会话 JSONL 的损坏尾部',
+  '  /checkpoint      将当前会话 JSONL 刷盘',
+  '  /prompt          查看 system prompt 组装结果',
+  '  /reload-prompts  重新读取用户 prompt / AGENTS.md',
+  '  /agents          查看 Agent Team 与任务状态',
+  '  /mailbox         查看 Agent mailbox（未读优先）',
+  '  /lineage         查看 Agent / Session 谱系树',
+  '  /tasks           查看 Agent task 详情',
+  '  /task <id>       查看单个 task 及关联 session 事件',
+  '  /team [id]       过滤 Agent / Task / Mailbox / Lineage 的 team（空=全部）',
+  '  /teams           查看所有 Team 汇总',
   '  /image <path>   发送图片（png/jpg/gif/webp）',
   '  /file <path>    发送文本或二进制文件',
   '  @<path>         在消息中内联附件路径（支持 "带空格 路径"）',
   '  /effort <level> 设置模型强度：nothinking / low / high / max',
-  '  /clear           清空当前视图',
+  '  /new             新建会话（清空视图并切换新 session）',
   '  /quit            退出',
   '',
   '  Ctrl+T           展开/收起 thinking',
@@ -256,6 +305,12 @@ export class TuiModule implements Module {
   private effort: ModelEffort = 'high';
   private model = '';
   private contextWindowTokens = 0;
+  private agentsRefreshing = false;
+  private teamFilter = '';
+  private taskDetailId = '';
+  private sidebarAgents: AgentInfo[] = [];
+  private viewAgentId = 'main';
+  private mainSessionId = '';
 
   constructor(
     options: {
@@ -287,6 +342,14 @@ export class TuiModule implements Module {
     this.bus = bus;
     for (const type of UI_EVENTS) {
       const handler: EventHandler = (event) => this.handle(event);
+      await bus.subscribe(type, handler);
+      this.subscriptions.push({ type, handler });
+    }
+    for (const type of [AgentSpawned, AgentDisposed, AgentTaskStarted, AgentTaskFinished]) {
+      const handler: EventHandler = () => {
+        void this.refreshAgentsPage();
+        void this.refreshSidebar();
+      };
       await bus.subscribe(type, handler);
       this.subscriptions.push({ type, handler });
     }
@@ -328,6 +391,7 @@ export class TuiModule implements Module {
         sessionId: this.sessionId,
         userText: text,
         attachments,
+        targetAgentId: this.viewAgentId === 'main' ? '' : this.viewAgentId,
       }),
     );
   }
@@ -349,7 +413,74 @@ export class TuiModule implements Module {
 
   setSessionId(sessionId: string): void {
     this.sessionId = sessionId;
+    if (this.viewAgentId === 'main') this.mainSessionId = sessionId;
     this.refresh();
+  }
+
+  /** Select an agent in the sidebar; resume it and load its session if needed. */
+  async selectAgent(agentId: string): Promise<boolean> {
+    const bus = this.bus;
+    if (!bus) return false;
+    try {
+      if (agentId === 'main') {
+        // Switching back must restore the full main conversation, not just
+        // the turns that happened to arrive while another agent was selected.
+        const target = this.mainSessionId;
+        if (target) return await this.loadSession(target);
+        this.viewAgentId = 'main';
+        this.refresh();
+        return true;
+      }
+      const info = this.sidebarAgents.find((agent) => agent.agentId === agentId);
+      if (info?.sessionId) {
+        await this.loadAgentSession(agentId, info.sessionId);
+      } else {
+        this.viewAgentId = agentId;
+        this.refresh();
+      }
+      return true;
+    } catch (error) {
+      this.setToast(
+        `✗ 恢复 Agent 失败：${error instanceof Error ? error.message : String(error)}`,
+      );
+      return false;
+    }
+  }
+
+  /** Load one agent's persisted session and mark its turns with that agent id. */
+  async loadAgentSession(agentId: string, sessionId: string): Promise<boolean> {
+    const bus = this.bus;
+    if (!bus) return false;
+    if (this.viewAgentId === 'main' && this.sessionId) {
+      this.mainSessionId = this.sessionId;
+    }
+    try {
+      const bundle = await bus.request(new LoadSession({ targetSessionId: sessionId }));
+      if (!bundle) {
+        this.setToast(`✗ Agent 会话不存在或无法加载：${sessionId}`);
+        this.viewAgentId = agentId;
+        this.refresh();
+        return false;
+      }
+      const events = bundle.events ?? [];
+      await bus.request(
+        new ReplaceSessionEvents({ sessionId: bundle.sessionId, events }),
+      );
+      const messages = projectSessionEvents(events);
+      const surface = projectSessionSurface(events);
+      this.viewState.loadHistory(messages, events, surface.turns, agentId);
+      this.sessionId = bundle.sessionId;
+      this.viewAgentId = agentId;
+      this.page = null;
+      this.sessionChoices = [];
+      this.refresh();
+      return true;
+    } catch (error) {
+      this.setToast(
+        `✗ 加载 Agent 会话失败：${error instanceof Error ? error.message : String(error)}`,
+      );
+      return false;
+    }
   }
 
   /** Load a persisted session into memory and rebuild the chat view. */
@@ -358,18 +489,101 @@ export class TuiModule implements Module {
     if (!bus) return false;
     try {
       const bundle = await bus.request(new LoadSession({ targetSessionId }));
-      if (!bundle) return false;
+      if (!bundle) {
+        this.setToast(`✗ 会话不存在或无法加载：${targetSessionId}`);
+        return false;
+      }
       const sessionId = bundle.sessionId || targetSessionId;
-      await bus.request(
-        new ReplaceMemory({ sessionId, messages: bundle.messages ?? [] }),
-      );
+      const agentId = bundle.agentId || 'main';
+      if (agentId === 'main') this.mainSessionId = sessionId;
+      const events = bundle.events ?? [];
+      const messages = projectSessionEvents(events);
+      await bus.request(new ReplaceSessionEvents({ sessionId, events }));
       this.sessionId = sessionId;
-      this.viewState.loadHistory(bundle.messages ?? []);
+      this.viewAgentId = agentId;
+      const surface = projectSessionSurface(events);
+      this.viewState.loadHistory(messages, events, surface.turns, agentId);
+      if (this.viewState.lastUsage) {
+        this.publish(
+          new SetPromptPressure({
+            sessionId,
+            promptTokens: this.viewState.lastUsage.promptTokens,
+          }),
+        );
+      }
+      if (surface.lastRequestHeader) {
+        this.publish(
+          new SetRequestHeader({
+            sessionId,
+            header: surface.lastRequestHeader,
+          }),
+        );
+      }
       this.page = null;
       this.sessionChoices = [];
       this.refresh();
       return true;
-    } catch {
+    } catch (error) {
+      this.setToast(
+        `✗ 加载会话失败：${error instanceof Error ? error.message : String(error)}`,
+      );
+      return false;
+    }
+  }
+
+  /** Show one task detail plus related parent-session events. */
+  async showTaskDetail(taskId: string): Promise<boolean> {
+    if (!taskId.trim()) {
+      this.setToast('用法：/task <taskId>');
+      return false;
+    }
+    this.taskDetailId = taskId.trim();
+    await this.showPage('task');
+    return true;
+  }
+
+  /** Filter team pages; empty string shows all teams. */
+  setTeamFilter(teamId: string): void {
+    this.teamFilter = teamId.trim();
+    if (this.page?.kind === 'agents') void this.refreshAgentsPage();
+  }
+
+  getTeamFilter(): string {
+    return this.teamFilter;
+  }
+
+  /** Fork the current session and load the copy. */
+  async forkSession(): Promise<boolean> {
+    const bus = this.bus;
+    if (!bus) return false;
+    try {
+      const targetSessionId = `session-fork-${Date.now().toString(36)}`;
+      const bundle = await bus.request(
+        new ForkSession({
+          sourceSessionId: this.sessionId,
+          targetSessionId,
+        }),
+      );
+      if (!bundle) return false;
+      const events = bundle.events ?? [];
+      const messages = projectSessionEvents(events);
+      await bus.request(
+        new ReplaceSessionEvents({ sessionId: bundle.sessionId, events }),
+      );
+      const surface = projectSessionSurface(events);
+      this.viewState.loadHistory(messages, events, surface.turns);
+      this.sessionId = bundle.sessionId;
+      this.mainSessionId = bundle.sessionId;
+      this.viewAgentId = 'main';
+      this.page = null;
+      this.sessionChoices = [];
+      this.refresh();
+      this.setToast(`已 fork 到 ${bundle.sessionId}`);
+      return true;
+    } catch (error) {
+      this.setToast(
+        `✗ fork 失败：${error instanceof Error ? error.message : String(error)}`,
+      );
       return false;
     }
   }
@@ -377,7 +591,10 @@ export class TuiModule implements Module {
   /** Select the n-th (1-based) session from the `/sessions` page. */
   async chooseSession(index: number): Promise<boolean> {
     const choice = this.sessionChoices[index - 1];
-    if (!choice) return false;
+    if (!choice) {
+      this.setToast(`✗ 无效的会话编号：${index}`);
+      return false;
+    }
     return this.loadSession(choice.sessionId);
   }
 
@@ -401,6 +618,15 @@ export class TuiModule implements Module {
     this.sidebarTab = tab;
     this.refresh();
     if (tab === 'files') await this.refreshFileTree();
+    if (tab === 'agents') await this.refreshSidebar();
+  }
+
+  /** Switch the conversation view to one agent (main or a worker). */
+  setViewAgent(agentId: string): void {
+    const next = agentId.trim() || 'main';
+    if (next === this.viewAgentId) return;
+    this.viewAgentId = next;
+    this.refresh();
   }
 
   toggleSidebar(): boolean {
@@ -435,6 +661,38 @@ export class TuiModule implements Module {
     if (this.toast === null) return;
     this.toast = null;
     this.refresh();
+  }
+
+  /** Start a fresh main-agent session and clear the conversation view. */
+  async newSession(): Promise<string> {
+    const sessionId = `session-${Date.now().toString(36)}`;
+    this.sessionId = sessionId;
+    this.mainSessionId = sessionId;
+    this.viewAgentId = 'main';
+    this.page = null;
+    this.sessionChoices = [];
+    this.viewState.reset();
+    this.refresh();
+    const bus = this.bus;
+    if (bus) {
+      await bus
+        .request(
+          new AppendSessionEvents({
+            sessionId,
+            events: [
+              {
+                seq: 0,
+                type: 'session_created',
+                at: new Date().toISOString(),
+                data: {},
+              },
+            ],
+          }),
+        )
+        .catch(() => undefined);
+    }
+    this.setToast(`已新建会话 ${sessionId}`);
+    return sessionId;
   }
 
   resetView(): void {
@@ -531,6 +789,66 @@ export class TuiModule implements Module {
     };
   }
 
+  /** Reload user prompt and AGENTS.md. */
+  async reloadPrompts(): Promise<{ ok: boolean; message: string }> {
+    const bus = this.bus;
+    if (!bus) return { ok: false, message: 'TuiModule 未启动' };
+    try {
+      const info = await bus.request(new ReloadPrompts());
+      return {
+        ok: true,
+        message: `prompt 已重载（${info.sections.length} 个章节）`,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        message: `重载失败：${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
+  /** Flush the current session JSONL to disk. */
+  async checkpointSession(): Promise<{ ok: boolean; message: string }> {
+    const bus = this.bus;
+    if (!bus) return { ok: false, message: 'TuiModule 未启动' };
+    try {
+      const result = await bus.request(
+        new CheckpointSession({ targetSessionId: this.sessionId }),
+      );
+      return result.checkpointed
+        ? { ok: true, message: `已刷盘（${result.bytes} bytes）` }
+        : { ok: false, message: '会话文件不存在' };
+    } catch (error) {
+      return {
+        ok: false,
+        message: `刷盘失败：${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
+  /** Repair a corrupted JSONL session log (truncate at first bad event). */
+  async repairSession(): Promise<{ ok: boolean; message: string }> {
+    const bus = this.bus;
+    if (!bus) return { ok: false, message: 'TuiModule 未启动' };
+    try {
+      const result = await bus.request(
+        new RepairSession({ targetSessionId: this.sessionId }),
+      );
+      if (!result) return { ok: false, message: '会话不存在或无法修复' };
+      return {
+        ok: result.repaired,
+        message: result.repaired
+          ? `已修复：保留 ${result.validEvents} 个事件，丢弃 ${result.droppedEvents} 个损坏事件`
+          : `无需修复（${result.validEvents} 个事件均有效）`,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        message: `修复失败：${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
   /** Manually compact the current session's context. */
   async compactContext(): Promise<CompactionResult> {
     const bus = this.bus;
@@ -574,6 +892,18 @@ export class TuiModule implements Module {
       const parsed = parseTokenCount(value);
       if (parsed === null) return { ok: false, message: `无效的输出 token 数：${value}（支持 64K / 1M）` };
       patch.maxOutputTokens = parsed;
+    } else if (normalized === 'imagemax' || normalized === 'image_max') {
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed) || parsed < 64 || parsed > 8_192) {
+        return { ok: false, message: `无效的图片最大边：${value}（64~8192）` };
+      }
+      patch.imageMaxDimension = Math.floor(parsed);
+    } else if (normalized === 'maxiterations') {
+      const parsed = Number(value);
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 1_000) {
+        return { ok: false, message: `无效的 max_iterations：${value}（1~1000 的整数）` };
+      }
+      patch.maxIterations = parsed;
     } else {
       return { ok: false, message: `未知设置项：${key}` };
     }
@@ -596,7 +926,10 @@ export class TuiModule implements Module {
       this.refresh();
     }
     if (this.page?.kind === 'settings') await this.showPage('settings');
-    const runtime = patch.thinkingEnabled !== undefined || patch.effort !== undefined;
+    const runtime =
+      patch.thinkingEnabled !== undefined ||
+      patch.effort !== undefined ||
+      patch.maxIterations !== undefined;
     return {
       ok: true,
       message: `已保存 ${key} = ${value}（${runtime ? '已即时生效' : '重启后生效'}）`,
@@ -713,12 +1046,20 @@ export class TuiModule implements Module {
         return fallback;
       }
     };
-    const [catalog, skills, cron, mcp] = await Promise.all([
+    const [catalog, skills, cron, mcp, agents] = await Promise.all([
       safe(bus.request(new GetToolCatalog()), []),
       safe(bus.request(new ListSkills({ includeDeprecated: false })), []),
       safe(bus.request(new ListCronJobs()), []),
       safe(bus.request(new GetMCPStatus()), { servers: [], statusMessage: '' }),
+      safe(bus.request(new ListAgents()), [] as AgentInfo[]),
     ]);
+    this.sidebarAgents = agents;
+    if (
+      this.viewAgentId !== 'main' &&
+      !agents.some((agent) => agent.agentId === this.viewAgentId)
+    ) {
+      this.viewAgentId = 'main';
+    }
     this.sidebar = {
       tools: catalog.length,
       skills: skills.length,
@@ -741,6 +1082,14 @@ export class TuiModule implements Module {
       reflections: '反思记录',
       context: '上下文窗口',
       settings: '模型设置',
+      log: '会话事件日志',
+      prompt: 'System Prompt',
+      agents: 'Agent Team',
+      mailbox: 'Agent Mailbox',
+      lineage: 'Team / Session Lineage',
+      tasks: 'Agent Tasks',
+      teams: 'Teams',
+      task: 'Task Detail',
     };
     this.page = { kind, title: titles[kind], body: '加载中…' };
     this.refresh();
@@ -803,9 +1152,308 @@ export class TuiModule implements Module {
     return this.bus;
   }
 
+  private async refreshAgentsPage(): Promise<void> {
+    if (this.agentsRefreshing || this.page?.kind !== 'agents') return;
+    this.agentsRefreshing = true;
+    try {
+      const body = await this.loadPageBody('agents');
+      if (this.page?.kind === 'agents') {
+        this.page = { kind: 'agents', title: 'Agent Team', body };
+        this.refresh();
+      }
+    } catch {
+      // Keep the last page if a transient registry lookup fails.
+    } finally {
+      this.agentsRefreshing = false;
+    }
+  }
+
   private async loadPageBody(kind: TuiPageKind): Promise<string> {
     const bus = this.requireBusForPage();
     if (kind === 'help') return HELP_TEXT;
+
+    if (kind === 'log') {
+      const bundle = await bus
+        .request(new LoadSession({ targetSessionId: this.sessionId }))
+        .catch(() => null);
+      const events = bundle?.events ?? [];
+      if (events.length === 0) return '当前会话还没有事件。';
+      const lines = [
+        `会话：${this.sessionId || '-'} · 共 ${events.length} 个事件`,
+        '',
+      ];
+      for (const event of events.slice(-200)) {
+        const data = JSON.stringify(event.data ?? {}, (_key, value) =>
+          typeof value === 'string' && value.startsWith('data:')
+            ? '[inline-image]'
+            : value,
+        );
+        lines.push(
+          `#${String(event.seq).padStart(4, ' ')} ${formatSessionTime(event.at)} ${event.type}`,
+        );
+        lines.push(
+          `      ${(data ?? '').slice(0, 180)}${(data ?? '').length > 180 ? '…' : ''}`,
+        );
+      }
+      return lines.join('\n');
+    }
+
+    if (kind === 'agents') {
+      const [agents, tasks] = await Promise.all([
+        bus.request(new ListAgents({ teamId: this.teamFilter })).catch(
+          () => [] as AgentInfo[],
+        ),
+        bus.request(new ListAgentTasks()).catch(() => [] as AgentTaskInfo[]),
+      ]);
+      if (agents.length === 0) return '当前没有注册的 Agent。';
+      const lines = ['Agents:'];
+      for (const agent of agents) {
+        lines.push(
+          `- ${agent.agentId} [${agent.status}] role=${agent.role} team=${agent.teamId || '-'} parent=${agent.parentAgentId || '-'}`,
+        );
+      }
+      lines.push('', 'Tasks:');
+      if (tasks.length === 0) {
+        lines.push('  （无任务）');
+      } else {
+        for (const task of tasks.slice(-20)) {
+          lines.push(
+            `- ${task.taskId} [${task.status}] ${task.agentId}: ${task.result || task.error || task.prompt}`,
+          );
+        }
+      }
+      return lines.join('\n');
+    }
+
+    if (kind === 'task') {
+      const tasks = await bus.request(new ListAgentTasks()).catch(() => [] as AgentTaskInfo[]);
+      const task = tasks.find((item) => item.taskId === this.taskDetailId);
+      if (!task) return `未找到 task：${this.taskDetailId}`;
+      const lines = [
+        `task: ${task.taskId}`,
+        `status: ${task.status}`,
+        `agent: ${task.agentId}`,
+        `team: ${task.teamId ?? '-'}`,
+        `parent_session: ${task.parentSessionId ?? '-'}`,
+        `worker_session: ${task.sessionId}`,
+        `priority: ${task.priority ?? 0}`,
+        `failure_reason: ${task.failureReason || '-'}`,
+        `started_at: ${task.startedAt}`,
+        `finished_at: ${task.finishedAt ?? '-'}`,
+        `prompt: ${task.prompt}`,
+        `result: ${task.result || '-'}`,
+        `error: ${task.error || '-'}`,
+      ];
+      if (task.parentSessionId) {
+        try {
+          const projection = await bus.request(
+            new GetSessionProjection({ sessionId: task.parentSessionId }),
+          );
+          const related = projection.events.filter(
+            (event) => event.data?.taskId === task.taskId,
+          );
+          lines.push('', 'Session events:');
+          if (related.length === 0) lines.push('  （无）');
+          for (const event of related) {
+            lines.push(`- seq=${event.seq} ${event.type} at=${event.at}`);
+          }
+        } catch {
+          lines.push('', 'Session events: （不可用）');
+        }
+      }
+      return lines.join('\n');
+    }
+
+    if (kind === 'teams') {
+      const [agents, tasks] = await Promise.all([
+        bus.request(new ListAgents()).catch(() => [] as AgentInfo[]),
+        bus.request(new ListAgentTasks()).catch(() => [] as AgentTaskInfo[]),
+      ]);
+      const teams = new Map<
+        string,
+        { agents: number; running: number; tasks: number; taskRunning: number; completed: number }
+      >();
+      for (const agent of agents) {
+        const key = agent.teamId || '(none)';
+        const entry = teams.get(key) ?? {
+          agents: 0,
+          running: 0,
+          tasks: 0,
+          taskRunning: 0,
+          completed: 0,
+        };
+        entry.agents += 1;
+        if (agent.status === 'running') entry.running += 1;
+        teams.set(key, entry);
+      }
+      for (const task of tasks) {
+        const key = task.teamId || '(none)';
+        const entry = teams.get(key) ?? {
+          agents: 0,
+          running: 0,
+          tasks: 0,
+          taskRunning: 0,
+          completed: 0,
+        };
+        entry.tasks += 1;
+        if (task.status === 'running') entry.taskRunning += 1;
+        if (task.status === 'completed') entry.completed += 1;
+        teams.set(key, entry);
+      }
+      if (teams.size === 0) return '当前没有 Team。';
+      return [...teams.entries()]
+        .map(
+          ([teamId, entry]) =>
+            `- ${teamId}: agents=${entry.agents} running=${entry.running} tasks=${entry.tasks} task_running=${entry.taskRunning} completed=${entry.completed}`,
+        )
+        .join('\n');
+    }
+
+    if (kind === 'tasks') {
+      let tasks: AgentTaskInfo[] = [];
+      try {
+        tasks = await bus.request(new ListAgentTasks());
+      } catch {
+        return 'AgentRegistry 不可用。';
+      }
+      if (this.teamFilter) {
+        tasks = tasks.filter((task) => task.teamId === this.teamFilter);
+      }
+      if (tasks.length === 0) return '当前没有 task。';
+      return tasks
+        .slice(-30)
+        .map((task) => {
+          const timestamps =
+            task.finishedAt !== null
+              ? `${task.startedAt} → ${task.finishedAt}`
+              : `${task.startedAt} → running`;
+          return [
+            `- ${task.taskId} [${task.status}] agent=${task.agentId}`,
+            `    parent=${task.parentSessionId ?? '-'} worker=${task.sessionId}`,
+            `    ${timestamps}`,
+            `    prompt: ${task.prompt}`,
+            task.result ? `    result: ${task.result}` : '',
+            task.failureReason ? `    reason: ${task.failureReason}` : '',
+            task.error ? `    error: ${task.error}` : '',
+          ]
+            .filter(Boolean)
+            .join('\n');
+        })
+        .join('\n\n');
+    }
+
+    if (kind === 'lineage') {
+      const [agents, sessions] = await Promise.all([
+        bus.request(new ListAgents({ teamId: this.teamFilter })).catch(
+          () => [] as AgentInfo[],
+        ),
+        bus.request(new ListSessions()).catch(() => [] as SessionMeta[]),
+      ]);
+      const lines: string[] = ['Agents:'];
+      const agentIds = new Set(agents.map((agent) => agent.agentId));
+      const visibleSessions = this.teamFilter
+        ? sessions.filter(
+            (session) => session.agentId !== undefined && agentIds.has(session.agentId),
+          )
+        : sessions;
+      const agentChildren = new Map<string, AgentInfo[]>();
+      for (const agent of agents) {
+        const parent = agent.parentAgentId || '';
+        const list = agentChildren.get(parent) ?? [];
+        list.push(agent);
+        agentChildren.set(parent, list);
+      }
+      const agentRoots = agents.filter(
+        (agent) => !agent.parentAgentId || !agentIds.has(agent.parentAgentId),
+      );
+      const walkAgent = (agent: AgentInfo, depth: number): void => {
+        lines.push(
+          `${'  '.repeat(depth)}- ${agent.agentId} [${agent.role}] team=${agent.teamId || '-'} session=${agent.sessionId || '-'}`,
+        );
+        for (const child of agentChildren.get(agent.agentId) ?? []) {
+          walkAgent(child, depth + 1);
+        }
+      };
+      for (const root of agentRoots) walkAgent(root, 0);
+      if (agents.length === 0) lines.push('  （无）');
+
+      lines.push('', 'Sessions:');
+      const sessionIds = new Set(visibleSessions.map((session) => session.sessionId));
+      const sessionChildren = new Map<string, SessionMeta[]>();
+      for (const session of visibleSessions) {
+        const parent = session.parentSessionId || '';
+        const list = sessionChildren.get(parent) ?? [];
+        list.push(session);
+        sessionChildren.set(parent, list);
+      }
+      const sessionRoots = visibleSessions.filter(
+        (session) =>
+          !session.parentSessionId || !sessionIds.has(session.parentSessionId),
+      );
+      const walkSession = (session: SessionMeta, depth: number): void => {
+        const agent = session.agentId ? ` agent=${session.agentId}` : '';
+        const forked =
+          session.parentSessionId && session.forkBoundarySeq !== undefined
+            ? ` @${session.forkBoundarySeq}`
+            : '';
+        lines.push(
+          `${'  '.repeat(depth)}- ${session.sessionId}${forked}${agent} (${session.messageCount} msgs)`,
+        );
+        for (const child of sessionChildren.get(session.sessionId) ?? []) {
+          walkSession(child, depth + 1);
+        }
+      };
+      for (const root of sessionRoots) walkSession(root, 0);
+      if (visibleSessions.length === 0) lines.push('  （无）');
+      return lines.join('\n');
+    }
+
+    if (kind === 'mailbox') {
+      let agents: AgentInfo[];
+      try {
+        agents = await bus.request(new ListAgents({ teamId: this.teamFilter }));
+      } catch {
+        return 'AgentRegistry 不可用。';
+      }
+      if (agents.length === 0) return '当前没有注册的 Agent。';
+      const lines: string[] = [];
+      for (const agent of agents) {
+        let messages: Array<{ read?: boolean; fromAgentId: string; content: string }> = [];
+        try {
+          messages = await bus.request(
+            new ListAgentMessages({ agentId: agent.agentId, limit: 20 }),
+          );
+        } catch {
+          continue;
+        }
+        const unread = messages.filter((message) => !message.read).length;
+        lines.push(`- ${agent.agentId} (${unread} unread / ${messages.length} msgs)`);
+        for (const message of messages.slice(-5)) {
+          lines.push(
+            `    ${message.read ? '✓' : '•'} ${message.fromAgentId}: ${message.content}`,
+          );
+        }
+      }
+      return lines.length > 0 ? lines.join('\n') : 'Mailbox 为空。';
+    }
+
+    if (kind === 'prompt') {
+      const info = await bus.request(new GetPromptInfo());
+      const lines = [
+        `用户 prompt：${info.userPromptPath}`,
+        `AGENTS.md：${info.agentsPath ?? '未找到'}`,
+        '',
+        '章节：',
+        ...info.sections.map(
+          (section) =>
+            `- ${section.id}${section.title ? ` (${section.title})` : ''} order=${section.order ?? 100} source=${section.source ?? '-'}`,
+        ),
+        '',
+        '组装结果（前 2000 字符）：',
+        info.prompt.slice(0, 2_000),
+      ];
+      return lines.join('\n');
+    }
 
     if (kind === 'settings') {
       try {
@@ -823,9 +1471,11 @@ export class TuiModule implements Module {
           `compact_ratio ${settings.compactThresholdRatio}（达到上下文 ${Math.round(settings.compactThresholdRatio * 100)}% 时自动压缩）`,
           `thinking      ${settings.thinkingEnabled ? 'on' : 'off'}`,
           `effort        ${settings.thinkingEnabled ? settings.effort : 'nothinking（thinking 关闭）'}`,
+          `image_max     ${settings.imageMaxDimension} px（请求时图片最大边）`,
+          `max_iterations ${settings.maxIterations}（单轮最多工具循环次数）`,
           '',
-          '可用键：provider · model · api_key · base_url · max_context · max_output · compact_threshold · thinking · effort',
-          '示例：/set max_context 1M   /set max_output 64K   /set api_key sk-…',
+          '可用键：provider · model · api_key · base_url · max_context · max_output · compact_threshold · thinking · effort · image_max · max_iterations',
+          '示例：/set max_context 1M   /set max_output 64K   /set max_iterations 20   /set api_key sk-…',
           '',
           '单位：K = 1,024，M = 1,048,576（二进制）；也可直接输入精确值，',
           '      如 /set max_context 131072（= 128K）。',
@@ -849,22 +1499,15 @@ export class TuiModule implements Module {
 
     if (kind === 'context') {
       const sessionId = this.sessionId;
-      const [messages, status, settings] = await Promise.all([
-        bus.request(new GetContext({ sessionId })),
-        bus
-          .request(new GetMemoryStatus({ sessionId }))
-          .catch(() => ({
-            messageCount: 0,
-            maxTokens: 0,
-            estimatedTokens: 0,
-            maxContextTokens: 0,
-          })),
+      const [projection, settings] = await Promise.all([
+        bus.request(new GetSessionProjection({ sessionId })),
         bus.request(new GetSettings({ sessionId })).catch(() => null),
       ]);
+      const messages = projection.messages;
       if (settings) this.compactRatioForDisplay = settings.compactThresholdRatio;
       const usage = this.viewState.lastUsage;
       const totals = this.viewState.sessionUsage;
-      const capacity = status.maxContextTokens || status.maxTokens || 0;
+      const capacity = settings?.maxContextTokens ?? 0;
       const latestPrompt = usage?.promptTokens ?? 0;
       const contextRatio = capacity > 0 ? Math.min(1, latestPrompt / capacity) : 0;
       const cacheTotal = totals.cacheHitTokens + totals.cacheMissTokens;
@@ -942,7 +1585,19 @@ export class TuiModule implements Module {
       return this.buildMcpBody();
     }
 
-    const sessions = await bus.request(new ListSessions());
+    let sessions = await bus.request(new ListSessions());
+    sessions = sessions.filter(
+      (session) => !session.agentId || session.agentId === 'main',
+    );
+    if (this.teamFilter) {
+      const agents = await bus
+        .request(new ListAgents({ teamId: this.teamFilter }))
+        .catch(() => [] as AgentInfo[]);
+      const ids = new Set(agents.map((agent) => agent.agentId));
+      sessions = sessions.filter(
+        (session) => !session.agentId || ids.has(session.agentId),
+      );
+    }
     const ordered = [...sessions].sort((a, b) => {
       const left = a.updatedAt ?? a.createdAt;
       const right = b.updatedAt ?? b.createdAt;
@@ -957,6 +1612,9 @@ export class TuiModule implements Module {
         return [
           `${String(index + 1).padStart(2, ' ')}. ${session.sessionId}`,
           `    ${when} · ${session.messageCount} msgs`,
+          session.parentSessionId
+            ? `    ↳ fork of ${session.parentSessionId}${session.forkBoundarySeq !== undefined ? ` @ seq ${session.forkBoundarySeq}` : ''}`
+            : '',
           message ? `    ${message}` : '',
           '',
         ]
@@ -976,8 +1634,12 @@ export class TuiModule implements Module {
   private buildSnapshot(): TuiSnapshot {
     return {
       revision: this.revision,
-      turns: this.viewState.turns,
-      streaming: this.viewState.streaming,
+      turns: this.viewState.turns.filter(
+        (turn) => (turn.agentId || 'main') === this.viewAgentId,
+      ),
+      streaming: this.viewState.streaming.filter(
+        (turn) => (turn.agentId || 'main') === this.viewAgentId,
+      ),
       approvals: this.viewState.pendingApprovals,
       cron: this.viewState.cron,
       reflection: this.viewState.lastReflection,
@@ -985,6 +1647,8 @@ export class TuiModule implements Module {
       sessionId: this.sessionId,
       sidebar: this.sidebar,
       sidebarTab: this.sidebarTab,
+      sidebarAgents: this.sidebarAgents,
+      viewAgentId: this.viewAgentId,
       fileTree: this.fileTree,
       fileRows: this.fileRows,
       fileSelected: this.fileSelected,

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 import { AsyncEventBus } from '../src/kernel/bus';
 import { AgentModule } from '../src/modules/agent/module';
-import { MemoryModule } from '../src/modules/memory/module';
+import { SessionModule } from '../src/session/module';
 import { TuiModule } from '../src/modules/tui/module';
 import { ToolsModule } from '../src/tools/module';
 import { PermissionPolicy, AuditLogger } from '../src/tools/permissions';
@@ -19,7 +19,8 @@ import {
   UserTurnRequested,
 } from '../src/kernel/contracts/chat';
 import { ToolFinished, ToolStarted } from '../src/kernel/contracts/tools';
-import { GetContext } from '../src/kernel/contracts/memory';
+import { SettingsUpdated, type SettingsSnapshot } from '../src/kernel/contracts/settings';
+import { GetSessionProjection } from '../src/kernel/contracts/session';
 
 const tempDirs: string[] = [];
 
@@ -71,7 +72,7 @@ async function setup(model: ChatModel, options: { maxIterations?: number } = {})
   const dir = await mkdtemp(join(tmpdir(), 'alex-ts-agent-loop-'));
   tempDirs.push(dir);
   const bus = new AsyncEventBus();
-  const memory = new MemoryModule();
+  const session = new SessionModule();
   const tools = new ToolsModule({
     roots: [dir],
     policy: new PermissionPolicy({ allowed: ['read', 'network'], env: {} }),
@@ -85,7 +86,7 @@ async function setup(model: ChatModel, options: { maxIterations?: number } = {})
     maxIterations: options.maxIterations ?? 5,
   });
   const tui = new TuiModule();
-  await memory.start(bus);
+  await session.start(bus);
   await tools.start(bus);
   await agent.start(bus);
   await tui.start(bus);
@@ -138,7 +139,9 @@ describe('AgentModule model loop', () => {
     expect(usage[0]).toMatchObject({ promptTokens: 120, completionTokens: 8, totalTokens: 128 });
     expect(tui.viewState.lastUsage?.promptTokens).toBe(120);
 
-    const history = await bus.request(new GetContext({ sessionId: 's1' }));
+    const history = (
+      await bus.request(new GetSessionProjection({ sessionId: 's1' }))
+    ).messages;
     expect(history.map((message) => message.role)).toEqual([
       'user',
       'assistant',
@@ -215,6 +218,47 @@ describe('AgentModule model loop', () => {
 
     expect(completed[0]?.content).toBe('forced final');
     expect(alwaysTools.calls).toBe(3);
+    await bus.shutdown();
+  }, 20_000);
+
+  test('applies maxIterations changes from settings at runtime', async () => {
+    class LoopModel implements ChatModel {
+      calls = 0;
+
+      async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
+        this.calls += 1;
+        if (request.tools && request.tools.length > 0) {
+          yield {
+            type: 'done',
+            result: {
+              content: '',
+              thinking: '',
+              toolCalls: [toolCall('call_runtime', 'time', '{"timezone":"UTC"}')],
+              finishReason: 'tool_calls',
+            },
+          };
+          return;
+        }
+        yield { type: 'content', delta: 'runtime final' };
+        yield {
+          type: 'done',
+          result: { content: 'runtime final', thinking: '', toolCalls: [], finishReason: 'stop' },
+        };
+      }
+    }
+
+    const model = new LoopModel();
+    const { bus, agent } = await setup(model, { maxIterations: 8 });
+    bus.publish(
+      new SettingsUpdated({
+        settings: { maxIterations: 2 } as SettingsSnapshot,
+      }),
+    );
+    await bus.idle();
+    bus.publish(new UserTurnRequested({ sessionId: 's-runtime', userText: 'loop' }));
+    await agent.whenIdle();
+    await bus.idle();
+    expect(model.calls).toBe(3);
     await bus.shutdown();
   }, 20_000);
 });

@@ -59,6 +59,8 @@ export class ExecuteTool extends Request<ToolResult> {
   args: Record<string, unknown>;
   ctx?: ToolExecutionContext;
   timeoutSeconds: number;
+  /** Caller cancellation signal. */
+  signal?: AbortSignal;
 
   constructor(
     init: {
@@ -66,13 +68,22 @@ export class ExecuteTool extends Request<ToolResult> {
       args?: Record<string, unknown>;
       ctx?: ToolExecutionContext;
       timeoutSeconds?: number;
-    } & { sessionId?: string; turnId?: string; traceId?: string } = {},
+      signal?: AbortSignal;
+    } & {
+      sessionId?: string;
+      turnId?: string;
+      traceId?: string;
+      agentId?: string;
+      parentAgentId?: string;
+      teamId?: string;
+    } = {},
   ) {
     super(init);
     this.name = init.name ?? '';
     this.args = init.args ?? {};
     this.ctx = init.ctx;
     this.timeoutSeconds = init.timeoutSeconds ?? 180;
+    this.signal = init.signal;
   }
 }
 
@@ -98,6 +109,26 @@ export class RegisterTool extends Request<void> {
     this.jsonSchema = init.jsonSchema ?? {};
     this.callable = init.callable;
     this.metadata = init.metadata ?? {};
+  }
+}
+
+export class SetAgentPermissions extends Request<void> {
+  override agentId: string;
+  allowed?: string[];
+  denied?: string[];
+
+  constructor(
+    init: {
+      agentId?: string;
+      allowed?: string[];
+      denied?: string[];
+      sessionId?: string;
+    } = {},
+  ) {
+    super(init);
+    this.agentId = init.agentId ?? '';
+    this.allowed = init.allowed;
+    this.denied = init.denied;
   }
 }
 

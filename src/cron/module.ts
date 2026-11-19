@@ -45,6 +45,7 @@ export class CronModule implements Module {
   private readonly registerTools: boolean;
   private readonly bindSessionId: string;
   private readonly pending = new Map<string, PendingFuture>();
+  private readonly sessionLocks = new Map<string, Promise<void>>();
   private sessionId = '';
   private bus: AsyncEventBus | null = null;
 
@@ -119,8 +120,7 @@ export class CronModule implements Module {
     const bus = this.bus;
     if (!bus) return Promise.resolve('Error: cron module is not started');
     const effectiveSession = sessionId || this.sessionId;
-
-    return new Promise<string>((resolve) => {
+    const runTurn = () => new Promise<string>((resolve) => {
       const timer = setTimeout(() => {
         this.pending.delete(streamId);
         resolve('Error: cron turn timed out after 600s');
@@ -145,6 +145,28 @@ export class CronModule implements Module {
           },
         }),
       );
+    });
+    return this.withSessionLock(effectiveSession, runTurn).then(async (value) => {
+      const job = this.manager.getJob(jobId);
+      if (job && !job.sessionId && effectiveSession) {
+        await this.manager.bindSession(jobId, effectiveSession).catch(() => undefined);
+      }
+      return value;
+    });
+  }
+
+  /** Serialize cron turns per session (DSH-style per-session lock). */
+  private withSessionLock<T>(sessionId: string, task: () => Promise<T>): Promise<T> {
+    const key = sessionId || '__unbound__';
+    const previous = this.sessionLocks.get(key) ?? Promise.resolve();
+    const run = previous.catch(() => undefined).then(task);
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.sessionLocks.set(key, tail);
+    return run.finally(() => {
+      if (this.sessionLocks.get(key) === tail) this.sessionLocks.delete(key);
     });
   }
 

@@ -126,6 +126,14 @@ export class CronManager {
     return job.id;
   }
 
+  async bindSession(jobId: string, sessionId: string): Promise<boolean> {
+    const job = this.jobs.get(jobId);
+    if (!job || !sessionId || job.sessionId === sessionId) return false;
+    job.sessionId = sessionId;
+    await this.store.persist(job);
+    return true;
+  }
+
   async cancel(jobId: string): Promise<boolean> {
     const job = this.jobs.get(jobId);
     this.clearTimer(jobId);

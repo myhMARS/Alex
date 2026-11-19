@@ -20,8 +20,19 @@ import {
 import { CronJobEvent, ListCronJobs } from '../src/kernel/contracts/cron';
 import { GetMCPStatus, GetToolCatalog, ListDirectory } from '../src/kernel/contracts/tools';
 import { ListSkills } from '../src/kernel/contracts/skills';
-import { ListSessions, LoadSession } from '../src/kernel/contracts/session';
-import { ReplaceMemory, GetContext, GetMemoryStatus } from '../src/kernel/contracts/memory';
+import { GetPromptInfo } from '../src/kernel/contracts/prompt';
+import {
+  AgentTaskFinished,
+  ListAgentMessages,
+  ListAgents,
+  ListAgentTasks,
+} from '../src/kernel/contracts/agents';
+import {
+  GetSessionProjection,
+  ListSessions,
+  LoadSession,
+  ReplaceSessionEvents,
+} from '../src/kernel/contracts/session';
 import {
   GetSystemPrompt,
   SetModelEffort,
@@ -33,7 +44,7 @@ import {
   type SettingsSnapshot,
 } from '../src/kernel/contracts/settings';
 import { StoreModule } from '../src/modules/store/module';
-import { MemoryModule } from '../src/modules/memory/module';
+import { SessionModule } from '../src/session/module';
 import { assistantMessage, userMessage } from '../src/kernel/dto/message';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -216,18 +227,782 @@ describe('TuiModule as a bus module', () => {
     await bus.shutdown();
   });
 
+  test('agents page shows registered agents and tasks', async () => {
+    const bus = new AsyncEventBus();
+    bus.provide(ListAgents, () => [
+      {
+        agentId: 'main',
+        parentAgentId: '',
+        teamId: 'default',
+        sessionId: 's1',
+        role: 'lead',
+        status: 'idle',
+      },
+      {
+        agentId: 'worker-1',
+        parentAgentId: 'main',
+        teamId: 'default',
+        sessionId: 's2',
+        role: 'worker',
+        status: 'running',
+      },
+    ]);
+    bus.provide(ListAgentTasks, () => [
+      {
+        taskId: 'task-1',
+        agentId: 'worker-1',
+        sessionId: 's2',
+        prompt: 'work',
+        status: 'completed',
+        result: 'done',
+        error: '',
+        startedAt: 1,
+        finishedAt: 2,
+      },
+    ]);
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+    await tui.showPage('agents');
+    const page = tui.getSnapshot().page;
+    expect(page?.title).toBe('Agent Team');
+    expect(page?.body).toContain('main');
+    expect(page?.body).toContain('worker-1');
+    expect(page?.body).toContain('task-1');
+    expect(page?.body).toContain('done');
+    await bus.shutdown();
+  });
+
+  test('agents page refreshes when task events arrive', async () => {
+    const bus = new AsyncEventBus();
+    let tasks: Array<Record<string, unknown>> = [];
+    bus.provide(ListAgents, () => [
+      {
+        agentId: 'worker-1',
+        parentAgentId: 'main',
+        teamId: 'default',
+        sessionId: 's1',
+        role: 'worker',
+        status: 'idle',
+      },
+    ]);
+    bus.provide(ListAgentTasks, () => tasks as never);
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+    await tui.showPage('agents');
+    expect(tui.getSnapshot().page?.body).toContain('（无任务）');
+
+    tasks = [
+      {
+        taskId: 'task-live',
+        agentId: 'worker-1',
+        sessionId: 's1',
+        prompt: 'work',
+        status: 'completed',
+        result: 'live result',
+        error: '',
+        startedAt: 1,
+        finishedAt: 2,
+      },
+    ];
+    bus.publish(
+      new AgentTaskFinished({
+        task: {
+          taskId: 'task-live',
+          agentId: 'worker-1',
+          sessionId: 's1',
+          prompt: 'work',
+          status: 'completed',
+          result: 'live result',
+          error: '',
+          startedAt: 1,
+          finishedAt: 2,
+        },
+      }),
+    );
+    await bus.idle();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(tui.getSnapshot().page?.body).toContain('task-live');
+    expect(tui.getSnapshot().page?.body).toContain('live result');
+    await bus.shutdown();
+  });
+
+  test('mailbox page shows unread and read messages', async () => {
+    const bus = new AsyncEventBus();
+    bus.provide(ListAgents, () => [
+      {
+        agentId: 'worker-1',
+        parentAgentId: 'main',
+        teamId: 'default',
+        sessionId: 's1',
+        role: 'worker',
+        status: 'idle',
+      },
+    ]);
+    bus.provide(ListAgentMessages, () => [
+      {
+        messageId: 'm1',
+        fromAgentId: 'main',
+        toAgentId: 'worker-1',
+        teamId: 'default',
+        content: 'unread task',
+        at: '2026-01-01T00:00:00Z',
+        read: false,
+      },
+      {
+        messageId: 'm2',
+        fromAgentId: 'main',
+        toAgentId: 'worker-1',
+        teamId: 'default',
+        content: 'old task',
+        at: '2026-01-01T00:00:01Z',
+        read: true,
+      },
+    ]);
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+    await tui.showPage('mailbox');
+    const page = tui.getSnapshot().page;
+    expect(page?.title).toBe('Agent Mailbox');
+    expect(page?.body).toContain('1 unread');
+    expect(page?.body).toContain('unread task');
+    expect(page?.body).toContain('✓ main: old task');
+    await bus.shutdown();
+  });
+
+  test('lineage page renders agent and session trees', async () => {
+    const bus = new AsyncEventBus();
+    bus.provide(ListAgents, () => [
+      {
+        agentId: 'main',
+        parentAgentId: '',
+        teamId: 'default',
+        sessionId: 'session-main',
+        role: 'lead',
+        status: 'idle',
+      },
+      {
+        agentId: 'worker-1',
+        parentAgentId: 'main',
+        teamId: 'default',
+        sessionId: 'session-worker',
+        role: 'worker',
+        status: 'idle',
+      },
+    ]);
+    bus.provide(ListSessions, () => [
+      {
+        sessionId: 'session-main',
+        createdAt: '2026-01-01T00:00:00Z',
+        firstMessage: 'main',
+        messageCount: 2,
+        agentId: 'main',
+      },
+      {
+        sessionId: 'session-fork',
+        createdAt: '2026-01-01T00:00:01Z',
+        firstMessage: 'fork',
+        messageCount: 3,
+        parentSessionId: 'session-main',
+        forkBoundarySeq: 4,
+        agentId: 'main',
+      },
+      {
+        sessionId: 'session-worker',
+        createdAt: '2026-01-01T00:00:02Z',
+        firstMessage: 'worker',
+        messageCount: 1,
+        agentId: 'worker-1',
+      },
+    ]);
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+    await tui.showPage('lineage');
+    const body = tui.getSnapshot().page?.body ?? '';
+    expect(tui.getSnapshot().page?.title).toBe('Team / Session Lineage');
+    expect(body).toContain('- main [lead]');
+    expect(body).toContain('  - worker-1 [worker]');
+    expect(body).toContain('- session-fork @4 agent=main');
+    expect(body).toContain('  - session-fork @4 agent=main');
+    await bus.shutdown();
+  });
+
+  test('tasks page shows task details', async () => {
+    const bus = new AsyncEventBus();
+    bus.provide(ListAgentTasks, () => [
+      {
+        taskId: 'task-detail',
+        agentId: 'worker-1',
+        sessionId: 'session-worker',
+        parentSessionId: 'session-main',
+        prompt: 'do detail work',
+        status: 'completed',
+        result: 'detail result',
+        error: '',
+        startedAt: 1,
+        finishedAt: 2,
+      },
+    ]);
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+    await tui.showPage('tasks');
+    const body = tui.getSnapshot().page?.body ?? '';
+    expect(tui.getSnapshot().page?.title).toBe('Agent Tasks');
+    expect(body).toContain('task-detail [completed]');
+    expect(body).toContain('parent=session-main worker=session-worker');
+    expect(body).toContain('result: detail result');
+    await bus.shutdown();
+  });
+
+  test('team filter scopes agents and tasks', async () => {
+    const bus = new AsyncEventBus();
+    let requestedTeam = '';
+    bus.provide(ListAgents, (req) => {
+      requestedTeam = req.teamId;
+      return [
+        {
+          agentId: 'a1',
+          parentAgentId: '',
+          teamId: 'team-a',
+          sessionId: 's1',
+          role: 'lead',
+          status: 'idle',
+        },
+      ];
+    });
+    bus.provide(ListSessions, () => [
+      {
+        sessionId: 'session-a',
+        createdAt: '2026-01-01T00:00:00Z',
+        firstMessage: 'a',
+        messageCount: 1,
+        agentId: 'a1',
+      },
+      {
+        sessionId: 'session-b',
+        createdAt: '2026-01-01T00:00:01Z',
+        firstMessage: 'b',
+        messageCount: 1,
+        agentId: 'b1',
+      },
+    ]);
+    bus.provide(ListAgentTasks, () => [
+      {
+        taskId: 'task-a',
+        agentId: 'a1',
+        sessionId: 's1',
+        teamId: 'team-a',
+        prompt: 'a',
+        status: 'completed',
+        result: 'a',
+        error: '',
+        startedAt: 1,
+        finishedAt: 2,
+      },
+      {
+        taskId: 'task-b',
+        agentId: 'b1',
+        sessionId: 's2',
+        teamId: 'team-b',
+        prompt: 'b',
+        status: 'completed',
+        result: 'b',
+        error: '',
+        startedAt: 1,
+        finishedAt: 2,
+      },
+    ]);
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+    tui.setTeamFilter('team-a');
+    await tui.showPage('tasks');
+    let body = tui.getSnapshot().page?.body ?? '';
+    expect(body).toContain('task-a');
+    expect(body).not.toContain('task-b');
+    await tui.showPage('agents');
+    expect(requestedTeam).toBe('team-a');
+    tui.setTeamFilter('');
+    await tui.showPage('agents');
+    expect(requestedTeam).toBe('');
+    await bus.shutdown();
+  });
+
+  test('teams page summarizes agents and tasks per team', async () => {
+    const bus = new AsyncEventBus();
+    bus.provide(ListAgents, () => [
+      {
+        agentId: 'a1',
+        parentAgentId: '',
+        teamId: 'team-a',
+        sessionId: 's1',
+        role: 'lead',
+        status: 'idle',
+      },
+      {
+        agentId: 'b1',
+        parentAgentId: '',
+        teamId: 'team-b',
+        sessionId: 's2',
+        role: 'lead',
+        status: 'running',
+      },
+    ]);
+    bus.provide(ListSessions, () => [
+      {
+        sessionId: 'session-a',
+        createdAt: '2026-01-01T00:00:00Z',
+        firstMessage: 'a',
+        messageCount: 1,
+        agentId: 'a1',
+      },
+      {
+        sessionId: 'session-b',
+        createdAt: '2026-01-01T00:00:01Z',
+        firstMessage: 'b',
+        messageCount: 1,
+        agentId: 'b1',
+      },
+    ]);
+    bus.provide(ListAgentTasks, () => [
+      {
+        taskId: 'task-a',
+        agentId: 'a1',
+        sessionId: 's1',
+        teamId: 'team-a',
+        prompt: 'a',
+        status: 'completed',
+        result: 'a',
+        error: '',
+        startedAt: 1,
+        finishedAt: 2,
+      },
+      {
+        taskId: 'task-b',
+        agentId: 'b1',
+        sessionId: 's2',
+        teamId: 'team-b',
+        prompt: 'b',
+        status: 'running',
+        result: '',
+        error: '',
+        startedAt: 1,
+        finishedAt: null,
+      },
+    ]);
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+    await tui.showPage('teams');
+    const body = tui.getSnapshot().page?.body ?? '';
+    expect(tui.getSnapshot().page?.title).toBe('Teams');
+    expect(body).toContain('team-a: agents=1 running=0 tasks=1 task_running=0 completed=1');
+    expect(body).toContain('team-b: agents=1 running=1 tasks=1 task_running=1 completed=0');
+    await bus.shutdown();
+  });
+
+  test('task detail page links to parent session events', async () => {
+    const bus = new AsyncEventBus();
+    bus.provide(ListAgentTasks, () => [
+      {
+        taskId: 'task-detail-2',
+        agentId: 'worker-1',
+        sessionId: 'session-worker',
+        parentSessionId: 'session-main',
+        prompt: 'work',
+        status: 'failed',
+        result: '',
+        error: 'boom',
+        failureReason: 'agent_error',
+        startedAt: 1,
+        finishedAt: 2,
+      },
+    ]);
+    bus.provide(GetSessionProjection, () => ({
+      messages: [],
+      rawMessages: [],
+      events: [
+        {
+          seq: 3,
+          type: 'agent_task_started',
+          at: '2026-01-01T00:00:00Z',
+          data: { taskId: 'task-detail-2' },
+        },
+        {
+          seq: 4,
+          type: 'agent_task_finished',
+          at: '2026-01-01T00:00:01Z',
+          data: { taskId: 'task-detail-2' },
+        },
+      ],
+      turns: [],
+      messageHeaderSeqs: [],
+      customEvents: [],
+    }));
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+    await tui.showTaskDetail('task-detail-2');
+    const page = tui.getSnapshot().page;
+    expect(page?.title).toBe('Task Detail');
+    expect(page?.body).toContain('status: failed');
+    expect(page?.body).toContain('failure_reason: agent_error');
+    expect(page?.body).toContain('seq=3 agent_task_started');
+    expect(page?.body).toContain('seq=4 agent_task_finished');
+    await bus.shutdown();
+  });
+
+  test('filters conversation turns by selected agent', async () => {
+    const bus = new AsyncEventBus();
+    bus.provide(ListAgents, () => [
+      {
+        agentId: 'main',
+        parentAgentId: '',
+        teamId: 'default',
+        sessionId: 'session-main',
+        role: 'lead',
+        status: 'idle',
+      },
+      {
+        agentId: 'worker-1',
+        parentAgentId: 'main',
+        teamId: 'default',
+        sessionId: 'session-worker',
+        role: 'worker',
+        status: 'running',
+      },
+    ]);
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    bus.publish(
+      new TurnStarted({
+        agentId: 'main',
+        sessionId: 'session-main',
+        turnId: 'turn-main',
+        kind: 'user',
+        userInput: 'main question',
+        attachments: [],
+      }),
+    );
+    bus.publish(
+      new TokenEmitted({
+        agentId: 'main',
+        sessionId: 'session-main',
+        turnId: 'turn-main',
+        delta: 'main answer',
+        streamId: '',
+      }),
+    );
+    bus.publish(
+      new TurnStarted({
+        agentId: 'worker-1',
+        sessionId: 'session-worker',
+        turnId: 'turn-worker',
+        kind: 'user',
+        userInput: 'worker question',
+        attachments: [],
+      }),
+    );
+    bus.publish(
+      new TokenEmitted({
+        agentId: 'worker-1',
+        sessionId: 'session-worker',
+        turnId: 'turn-worker',
+        delta: 'worker answer',
+        streamId: '',
+      }),
+    );
+    await bus.idle();
+
+    expect(tui.getSnapshot().turns.map((turn) => turn.turnId)).toEqual(['turn-main']);
+    expect(tui.getSnapshot().sidebarAgents).toHaveLength(2);
+    expect(tui.getSnapshot().viewAgentId).toBe('main');
+
+    tui.setViewAgent('worker-1');
+    const workerTurns = tui.getSnapshot().turns;
+    expect(workerTurns.map((turn) => turn.turnId)).toEqual(['turn-worker']);
+    expect(workerTurns[0]?.content).toBe('worker answer');
+    expect(tui.getSnapshot().viewAgentId).toBe('worker-1');
+
+    tui.setViewAgent('main');
+    expect(tui.getSnapshot().turns.map((turn) => turn.turnId)).toEqual(['turn-main']);
+    await tui.setSidebarTab('agents');
+    expect(tui.getSnapshot().sidebarTab).toBe('agents');
+    await bus.shutdown();
+  });
+
+  test('loads a worker session and targets the selected agent', async () => {
+    const bus = new AsyncEventBus();
+    const events = [
+      {
+        seq: 1,
+        type: 'turn_started',
+        at: '2026-01-01T00:00:00Z',
+        data: {
+          turnId: 'tw',
+          userInput: 'worker old question',
+          kind: 'user',
+          agentId: 'worker-1',
+        },
+      },
+      {
+        seq: 2,
+        type: 'user_message',
+        at: '2026-01-01T00:00:00Z',
+        data: { message: { role: 'user', content: 'worker old question' } },
+      },
+      {
+        seq: 3,
+        type: 'assistant_message',
+        at: '2026-01-01T00:00:01Z',
+        data: { message: { role: 'assistant', content: 'worker old answer' } },
+      },
+    ];
+    bus.provide(LoadSession, () => ({
+      sessionId: 'worker-session',
+      agentId: 'worker-1',
+      events,
+      messages: [],
+      cronHistory: [],
+      formatVersion: 3,
+    }));
+    bus.provide(ReplaceSessionEvents, () => ({ replaced: events.length }));
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+
+    await tui.loadAgentSession('worker-1', 'worker-session');
+    expect(tui.getSnapshot().viewAgentId).toBe('worker-1');
+    expect(tui.getSnapshot().turns.some((turn) => turn.content.includes('worker old answer'))).toBe(
+      true,
+    );
+
+    const turns: UserTurnRequested[] = [];
+    await bus.subscribe(UserTurnRequested, (event) => {
+      turns.push(event);
+    });
+    tui.submitUserTurn('continue worker');
+    await bus.idle();
+    expect(turns[0]?.targetAgentId).toBe('worker-1');
+    expect(turns[0]?.sessionId).toBe('worker-session');
+    await bus.shutdown();
+  });
+
+  test('shows a toast when a session cannot be loaded', async () => {
+    const bus = new AsyncEventBus();
+    bus.provide(LoadSession, () => null);
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+    expect(await tui.loadSession('missing-session')).toBe(false);
+    expect(tui.getSnapshot().toast).toContain('会话不存在');
+    await bus.shutdown();
+  });
+
+  test('newSession creates a fresh main session and clears the view', async () => {
+    const bus = new AsyncEventBus();
+    const session = new SessionModule();
+    await session.start(bus);
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+    tui.setSessionId('old-session');
+    bus.publish(
+      new TurnStarted({
+        sessionId: 'old-session',
+        turnId: 'old-turn',
+        kind: 'user',
+        userInput: 'old question',
+      }),
+    );
+    bus.publish(
+      new TokenEmitted({
+        sessionId: 'old-session',
+        turnId: 'old-turn',
+        delta: 'old answer',
+      }),
+    );
+    await bus.idle();
+    expect(tui.getSnapshot().turns).toHaveLength(1);
+
+    const next = await tui.newSession();
+    expect(next).toMatch(/^session-/);
+    expect(next).not.toBe('old-session');
+    expect(tui.getSnapshot().sessionId).toBe(next);
+    expect(tui.getSnapshot().turns).toEqual([]);
+    expect(tui.getSnapshot().viewAgentId).toBe('main');
+    const projection = await bus.request(
+      new GetSessionProjection({ sessionId: next }),
+    );
+    expect(projection.events.some((event) => event.type === 'session_created')).toBe(
+      true,
+    );
+    await bus.shutdown();
+  });
+
+  test('restores full main history after switching to a worker and back', async () => {
+    const bus = new AsyncEventBus();
+    bus.provide(ListAgents, () => [
+      {
+        agentId: 'main',
+        parentAgentId: '',
+        teamId: 'default',
+        sessionId: 'main-session',
+        role: 'lead',
+        status: 'idle',
+      },
+      {
+        agentId: 'worker-1',
+        parentAgentId: 'main',
+        teamId: 'default',
+        sessionId: 'worker-session',
+        role: 'worker',
+        status: 'idle',
+      },
+    ]);
+    const mainEvents = [
+      {
+        seq: 1,
+        type: 'turn_started',
+        at: '2026-01-01T00:00:00Z',
+        data: {
+          turnId: 'main-turn',
+          userInput: 'main question',
+          kind: 'user',
+          agentId: 'main',
+        },
+      },
+      {
+        seq: 2,
+        type: 'user_message',
+        at: '2026-01-01T00:00:00Z',
+        data: { message: { role: 'user', content: 'main question' } },
+      },
+      {
+        seq: 3,
+        type: 'assistant_message',
+        at: '2026-01-01T00:00:01Z',
+        data: { message: { role: 'assistant', content: 'main answer' } },
+      },
+    ];
+    const workerEvents = [
+      {
+        seq: 1,
+        type: 'turn_started',
+        at: '2026-01-01T00:00:02Z',
+        data: {
+          turnId: 'worker-turn',
+          userInput: 'worker question',
+          kind: 'user',
+          agentId: 'worker-1',
+        },
+      },
+      {
+        seq: 2,
+        type: 'user_message',
+        at: '2026-01-01T00:00:02Z',
+        data: { message: { role: 'user', content: 'worker question' } },
+      },
+      {
+        seq: 3,
+        type: 'assistant_message',
+        at: '2026-01-01T00:00:03Z',
+        data: { message: { role: 'assistant', content: 'worker answer' } },
+      },
+    ];
+    bus.provide(LoadSession, (req) => {
+      const isWorker = req.targetSessionId === 'worker-session';
+      return {
+        sessionId: isWorker ? 'worker-session' : 'main-session',
+        agentId: isWorker ? 'worker-1' : 'main',
+        events: isWorker ? workerEvents : mainEvents,
+        messages: [],
+        cronHistory: [],
+        formatVersion: 3,
+      };
+    });
+    bus.provide(ReplaceSessionEvents, (req) => ({ replaced: req.events.length }));
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+    tui.setSessionId('main-session');
+    await tui.selectAgent('main');
+    expect(tui.getSnapshot().turns.some((turn) => turn.content.includes('main answer'))).toBe(
+      true,
+    );
+
+    await tui.selectAgent('worker-1');
+    expect(tui.getSnapshot().viewAgentId).toBe('worker-1');
+    expect(tui.getSnapshot().turns.some((turn) => turn.content.includes('worker answer'))).toBe(
+      true,
+    );
+
+    await tui.selectAgent('main');
+    expect(tui.getSnapshot().viewAgentId).toBe('main');
+    expect(tui.getSnapshot().sessionId).toBe('main-session');
+    const contents = tui.getSnapshot().turns.map((turn) => turn.content).join('\n');
+    expect(contents).toContain('main answer');
+    expect(contents).not.toContain('worker answer');
+    await bus.shutdown();
+  });
+
+  test('prompt page shows the assembled prompt sections', async () => {
+    const bus = new AsyncEventBus();
+    bus.provide(GetPromptInfo, () => ({
+      userPromptPath: '/tmp/system-prompt.md',
+      userPrompt: 'USER',
+      agentsPath: '/tmp/AGENTS.md',
+      sections: [
+        { id: 'base', content: 'USER', order: 0, source: '/tmp/system-prompt.md' },
+        { id: 'tools', title: 'Tools', content: 'tool body', order: 20, source: 'tools' },
+      ],
+      prompt: 'USER\n\ntool body',
+    }));
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+    await tui.showPage('prompt');
+    const page = tui.getSnapshot().page;
+    expect(page?.title).toBe('System Prompt');
+    expect(page?.body).toContain('/tmp/system-prompt.md');
+    expect(page?.body).toContain('/tmp/AGENTS.md');
+    expect(page?.body).toContain('tools');
+    expect(page?.body).toContain('tool body');
+    await bus.shutdown();
+  });
+
   test('context page shows memory window usage and recent messages', async () => {
     const bus = new AsyncEventBus();
-    bus.provide(GetContext, () => [
-      userMessage('hello there'),
-      assistantMessage('hi, how can I help?'),
-      userMessage('run the tests'),
-    ]);
-    bus.provide(GetMemoryStatus, () => ({
-      messageCount: 3,
-      maxTokens: 128_000,
-      estimatedTokens: 30,
+    bus.provide(GetSessionProjection, () => ({
+      messages: [
+        userMessage('hello there'),
+        assistantMessage('hi, how can I help?'),
+        userMessage('run the tests'),
+      ],
+      rawMessages: [],
+      events: [],
+      turns: [],
+      messageHeaderSeqs: [],
+      customEvents: [],
+    }));
+    bus.provide(GetSettings, () => ({
+      provider: 'deepseek',
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-chat',
+      apiKey: '',
       maxContextTokens: 128_000,
+      maxOutputTokens: 4_096,
+      compactThresholdRatio: 0.8,
+      thinkingEnabled: true,
+      effort: 'high',
+      imageMaxDimension: 2_048,
     }));
     const tui = new TuiModule();
     await tui.start(bus);
@@ -270,8 +1045,10 @@ describe('TuiModule as a bus module', () => {
       maxContextTokens: 131_072,
       maxOutputTokens: 4_096,
       compactThresholdRatio: 0.8,
+      imageMaxDimension: 2_048,
       thinkingEnabled: true,
       effort: 'high',
+      maxIterations: 10,
     };
     bus.provide(GetSettings, () => ({ ...current }));
     bus.provide(UpdateSettings, (req) => {
@@ -294,6 +1071,7 @@ describe('TuiModule as a bus module', () => {
     expect(body).toContain('4,096');
     expect(body).toContain('thinking      on');
     expect(body).toContain('effort        high');
+    expect(body).toContain('max_iterations 10');
 
     const ok = await tui.updateSetting('max_context', '1M');
     expect(ok.ok).toBe(true);
@@ -308,6 +1086,13 @@ describe('TuiModule as a bus module', () => {
 
     const badThreshold = await tui.updateSetting('compact_threshold', '2');
     expect(badThreshold.ok).toBe(false);
+
+    const iterations = await tui.updateSetting('max_iterations', '3');
+    expect(iterations.ok).toBe(true);
+    expect(current.maxIterations).toBe(3);
+    expect(tui.getSnapshot().page?.body).toContain('max_iterations 3');
+    const badIterations = await tui.updateSetting('max_iterations', '0');
+    expect(badIterations.ok).toBe(false);
 
     const max = await tui.setEffort('max');
     expect(max.ok).toBe(true);
@@ -388,14 +1173,50 @@ describe('TuiModule as a bus module', () => {
     await bus.shutdown();
   });
 
+  test('session log page shows event types and payloads', async () => {
+    const bus = new AsyncEventBus();
+    bus.provide(LoadSession, () => ({
+      sessionId: 's1',
+      messageCount: 1,
+      events: [
+        {
+          seq: 1,
+          type: 'user_message',
+          at: '2026-01-01T00:00:00Z',
+          data: { message: { role: 'user', content: 'hello' } },
+        },
+        {
+          seq: 2,
+          type: 'replace_messages',
+          at: '2026-01-01T00:00:01Z',
+          data: { messages: [{ role: 'user', content: 'summary' }] },
+        },
+      ],
+      cronHistory: [],
+      formatVersion: 3,
+    }));
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+    tui.setSessionId('s1');
+    await tui.showPage('log');
+    const page = tui.getSnapshot().page;
+    const body = page?.body ?? '';
+    expect(page?.title).toBe('会话事件日志');
+    expect(body).toContain('共 2 个事件');
+    expect(body).toContain('user_message');
+    expect(body).toContain('replace_messages');
+    await bus.shutdown();
+  });
+
   test('loads a persisted session, replaces memory and rebuilds the view', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'alex-ts-tui-resume-'));
     tempRoots.push(dir);
     const bus = new AsyncEventBus();
-    const memory = new MemoryModule();
+    const session = new SessionModule();
     const store = new StoreModule({ sessionsDir: join(dir, 'sessions') });
     const tui = new TuiModule();
-    await memory.start(bus);
+    await session.start(bus);
     await store.start(bus);
     await tui.start(bus);
     await bus.start();
@@ -415,7 +1236,9 @@ describe('TuiModule as a bus module', () => {
     expect(tui.getSnapshot().turns[0]?.content).toBe('old answer');
     expect(tui.getSnapshot().page).toBeNull();
 
-    const history = await bus.request(new GetContext({ sessionId: 'sess-a' }));
+    const history = (
+      await bus.request(new GetSessionProjection({ sessionId: 'sess-a' }))
+    ).messages;
     expect(history.map((message) => message.content)).toEqual(['old question', 'old answer']);
     await bus.shutdown();
   });

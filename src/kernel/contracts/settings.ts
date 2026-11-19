@@ -18,6 +18,10 @@ export interface SettingsSnapshot {
   thinkingEnabled: boolean;
   /** Reasoning effort when thinking is enabled. */
   effort: ModelEffort;
+  /** Max long edge for request-time image variants (px). */
+  imageMaxDimension: number;
+  /** Maximum tool-call iterations per agent turn. */
+  maxIterations: number;
 }
 
 export class GetSettings extends Request<SettingsSnapshot> {}

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 import { AsyncEventBus } from '../src/kernel/bus';
 import { AgentModule } from '../src/modules/agent/module';
-import { MemoryModule } from '../src/modules/memory/module';
+import { SessionModule } from '../src/session/module';
 import { ToolsModule } from '../src/tools/module';
 import { PermissionPolicy, AuditLogger } from '../src/tools/permissions';
 import { SkillStore } from '../src/skill/store';
@@ -14,7 +14,7 @@ import { createSkill } from '../src/skill/models';
 import type { ChatModel, ChatRequest, ChatStreamEvent, ToolCall } from '../src/llm/client';
 import { SkillLoaded, SkillsReflected } from '../src/kernel/contracts/skills';
 import { TurnCompleted, UserTurnRequested } from '../src/kernel/contracts/chat';
-import { GetContext } from '../src/kernel/contracts/memory';
+import { GetSessionProjection } from '../src/kernel/contracts/session';
 
 const tempDirs: string[] = [];
 
@@ -82,7 +82,7 @@ async function setup(options: { seed: boolean; agentModel: ChatModel; reflector?
   const dir = await mkdtemp(join(tmpdir(), 'alex-ts-agent-skill-'));
   tempDirs.push(dir);
   const bus = new AsyncEventBus();
-  const memory = new MemoryModule();
+  const session = new SessionModule();
   const tools = new ToolsModule({
     roots: [dir],
     policy: new PermissionPolicy({ allowed: ['read', 'network'], env: {} }),
@@ -103,7 +103,7 @@ async function setup(options: { seed: boolean; agentModel: ChatModel; reflector?
   }
   const skills = new SkillModule({ store, model: options.reflector });
   const agent = new AgentModule({ model: options.agentModel, systemPrompt: 'SYS' });
-  await memory.start(bus);
+  await session.start(bus);
   await tools.start(bus);
   await skills.start(bus);
   await agent.start(bus);
@@ -142,7 +142,9 @@ describe('Agent + Skill integration', () => {
 
     // A skill was loaded, so auto-reflection must not run.
     expect(reflected).toHaveLength(0);
-    const history = await bus.request(new GetContext({ sessionId: 's1' }));
+    const history = (
+      await bus.request(new GetSessionProjection({ sessionId: 's1' }))
+    ).messages;
     expect(history.map((message) => message.role)).toEqual([
       'user',
       'assistant',

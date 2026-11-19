@@ -3,8 +3,10 @@
 export * from './chat';
 export * from './tools';
 export * from './skills';
-export * from './memory';
 export * from './session';
+export * from './prompt';
+export * from './team';
+export * from './agents';
 export * from './cron';
 export { Event, Command, Request, type MessageContext, type RequestContext } from '../message';
 export type { MessageDTO } from '../dto/message';

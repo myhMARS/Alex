@@ -22,6 +22,7 @@ import {
   ListDirectory,
   ListFileTree,
   RegisterTool,
+  SetAgentPermissions,
   ToolApprovalRequested,
   ToolApprovalResolved,
   ToolsProvided,
@@ -29,6 +30,10 @@ import {
   type FileTreeEntry,
   type FileTreeSnapshot,
 } from '../kernel/contracts/tools';
+import {
+  RegisterPromptSection,
+  UnregisterPromptSection,
+} from '../kernel/contracts/prompt';
 import { ToolRegistry } from './registry';
 import type { Permission, Tool, ToolMetadata } from './tool';
 import { AuditLogger, PermissionPolicy } from './permissions';
@@ -97,6 +102,7 @@ export class ToolsModule implements Module {
   private readonly pluginDirs: string[];
   private readonly loadPluginsAtStart: boolean;
   private readonly pending = new Map<string, ApprovalResolver>();
+  private readonly agentPolicies = new Map<string, PermissionPolicy>();
   private readonly providerTools = new Map<string, { provider: string; spec: ToolSpec }>();
   private readonly providerNames = new Map<string, Set<string>>();
   private pluginResult: PluginLoadResult = { loaded: [], errors: [] };
@@ -123,9 +129,28 @@ export class ToolsModule implements Module {
     bus.provide(ListFileTree, (req) => this.listFileTree(req.maxDepth, req.maxEntries));
     bus.provide(ListDirectory, (req) => this.listDirectory(req.path, req.maxEntries));
     bus.provide(ExecuteTool, (req) => this.execute(req));
-    bus.provide(RegisterTool, (req) => this.registerExternal(req));
+    bus.provide(RegisterTool, (req) => {
+      this.registerExternal(req);
+      this.refreshPromptSection();
+    });
+    bus.provide(SetAgentPermissions, (req) => {
+      if (!req.agentId) return;
+      if (req.allowed === undefined && req.denied === undefined) {
+        this.agentPolicies.delete(req.agentId);
+        return;
+      }
+      this.agentPolicies.set(
+        req.agentId,
+        new PermissionPolicy({
+          allowed: req.allowed,
+          denied: req.denied,
+          env: {},
+        }),
+      );
+    });
     bus.provide(UnregisterTool, (req) => {
       this.registry.unregister(req.name);
+      this.refreshPromptSection();
     });
     await bus.subscribe(ToolApprovalResolved, (event) => {
       this.pending.get(event.reqId)?.(event.granted, event.remember);
@@ -133,6 +158,7 @@ export class ToolsModule implements Module {
     await bus.subscribe(ToolsProvided, (event) => {
       this.onToolsProvided(event.provider, event.specs);
     });
+    this.refreshPromptSection();
   }
 
   /** Merge tool specs announced by a provider (MCP, plugins, …). */
@@ -147,6 +173,35 @@ export class ToolsModule implements Module {
       names.add(spec.name);
     }
     this.providerNames.set(provider, names);
+    this.refreshPromptSection();
+  }
+
+  /** Publish/refresh the Tools section consumed by PromptModule. */
+  private refreshPromptSection(): void {
+    if (!this.bus) return;
+    const names = this.catalog().map((spec) => spec.name);
+    if (names.length === 0) {
+      this.bus.publish(new UnregisterPromptSection({ id: 'tools' }));
+      return;
+    }
+    const content = [
+      '## Tool Runtime',
+      '',
+      '- Only call tools when they are necessary for the task.',
+      '- Side-effect tools require user approval; read-only tools may run directly.',
+      `- Available tools: ${names.join(', ')}`,
+    ].join('\n');
+    this.bus.publish(
+      new RegisterPromptSection({
+        section: {
+          id: 'tools',
+          title: 'Tools',
+          content,
+          order: 20,
+          source: 'tools',
+        },
+      }),
+    );
   }
 
   async stop(): Promise<void> {
@@ -315,6 +370,10 @@ export class ToolsModule implements Module {
       return { name: req.name, error: `Unknown tool: ${req.name}` };
     }
 
+    if (req.signal?.aborted) {
+      return blocked(req.name, `tool '${req.name}' cancelled before execution`);
+    }
+
     const permission =
       local?.metadata?.requiredPermission ??
       (typeof provided?.spec.metadata?.requiredPermission === 'string'
@@ -322,8 +381,11 @@ export class ToolsModule implements Module {
         : undefined);
     const summarise = local?.metadata?.summarise;
 
+    const policy = req.agentId
+      ? this.agentPolicies.get(req.agentId) ?? this.policy
+      : this.policy;
     if (permission) {
-      const decision = this.policy.check(permission);
+      const decision = policy.check(permission);
       if (decision === 'deny') {
         await this.auditDecision(req.name, summarise, req, permission, 'denied', false);
         return blocked(req.name, `tool '${req.name}' blocked: permission '${permission}' explicitly denied`);
@@ -345,7 +407,7 @@ export class ToolsModule implements Module {
         if (!outcome.granted) {
           return blocked(req.name, `tool '${req.name}' blocked: user denied permission '${permission}'`);
         }
-        if (outcome.remember) this.policy.remember(permission);
+        if (outcome.remember) policy.remember(permission);
       }
     }
 
@@ -354,25 +416,36 @@ export class ToolsModule implements Module {
       sessionId: req.sessionId,
       turnId: req.turnId,
       source: 'user',
+      signal: req.signal,
+      metadata: {
+        agentId: req.agentId,
+        teamId: req.teamId,
+      },
     };
     const timeoutMs = Math.max(1, req.timeoutSeconds) * 1000;
     try {
       if (local) {
-        const output = await withTimeout(local.invoke(req.args, ctx), timeoutMs);
+        const output = await withAbort(
+          withTimeout(local.invoke(req.args, ctx), timeoutMs),
+          req.signal,
+        );
         return { name: local.name, output, runId };
       }
       const bus = this.bus;
       if (!bus) return { name: req.name, error: 'tools module is not started', runId };
-      const result = await withTimeout(
-        bus.request<InvokeProviderTool, ToolResult>(
-          new InvokeProviderTool({
-            provider: provided!.provider,
-            name: req.name,
-            args: req.args,
-            ctx,
-          }),
+      const result = await withAbort(
+        withTimeout(
+          bus.request<InvokeProviderTool, ToolResult>(
+            new InvokeProviderTool({
+              provider: provided!.provider,
+              name: req.name,
+              args: req.args,
+              ctx,
+            }),
+          ),
+          timeoutMs,
         ),
-        timeoutMs,
+        req.signal,
       );
       return { name: req.name, output: result.output, error: result.error, runId: result.runId ?? runId };
     } catch (error) {
@@ -440,9 +513,29 @@ export class ToolsModule implements Module {
       decision,
       remember,
       sessionId: req.sessionId,
+      agentId: req.agentId,
       preview: summarise?.(req.args) ?? defaultPreview(req.args),
     });
   }
+}
+
+function withAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(new Error('tool cancelled'));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(new Error('tool cancelled'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 function defaultPreview(args: Record<string, unknown>): string {

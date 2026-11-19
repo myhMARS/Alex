@@ -17,9 +17,11 @@ import type { Module } from '../../kernel/runtime';
 import type { AsyncEventBus } from '../../kernel/bus';
 import type { AttachmentDTO, MessageDTO } from '../../kernel/dto/message';
 import { buildUserContent } from '../../attachments/loader';
+import { resolveAttachmentRef, ATTACHMENT_URL_PREFIX } from '../../attachments/images';
 import type { ModelEffort } from '../../kernel/contracts/settings';
+import { SettingsUpdated } from '../../kernel/contracts/settings';
 import { assistantMessage, userMessage } from '../../kernel/dto/message';
-import type { ToolSpec } from '../../kernel/dto/tool';
+import type { ToolResult, ToolSpec } from '../../kernel/dto/tool';
 import type { SkillCard } from '../../kernel/dto/skill';
 import {
   LoadSkill,
@@ -32,6 +34,8 @@ import {
   TokenEmitted,
   GetSystemPrompt,
   SetModelEffort,
+  SetPromptPressure,
+  SetRequestHeader,
   TokenUsageReported,
   TurnCompleted,
   TurnFailed,
@@ -39,12 +43,7 @@ import {
   UserTurnRequested,
   type TurnKind,
 } from '../../kernel/contracts/chat';
-import {
-  AppendMessages,
-  GetContext,
-  ReplaceMemory,
-} from '../../kernel/contracts/memory';
-import { estimateMessageTokens } from '../memory/module';
+import { estimateMessageTokens } from '../../session/token-meter';
 import {
   CompactContext,
   CompactionFailed,
@@ -54,6 +53,20 @@ import {
   type CompactionResult,
 } from '../../kernel/contracts/compaction';
 import { CronTurnRequested } from '../../kernel/contracts/cron';
+import {
+  AgentTeamMessage,
+  AgentTeamMessageConsumed,
+  AgentTeamTaskCompleted,
+  AgentTeamTaskRequested,
+} from '../../kernel/contracts/team';
+import {
+  AppendSessionEvents,
+  GetSessionProjection,
+} from '../../kernel/contracts/session';
+import {
+  messageEvent,
+  replaceMessagesEvent,
+} from '../../session/projector';
 import {
   ExecuteTool,
   GetToolCatalog,
@@ -69,6 +82,7 @@ import type {
   ToolSchema,
 } from '../../llm/client';
 import { skillsSectionPrompt } from '../../prompts/skills-section';
+import { ensureToolCallResponses } from './tool-history';
 
 export interface RespondInput {
   text: string;
@@ -107,6 +121,25 @@ export interface AgentModuleOptions {
   compactRetainRatio?: number;
   thinkingEnabled?: boolean;
   effort?: ModelEffort;
+  /** Max long edge for request-time image variants (0 = canonical). */
+  imageMaxDimension?: number;
+  /** Agent-team identity; scopes published events and serial queues. */
+  agentId?: string;
+  parentAgentId?: string;
+  teamId?: string;
+  /** Whether an agent with an id also handles untargeted broadcast turns. */
+  acceptBroadcast?: boolean;
+}
+
+interface TurnCommandLike {
+  agentId: string;
+  targetAgentId: string;
+}
+
+interface TurnResult {
+  content: string;
+  ok: boolean;
+  error?: string;
 }
 
 interface TurnParams {
@@ -152,20 +185,29 @@ function errorText(error: unknown): string {
 
 export class AgentModule implements Module {
   readonly name = 'agent';
-  readonly dependencies: readonly string[] = ['memory', 'tools', 'skill'];
+  readonly dependencies: readonly string[] = ['tools', 'skill'];
 
   private readonly model: ChatModel | null;
   private readonly responder: Responder;
-  private readonly maxIterations: number;
+  private maxIterations: number;
   private readonly systemPrompt: string | undefined;
   private readonly autoReflect: boolean;
   private readonly contextWindowTokens: number;
   private readonly compactThresholdRatio: number;
   private readonly compactRetainRatio: number;
   private lastPromptTokens = 0;
+  private restoredHeader: Record<string, unknown> | null = null;
   private thinkingEnabled = true;
   private effort: ModelEffort = 'high';
-  private readonly tasks = new Set<Promise<void>>();
+  private readonly imageMaxDimension: number;
+  private readonly agentId: string;
+  private readonly parentAgentId: string;
+  private readonly teamId: string;
+  private readonly acceptBroadcast: boolean;
+  private readonly tasks = new Set<Promise<unknown>>();
+  private readonly turnAborts = new Map<string, AbortController>();
+  private readonly turnQueues = new Map<string, Promise<void>>();
+  private readonly disposers: Array<() => Promise<void>> = [];
   private bus: AsyncEventBus | null = null;
 
   constructor(options: AgentModuleOptions | Responder = {}) {
@@ -180,6 +222,11 @@ export class AgentModule implements Module {
       this.compactRetainRatio = 0.16;
       this.thinkingEnabled = true;
       this.effort = 'high';
+      this.imageMaxDimension = 0;
+      this.agentId = '';
+      this.parentAgentId = '';
+      this.teamId = '';
+      this.acceptBroadcast = true;
       return;
     }
     const config = options as AgentModuleOptions;
@@ -193,41 +240,146 @@ export class AgentModule implements Module {
     this.compactRetainRatio = config.compactRetainRatio ?? 0.16;
     this.thinkingEnabled = config.thinkingEnabled ?? true;
     this.effort = config.effort ?? 'high';
+    this.imageMaxDimension = config.imageMaxDimension ?? 0;
+    this.agentId = config.agentId ?? '';
+    this.parentAgentId = config.parentAgentId ?? '';
+    this.teamId = config.teamId ?? '';
+    this.acceptBroadcast = config.acceptBroadcast !== false;
   }
 
   async start(bus: AsyncEventBus): Promise<void> {
     this.bus = bus;
-    bus.provide(GetSystemPrompt, () => this.systemPrompt ?? '');
     bus.provide(CompactContext, (req) => this.compact(req.sessionId, 'manual'));
+    this.disposers.push(await bus.subscribe(SetPromptPressure, (event) => {
+      this.lastPromptTokens = Math.max(0, event.promptTokens);
+    }));
+    this.disposers.push(await bus.subscribe(SetRequestHeader, (event) => {
+      this.restoredHeader = event.header && Object.keys(event.header).length > 0
+        ? event.header
+        : null;
+    }));
+    this.disposers.push(await bus.subscribe(SettingsUpdated, (event) => {
+      const next = Math.max(1, Math.floor(event.settings.maxIterations));
+      if (Number.isFinite(next)) this.maxIterations = next;
+    }));
     bus.provide(SetModelEffort, (req) => {
       this.thinkingEnabled = req.thinkingEnabled;
       this.effort = req.effort;
       return { thinkingEnabled: this.thinkingEnabled, effort: this.effort };
     });
-    await bus.subscribe(UserTurnRequested, (cmd) => {
-      this.schedule(this.runCore({
-        sessionId: cmd.sessionId,
-        userText: cmd.userText,
-        kind: 'user',
-        streamId: '',
-        attachments: cmd.attachments,
-      }));
-    });
-    await bus.subscribe(CronTurnRequested, (cmd) => {
+    this.disposers.push(await bus.subscribe(UserTurnRequested, (cmd) => {
+      if (!this.acceptsCommand(cmd)) return;
+      this.enqueueTurn(cmd.sessionId, () =>
+        this.runCore({
+          sessionId: cmd.sessionId,
+          userText: cmd.userText,
+          kind: 'user',
+          streamId: '',
+          attachments: cmd.attachments,
+        }),
+      );
+    }));
+    this.disposers.push(await bus.subscribe(AgentTeamMessage, (event) => {
+      if (!event.targetAgentId || event.targetAgentId !== this.agentId) return;
+      if (!event.content.trim()) return;
+      const task = this.enqueueTurn(
+        event.sessionId || `${this.agentId}-session`,
+        () =>
+          this.runCore({
+            sessionId: event.sessionId || `${this.agentId}-session`,
+            userText: event.content,
+            kind: 'user',
+            streamId: '',
+            attachments: [],
+          }),
+      )
+        .then((outcome) => {
+          this.requireBus().publish(
+            new AgentTeamMessageConsumed({
+              ...this.agentContext(),
+              messageId: event.messageId,
+              ok: outcome.ok,
+              error: outcome.error,
+            }),
+          );
+        })
+        .catch(() => {
+          this.requireBus().publish(
+            new AgentTeamMessageConsumed({
+              ...this.agentContext(),
+              messageId: event.messageId,
+              ok: false,
+              error: 'agent turn failed',
+            }),
+          );
+        });
+      this.schedule(task);
+    }, this.agentId ? { agentId: this.agentId } : {}));
+    this.disposers.push(await bus.subscribe(AgentTeamTaskRequested, (command) => {
+      if (!this.agentId || command.targetAgentId !== this.agentId) return;
+      const task = this.enqueueTurn(
+        command.sessionId || `${this.agentId}-session`,
+        () =>
+          this.runCore({
+            sessionId: command.sessionId || `${this.agentId}-session`,
+            userText: command.prompt,
+            kind: 'user',
+            streamId: '',
+            attachments: [],
+          }),
+      )
+        .then((outcome) => {
+          this.requireBus().publish(
+            new AgentTeamTaskCompleted({
+              ...this.agentContext(),
+              sessionId: command.sessionId,
+              taskId: command.taskId,
+              agentId: this.agentId,
+              result: outcome.content,
+            }),
+          );
+        })
+        .catch(() => undefined);
+      this.schedule(task);
+    }, this.agentId ? { agentId: this.agentId } : {}));
+    this.disposers.push(await bus.subscribe(CronTurnRequested, (cmd) => {
+      if (!this.acceptsCommand(cmd)) return;
       const trigger = cmd.trigger ?? {};
-      this.schedule(this.runCore({
-        sessionId: cmd.sessionId || String(trigger.session_id ?? ''),
-        userText: String(trigger.prompt ?? ''),
-        kind: 'cron',
-        streamId: String(trigger.stream_id ?? ''),
-        attachments: [],
-      }));
-    });
+      const sessionId = cmd.sessionId || String(trigger.session_id ?? '');
+      this.enqueueTurn(sessionId, () =>
+        this.runCore({
+          sessionId,
+          userText: String(trigger.prompt ?? ''),
+          kind: 'cron',
+          streamId: String(trigger.stream_id ?? ''),
+          attachments: [],
+        }),
+      );
+    }));
   }
 
   async stop(): Promise<void> {
     await this.whenIdle();
+    for (const dispose of this.disposers.splice(0)) {
+      await dispose();
+    }
     this.bus = null;
+  }
+
+  get id(): string {
+    return this.agentId;
+  }
+
+  get parent(): string {
+    return this.parentAgentId;
+  }
+
+  get team(): string {
+    return this.teamId;
+  }
+
+  get busy(): boolean {
+    return this.tasks.size > 0;
   }
 
   /**
@@ -246,9 +398,50 @@ export class AgentModule implements Module {
     }
   }
 
-  private schedule(task: Promise<void>): void {
+  private enqueueTurn(
+    sessionId: string,
+    run: () => Promise<TurnResult>,
+  ): Promise<TurnResult> {
+    const previous = this.turnQueues.get(sessionId) ?? Promise.resolve();
+    const task = previous.catch(() => undefined).then(run);
+    const tail = task.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.turnQueues.set(sessionId, tail);
+    this.schedule(
+      task.finally(() => {
+        if (this.turnQueues.get(sessionId) === tail) {
+          this.turnQueues.delete(sessionId);
+        }
+      }),
+    );
+    return task;
+  }
+
+  private schedule<T>(task: Promise<T>): void {
     this.tasks.add(task);
     void task.finally(() => this.tasks.delete(task));
+  }
+
+  private agentContext(): {
+    agentId: string;
+    parentAgentId: string;
+    teamId: string;
+  } {
+    return {
+      agentId: this.agentId,
+      parentAgentId: this.parentAgentId,
+      teamId: this.teamId,
+    };
+  }
+
+  /** Commands addressed to another agent are ignored by this runtime. */
+  private acceptsCommand(command: TurnCommandLike): boolean {
+    const target = command.targetAgentId;
+    if (target) return this.agentId === target;
+    if (command.agentId) return command.agentId === this.agentId;
+    return this.acceptBroadcast;
   }
 
   private requireBus(): AsyncEventBus {
@@ -256,23 +449,49 @@ export class AgentModule implements Module {
     return this.bus;
   }
 
-  private async runCore(params: TurnParams): Promise<void> {
-    if (this.model) {
-      await this.runModelTurn(params);
-    } else {
-      await this.runResponderTurn(params);
+  private async runCore(params: TurnParams): Promise<TurnResult> {
+    const controller = new AbortController();
+    this.turnAborts.set(params.sessionId, controller);
+    try {
+      if (controller.signal.aborted) throw new Error('agent turn cancelled');
+      if (this.model) {
+        return await this.runModelTurn(params);
+      }
+      return await this.runResponderTurn(params);
+    } finally {
+      if (this.turnAborts.get(params.sessionId) === controller) {
+        this.turnAborts.delete(params.sessionId);
+      }
     }
+  }
+
+  /** Cancel the active turn for one session, or every active turn. */
+  cancel(sessionId?: string): void {
+    for (const [id, controller] of this.turnAborts) {
+      if (sessionId && id !== sessionId) continue;
+      controller.abort(new Error('agent turn cancelled'));
+    }
+  }
+
+  private turnSignal(sessionId: string): AbortSignal | undefined {
+    return this.turnAborts.get(sessionId)?.signal;
+  }
+
+  private throwIfCancelled(sessionId: string): void {
+    const signal = this.turnSignal(sessionId);
+    if (signal?.aborted) throw new Error('agent turn cancelled');
   }
 
   // ── responder mode (offline / deterministic) ───────────────────────────
 
-  private async runResponderTurn(params: TurnParams): Promise<void> {
+  private async runResponderTurn(params: TurnParams): Promise<TurnResult> {
     const bus = this.requireBus();
     const turnId = nextTurnId();
     const { sessionId, userText, kind, streamId, attachments } = params;
 
     bus.publish(
       new TurnStarted({
+        ...this.agentContext(),
         sessionId,
         turnId,
         kind,
@@ -281,14 +500,24 @@ export class AgentModule implements Module {
         source: kind === 'cron' ? 'cron' : 'user',
       }),
     );
+    await this.appendSessionEvents(sessionId, [
+      {
+        seq: 0,
+        type: 'turn_started',
+        at: new Date().toISOString(),
+        data: { turnId, userInput: userText, kind, attachments, ...this.agentContext() },
+      },
+    ]);
 
     try {
       await this.compactIfNeeded(sessionId, turnId).catch(() => undefined);
-      const history = await bus.request(new GetContext({ sessionId }));
+      const history = await this.getHistory(sessionId);
       const userMsg = userMessage(buildUserContent(userText, attachments));
-      if (attachments.length > 0) userMsg.attachments = attachments;
+      if (attachments.length > 0) {
+        userMsg.attachments = attachments.map(({ dataUrl: _dataUrl, ...rest }) => rest);
+      }
       if (kind === 'cron') userMsg.alex_turn_kind = 'cron';
-      await bus.request(new AppendMessages({ sessionId, messages: [userMsg] }));
+      await this.appendSessionLog(sessionId, [userMsg]);
 
       let content = '';
       for await (const delta of this.responder.respond({
@@ -299,39 +528,43 @@ export class AgentModule implements Module {
       })) {
         if (!delta) continue;
         content += delta;
-        bus.publish(new TokenEmitted({ sessionId, turnId, delta, streamId }));
+        bus.publish(new TokenEmitted({ ...this.agentContext(), sessionId, turnId, delta, streamId }));
       }
 
       const assistantMsg = assistantMessage(content);
-      await bus.request(new AppendMessages({ sessionId, messages: [assistantMsg] }));
-
+      await this.appendSessionLog(sessionId, [assistantMsg]);
+      const fullHistory = await this.getHistory(sessionId);
       bus.publish(
         new TurnCompleted({
+          ...this.agentContext(),
           sessionId,
           turnId,
           kind,
           content,
           streamId,
-          messages: [userMsg, assistantMsg],
+          messages: fullHistory,
           messageBatch: [userMsg, assistantMsg],
         }),
       );
+      return { content, ok: true };
     } catch (error) {
-      bus.publish(new TurnFailed({ sessionId, turnId, error: errorText(error), streamId }));
+      bus.publish(new TurnFailed({ ...this.agentContext(), sessionId, turnId, error: errorText(error), streamId }));
+      return { content: '', ok: false, error: errorText(error) };
     }
   }
 
   // ── model mode (real agent loop) ───────────────────────────────────────
 
-  private async runModelTurn(params: TurnParams): Promise<void> {
+  private async runModelTurn(params: TurnParams): Promise<TurnResult> {
     const bus = this.requireBus();
     const model = this.model;
-    if (!model) return;
+    if (!model) return { content: '', ok: false };
     const { sessionId, userText, kind, streamId, attachments } = params;
     const turnId = nextTurnId();
 
     bus.publish(
       new TurnStarted({
+        ...this.agentContext(),
         sessionId,
         turnId,
         kind,
@@ -340,21 +573,57 @@ export class AgentModule implements Module {
         source: kind === 'cron' ? 'cron' : 'user',
       }),
     );
+    await this.appendSessionEvents(sessionId, [
+      {
+        seq: 0,
+        type: 'turn_started',
+        at: new Date().toISOString(),
+        data: { turnId, userInput: userText, kind, attachments, ...this.agentContext() },
+      },
+    ]);
 
     try {
       await this.compactIfNeeded(sessionId, turnId).catch(() => undefined);
-      const history = await bus.request(new GetContext({ sessionId }));
+      const history = await this.getHistory(sessionId);
       const userMsg = userMessage(buildUserContent(userText, attachments));
-      if (attachments.length > 0) userMsg.attachments = attachments;
+      if (attachments.length > 0) {
+        userMsg.attachments = attachments.map(({ dataUrl: _dataUrl, ...rest }) => rest);
+      }
       if (kind === 'cron') userMsg.alex_turn_kind = 'cron';
-      await bus.request(new AppendMessages({ sessionId, messages: [userMsg] }));
+      await this.appendSessionLog(sessionId, [userMsg]);
 
       const messages: MessageDTO[] = [...history, userMsg];
       const batch: MessageDTO[] = [];
-      const catalog = await bus.request(new GetToolCatalog());
+      const catalog = await bus.request(new GetToolCatalog({ ...this.agentContext() }));
       const tools = catalog.map(toToolSchema);
-      const skills = await this.retrieveSkills(bus, sessionId, userText);
-      const systemPrompt = this.composeSystemPrompt(skills);
+      const assembled = await this.assembledSystemPrompt(bus, sessionId);
+      const skills =
+        assembled === undefined
+          ? await this.retrieveSkills(bus, sessionId, userText)
+          : [];
+      let systemPrompt = assembled ?? this.composeSystemPrompt(skills);
+      let requestTools = tools;
+      let requestThinking = this.thinkingEnabled;
+      let requestEffort = this.effort;
+      if (this.restoredHeader) {
+        if (typeof this.restoredHeader.systemPrompt === 'string') {
+          systemPrompt = this.restoredHeader.systemPrompt;
+        }
+        if (Array.isArray(this.restoredHeader.tools)) {
+          requestTools = this.restoredHeader.tools as typeof tools;
+        }
+        if (typeof this.restoredHeader.thinking === 'boolean') {
+          requestThinking = this.restoredHeader.thinking;
+        }
+        if (
+          this.restoredHeader.effort === 'low' ||
+          this.restoredHeader.effort === 'high' ||
+          this.restoredHeader.effort === 'max'
+        ) {
+          requestEffort = this.restoredHeader.effort;
+        }
+        this.restoredHeader = null;
+      }
       const loadedSkills = new Set<string>();
 
       let finalContent = '';
@@ -362,18 +631,36 @@ export class AgentModule implements Module {
       let completed = false;
 
       for (let iteration = 0; iteration < this.maxIterations && !completed; iteration += 1) {
+        this.throwIfCancelled(sessionId);
+        await this.appendSessionEvents(sessionId, [
+          {
+            seq: 0,
+            type: 'request_header',
+            at: new Date().toISOString(),
+            data: {
+              ...this.agentContext(),
+              turnId,
+              iteration,
+              systemPrompt: systemPrompt ?? '',
+              tools: requestTools,
+              thinking: requestThinking,
+              effort: requestEffort,
+            },
+          },
+        ]);
         const outcome = await this.streamOnce(
           model,
           {
-            messages,
-            tools: tools.length > 0 ? tools : undefined,
+            messages: await this.hydrateMessages(messages),
+            tools: requestTools.length > 0 ? requestTools : undefined,
             systemPrompt,
-            thinking: this.thinkingEnabled,
-            effort: this.effort,
+            thinking: requestThinking,
+            effort: requestEffort,
           },
           sessionId,
           turnId,
           streamId,
+          this.turnSignal(sessionId),
         );
 
         finalContent = outcome.content;
@@ -396,6 +683,7 @@ export class AgentModule implements Module {
         }
         messages.push(assistantMsg);
         batch.push(assistantMsg);
+        await this.appendSessionLog(sessionId, [assistantMsg]);
 
         if (outcome.toolCalls.length === 0) {
           completed = true;
@@ -422,15 +710,16 @@ export class AgentModule implements Module {
         const outcome = await this.streamOnce(
           model,
           {
-            messages,
+            messages: await this.hydrateMessages(messages),
             tools: undefined,
             systemPrompt,
-            thinking: this.thinkingEnabled,
-            effort: this.effort,
+            thinking: requestThinking,
+            effort: requestEffort,
           },
           sessionId,
           turnId,
           streamId,
+          this.turnSignal(sessionId),
         );
         finalContent = outcome.content || '（达到最大工具调用次数，未能完成回复）';
         finalThinking = outcome.thinking;
@@ -441,13 +730,14 @@ export class AgentModule implements Module {
         };
         messages.push(assistantMsg);
         batch.push(assistantMsg);
+        await this.appendSessionLog(sessionId, [assistantMsg]);
       }
 
-      await bus.request(new AppendMessages({ sessionId, messages: batch }));
-      const fullHistory = await bus.request(new GetContext({ sessionId }));
+      const fullHistory = await this.getHistory(sessionId);
 
       bus.publish(
         new TurnCompleted({
+          ...this.agentContext(),
           sessionId,
           turnId,
           kind,
@@ -460,10 +750,12 @@ export class AgentModule implements Module {
       );
 
       if (this.autoReflect && kind === 'user' && loadedSkills.size === 0) {
-        bus.publish(new ReflectSkills({ sessionId }));
+        bus.publish(new ReflectSkills({ ...this.agentContext(), sessionId }));
       }
+      return { content: finalContent, ok: true };
     } catch (error) {
-      bus.publish(new TurnFailed({ sessionId, turnId, error: errorText(error), streamId }));
+      bus.publish(new TurnFailed({ ...this.agentContext(), sessionId, turnId, error: errorText(error), streamId }));
+      return { content: '', ok: false, error: errorText(error) };
     }
   }
 
@@ -473,9 +765,24 @@ export class AgentModule implements Module {
     query: string,
   ): Promise<SkillCard[]> {
     try {
-      return await bus.request(new RetrieveSkills({ sessionId, query, topK: 3 }));
+      return await bus.request(new RetrieveSkills({ ...this.agentContext(), sessionId, query, topK: 3 }));
     } catch {
       return [];
+    }
+  }
+
+  /** PromptModule owns the assembled prompt; Agent keeps a static fallback for tests. */
+  private async assembledSystemPrompt(
+    bus: AsyncEventBus,
+    sessionId: string,
+  ): Promise<string | undefined> {
+    try {
+      // Let queued prompt-section registrations (e.g. skills for this turn) apply.
+      await bus.idle();
+      const prompt = await bus.request(new GetSystemPrompt({ ...this.agentContext(), sessionId }));
+      return prompt.trim() ? prompt : undefined;
+    } catch {
+      return undefined;
     }
   }
 
@@ -485,6 +792,76 @@ export class AgentModule implements Module {
     return this.systemPrompt?.trim()
       ? `${this.systemPrompt.trim()}\n${section}`
       : section.trim();
+  }
+
+  /** Prefer the event-sourced projection; fall back to memory for legacy tests. */
+  private async getHistory(sessionId: string): Promise<MessageDTO[]> {
+    const bus = this.requireBus();
+    const projection = await bus.request(new GetSessionProjection({ ...this.agentContext(), sessionId }));
+    return projection.messages;
+  }
+
+  /** Append raw events to the event-sourced session log when available. */
+  private async appendSessionEvents(
+    sessionId: string,
+    events: Array<{ seq: number; type: string; at: string; data: Record<string, unknown> }>,
+  ): Promise<boolean> {
+    if (!sessionId || events.length === 0) return true;
+    await this.requireBus().request(new AppendSessionEvents({ ...this.agentContext(), sessionId, events }));
+    return true;
+  }
+
+  /** Append messages to the event-sourced session log when available. */
+  private async appendSessionLog(
+    sessionId: string,
+    messages: MessageDTO[],
+  ): Promise<boolean> {
+    if (!sessionId || messages.length === 0) return true;
+    return this.appendSessionEvents(
+      sessionId,
+      messages.map((message) =>
+        messageEvent(
+          message.role === 'user'
+            ? 'user_message'
+            : message.role === 'tool'
+              ? 'tool_message'
+              : 'assistant_message',
+          message,
+        ),
+      ),
+    );
+  }
+
+  /** Replace persisted image references with request-time data URLs. */
+  private async hydrateMessages(messages: MessageDTO[]): Promise<MessageDTO[]> {
+    const hydrated: MessageDTO[] = [];
+    for (const message of ensureToolCallResponses(messages)) {
+      if (!Array.isArray(message.content)) {
+        hydrated.push(message);
+        continue;
+      }
+      const parts = [];
+      for (const part of message.content) {
+        if (
+          part.type === 'image_url' &&
+          part.image_url.url.startsWith(ATTACHMENT_URL_PREFIX)
+        ) {
+          parts.push({
+            type: 'image_url' as const,
+            image_url: {
+              url: await resolveAttachmentRef(
+                part.image_url.url,
+                this.imageMaxDimension,
+              ),
+            },
+          });
+        } else {
+          parts.push(part);
+        }
+      }
+      hydrated.push({ ...message, content: parts });
+    }
+    return hydrated;
   }
 
   private compactThresholdTokens(): number {
@@ -498,7 +875,7 @@ export class AgentModule implements Module {
   ): Promise<CompactionResult | null> {
     const threshold = this.compactThresholdTokens();
     if (threshold <= 0 || this.lastPromptTokens < threshold) return null;
-    const messages = await this.requireBus().request(new GetContext({ sessionId }));
+    const messages = await this.getHistory(sessionId);
     if (messages.length < 4) return null;
     return this.compactMessages(sessionId, messages, 'auto', turnId);
   }
@@ -506,7 +883,7 @@ export class AgentModule implements Module {
   /** Summarize the oldest history region and keep a recent verbatim tail. */
   async compact(sessionId: string, reason: CompactionReason, turnId = ''): Promise<CompactionResult> {
     const bus = this.requireBus();
-    const messages = await bus.request(new GetContext({ sessionId }));
+    const messages = await this.getHistory(sessionId);
     return this.compactMessages(sessionId, messages, reason, turnId);
   }
 
@@ -547,14 +924,15 @@ export class AgentModule implements Module {
       };
     }
 
-    bus.publish(new CompactionStarted({ id, reason, thresholdTokens: threshold, sessionId, turnId }));
+    bus.publish(new CompactionStarted({ ...this.agentContext(), id, reason, thresholdTokens: threshold, sessionId, turnId }));
     try {
       const summary = await this.summarizeRegion(region, id);
       if (!summary.trim()) throw new Error('summary was empty');
       const summaryMessage = userMessage(`<compacted-summary>\n${summary.trim()}\n</compacted-summary>`);
-      await bus.request(
-        new ReplaceMemory({ sessionId, messages: [summaryMessage, ...tail] }),
-      );
+      const projected = [summaryMessage, ...tail];
+      await this.appendSessionEvents(sessionId, [
+        replaceMessagesEvent(projected),
+      ]);
       const before = region.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
       const after = estimateMessageTokens(summaryMessage);
       const result: CompactionResult = {
@@ -568,11 +946,12 @@ export class AgentModule implements Module {
         skipped: false,
       };
       this.lastPromptTokens = 0;
-      bus.publish(new ContextCompacted({ result, sessionId, turnId }));
+      bus.publish(new ContextCompacted({ ...this.agentContext(), result, sessionId, turnId }));
       return result;
     } catch (error) {
       bus.publish(
         new CompactionFailed({
+          ...this.agentContext(),
           id,
           reason,
           error: error instanceof Error ? error.message : String(error),
@@ -645,6 +1024,7 @@ export class AgentModule implements Module {
     sessionId: string,
     turnId: string,
     streamId: string,
+    signal?: AbortSignal,
   ): Promise<{ content: string; thinking: string; toolCalls: ToolCall[] }> {
     const bus = this.requireBus();
     let content = '';
@@ -652,13 +1032,14 @@ export class AgentModule implements Module {
     let toolCalls: ToolCall[] = [];
     let usage: ChatUsage | undefined;
 
-    for await (const event of model.streamChat(request) as AsyncGenerator<ChatStreamEvent>) {
+    for await (const event of model.streamChat({ ...request, signal }) as AsyncGenerator<ChatStreamEvent>) {
+      this.throwIfCancelled(sessionId);
       if (event.type === 'content') {
         content += event.delta;
-        bus.publish(new TokenEmitted({ sessionId, turnId, delta: event.delta, streamId }));
+        bus.publish(new TokenEmitted({ ...this.agentContext(), sessionId, turnId, delta: event.delta, streamId }));
       } else if (event.type === 'thinking') {
         thinking += event.delta;
-        bus.publish(new ThinkingUpdated({ sessionId, turnId, delta: event.delta, streamId }));
+        bus.publish(new ThinkingUpdated({ ...this.agentContext(), sessionId, turnId, delta: event.delta, streamId }));
       } else if (event.type === 'done') {
         content = event.result.content || content;
         thinking = event.result.thinking || thinking;
@@ -670,6 +1051,7 @@ export class AgentModule implements Module {
       this.lastPromptTokens = usage.promptTokens ?? this.lastPromptTokens;
       bus.publish(
         new TokenUsageReported({
+          ...this.agentContext(),
           sessionId,
           turnId,
           streamId,
@@ -702,6 +1084,7 @@ export class AgentModule implements Module {
 
     bus.publish(
       new ToolStarted({
+        ...this.agentContext(),
         sessionId,
         turnId,
         toolId,
@@ -711,21 +1094,33 @@ export class AgentModule implements Module {
       }),
     );
 
-    const result = await bus.request(
-      new ExecuteTool({
-        sessionId,
-        turnId,
-        name,
-        args,
-        ctx: { sessionId, turnId, source: kind === 'cron' ? 'cron' : 'user' },
-      }),
-    );
+    let result: ToolResult;
+    const request = new ExecuteTool({
+      ...this.agentContext(),
+      sessionId,
+      turnId,
+      name,
+      args,
+      ctx: { sessionId, turnId, source: kind === 'cron' ? 'cron' : 'user' },
+      signal: this.turnSignal(sessionId),
+    });
+    try {
+      // Bus requests default to 30s, which would cut off long shell/MCP tools
+      // before their own timeoutSeconds expires.
+      result = await bus.request(
+        request,
+        Math.max(1, request.timeoutSeconds) * 1000 + 10_000,
+      );
+    } catch (error) {
+      result = { name, error: errorText(error) };
+    }
 
     const ok = !result.error;
     const outputText = ok ? (result.output ?? '') : `Error: ${result.error}`;
 
     bus.publish(
       new ToolFinished({
+        ...this.agentContext(),
         sessionId,
         turnId,
         toolId,
@@ -741,14 +1136,16 @@ export class AgentModule implements Module {
     };
     messages.push(toolMsg);
     batch.push(toolMsg);
+    await this.appendSessionLog(sessionId, [toolMsg]);
 
     if (name !== 'load_skill' || !ok) return null;
     const skillName = String((args as Record<string, unknown>).skill_name ?? '');
     try {
-      const card = await bus.request(new LoadSkill({ sessionId, skillName }));
+      const card = await bus.request(new LoadSkill({ ...this.agentContext(), sessionId, skillName }));
       if (!card?.name) return null;
       bus.publish(
         new SkillLoaded({
+          ...this.agentContext(),
           sessionId,
           turnId,
           skillName: card.name,

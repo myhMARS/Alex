@@ -8,6 +8,7 @@
 
 import type { MessageDTO } from '../kernel/dto/message';
 import type { LLMConfig } from './config';
+import { DsmlStreamFilter } from './dsml';
 
 export interface ToolCall {
   id: string;
@@ -40,6 +41,8 @@ export interface ChatResult {
 
 export interface ChatRequest {
   messages: MessageDTO[];
+  /** Optional caller cancellation; combined with the client timeout. */
+  signal?: AbortSignal;
   tools?: ToolSchema[];
   systemPrompt?: string;
   temperature?: number;
@@ -144,7 +147,9 @@ export class ChatClient implements ChatModel {
         authorization: `Bearer ${this.config.apiKey}`,
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(this.timeoutMs),
+      signal: request.signal
+        ? AbortSignal.any([AbortSignal.timeout(this.timeoutMs), request.signal])
+        : AbortSignal.timeout(this.timeoutMs),
     });
 
     if (!response.ok) {
@@ -161,6 +166,7 @@ export class ChatClient implements ChatModel {
       toolCalls: new Map<number, ToolCallAccumulator>(),
       finishReason: '',
       usage: undefined as ChatResult['usage'],
+      dsml: new DsmlStreamFilter(),
     };
 
     const reader = response.body.getReader();
@@ -199,8 +205,11 @@ export class ChatClient implements ChatModel {
       if (!choice) return events;
       const delta = choice.delta ?? choice.message ?? {};
       if (typeof delta.content === 'string' && delta.content) {
-        state.content += delta.content;
-        events.push({ type: 'content', delta: delta.content });
+        const safeContent = state.dsml.feed(delta.content);
+        if (safeContent) {
+          state.content += safeContent;
+          events.push({ type: 'content', delta: safeContent });
+        }
       }
       const reasoning =
         typeof delta.reasoning_content === 'string'
@@ -243,14 +252,22 @@ export class ChatClient implements ChatModel {
     if (buffer.trim()) {
       for (const event of handleLine(buffer.trim())) yield event;
     }
+    const trailing = state.dsml.finish();
+    if (trailing) {
+      state.content += trailing;
+      yield { type: 'content', delta: trailing };
+    }
 
-    const toolCalls: ToolCall[] = [...state.toolCalls.entries()]
-      .sort(([a], [b]) => a - b)
-      .map(([index, call]) => ({
-        id: call.id || `call_${index}`,
-        type: 'function' as const,
-        function: { name: call.name, arguments: call.arguments || '{}' },
-      }));
+    const toolCalls: ToolCall[] = [
+      ...[...state.toolCalls.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([index, call]) => ({
+          id: call.id || `call_${index}`,
+          type: 'function' as const,
+          function: { name: call.name, arguments: call.arguments || '{}' },
+        })),
+      ...state.dsml.takeCalls(),
+    ];
     if (toolCalls.length > 0) {
       yield { type: 'tool_calls', toolCalls };
     }

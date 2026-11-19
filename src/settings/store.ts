@@ -10,6 +10,8 @@ export const DEFAULT_MAX_CONTEXT_TOKENS = 131_072;
 export const DEFAULT_MAX_OUTPUT_TOKENS = 4_096;
 export const DEFAULT_COMPACT_THRESHOLD_RATIO = 0.8;
 export const DEFAULT_EFFORT: ModelEffort = 'high';
+export const DEFAULT_IMAGE_MAX_DIMENSION = 2_048;
+export const DEFAULT_MAX_ITERATIONS = 10;
 
 export interface AlexSettings extends SettingsSnapshot {}
 
@@ -73,6 +75,21 @@ function envEffort(
   return raw === 'low' || raw === 'high' || raw === 'max' ? raw : fallback;
 }
 
+function envInt(
+  env: Record<string, string | undefined>,
+  name: string,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const raw = env[name];
+  if (!raw || raw.trim() === '') return fallback;
+  const parsed = Number.parseInt(raw.trim(), 10);
+  return Number.isFinite(parsed) && parsed >= min && parsed <= max
+    ? parsed
+    : fallback;
+}
+
 function envRatio(
   env: Record<string, string | undefined>,
   name: string,
@@ -97,6 +114,8 @@ function normalize(partial: Partial<AlexSettings>, base: AlexSettings): AlexSett
       partial.compactThresholdRatio ?? base.compactThresholdRatio,
     thinkingEnabled: partial.thinkingEnabled ?? base.thinkingEnabled,
     effort: partial.effort ?? base.effort,
+    imageMaxDimension: partial.imageMaxDimension ?? base.imageMaxDimension,
+    maxIterations: partial.maxIterations ?? base.maxIterations,
   };
 }
 
@@ -115,6 +134,12 @@ export async function loadSettings(
     compactThresholdRatio: envRatio(env, 'ALEX_COMPACT_THRESHOLD', DEFAULT_COMPACT_THRESHOLD_RATIO),
     thinkingEnabled: envBool(env, 'ALEX_THINKING', true),
     effort: envEffort(env, DEFAULT_EFFORT),
+    imageMaxDimension: envTokens(
+      env,
+      'ALEX_IMAGE_MAX_DIMENSION',
+      DEFAULT_IMAGE_MAX_DIMENSION,
+    ),
+    maxIterations: envInt(env, 'ALEX_MAX_ITERATIONS', DEFAULT_MAX_ITERATIONS, 1, 1_000),
   };
   try {
     const raw = JSON.parse(await readFile(path, 'utf8')) as Partial<AlexSettings>;

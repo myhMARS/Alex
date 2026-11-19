@@ -2,14 +2,14 @@ import { describe, expect, test } from 'bun:test';
 
 import { AsyncEventBus } from '../src/kernel/bus';
 import { AgentModule, type Responder } from '../src/modules/agent/module';
-import { MemoryModule } from '../src/modules/memory/module';
+import { SessionModule } from '../src/session/module';
 import { UserTurnRequested, TokenEmitted, TurnFailed } from '../src/kernel/contracts/chat';
-import { GetContext } from '../src/kernel/contracts/memory';
+import { GetSessionProjection } from '../src/kernel/contracts/session';
 
 async function setup(agent: AgentModule): Promise<{ bus: AsyncEventBus }> {
   const bus = new AsyncEventBus();
-  const memory = new MemoryModule();
-  await memory.start(bus);
+  const session = new SessionModule();
+  await session.start(bus);
   await agent.start(bus);
   await bus.start();
   return { bus };
@@ -29,7 +29,9 @@ describe('AgentModule', () => {
     await bus.idle();
 
     expect(tokens.join('')).toBe('Echo: hello');
-    const history = await bus.request(new GetContext({ sessionId: 's1' }));
+    const history = (
+      await bus.request(new GetSessionProjection({ sessionId: 's1' }))
+    ).messages;
     expect(history.map((message) => message.content)).toEqual(['hello', 'Echo: hello']);
     await bus.shutdown();
   });

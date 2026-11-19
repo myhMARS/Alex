@@ -62,6 +62,8 @@ describe('settings parsing', () => {
       ALEX_COMPACT_THRESHOLD: '0.7',
       ALEX_THINKING: 'off',
       ALEX_EFFORT: 'low',
+      ALEX_IMAGE_MAX_DIMENSION: '1024',
+      ALEX_MAX_ITERATIONS: '25',
     } as Record<string, string>;
     const loaded = await loadSettings(env, path);
     expect(loaded.model).toBe('deepseek-chat');
@@ -70,9 +72,11 @@ describe('settings parsing', () => {
     expect(loaded.compactThresholdRatio).toBe(0.7);
     expect(loaded.thinkingEnabled).toBe(false);
     expect(loaded.effort).toBe('low');
+    expect(loaded.imageMaxDimension).toBe(1_024);
+    expect(loaded.maxIterations).toBe(25);
 
     const saved = await saveSettings(
-      { maxContextTokens: 1_048_576, maxOutputTokens: 65_536, apiKey: 'sk-secret' },
+      { maxContextTokens: 1_048_576, maxOutputTokens: 65_536, apiKey: 'sk-secret', imageMaxDimension: 1_568, maxIterations: 50 },
       env,
       path,
     );
@@ -82,6 +86,8 @@ describe('settings parsing', () => {
     const reloaded = await loadSettings(env, path);
     expect(reloaded.maxContextTokens).toBe(1_048_576);
     expect(reloaded.maxOutputTokens).toBe(65_536);
+    expect(reloaded.imageMaxDimension).toBe(1_568);
+    expect(reloaded.maxIterations).toBe(50);
   });
 });
 
@@ -101,8 +107,10 @@ describe('SettingsModule over the bus', () => {
         maxContextTokens: 131_072,
         maxOutputTokens: 4_096,
         compactThresholdRatio: 0.8,
+        imageMaxDimension: 2_048,
         thinkingEnabled: true,
         effort: 'high',
+        maxIterations: 10,
       },
     });
     const updates: number[] = [];

@@ -24,6 +24,10 @@ import {
   ToolStarted,
 } from '../../kernel/contracts/tools';
 import { CronJobEvent } from '../../kernel/contracts/cron';
+import type {
+  SessionEventRecord,
+  SessionTurnRecord,
+} from '../../kernel/contracts/session';
 import {
   CompactionFailed,
   CompactionStarted,
@@ -39,6 +43,7 @@ export interface ToolCallView {
   input: unknown;
   output: string;
   done: boolean;
+  failed?: boolean;
 }
 
 export interface SkillView {
@@ -66,6 +71,8 @@ export type TurnPart =
 export interface TurnView {
   turnId: string;
   sessionId: string;
+  /** Agent that produced this turn (main / worker-*). */
+  agentId: string;
   kind: TurnKind | 'compaction';
   userInput: string;
   attachments: AttachmentDTO[];
@@ -123,6 +130,7 @@ function emptyTurn(event: TurnStarted): TurnView {
   return {
     turnId: event.turnId,
     sessionId: event.sessionId,
+    agentId: event.agentId || 'main',
     kind: event.kind,
     userInput: event.userInput,
     attachments: event.attachments,
@@ -225,7 +233,12 @@ export class TuiViewState {
   }
 
   /** Rebuild the view from a persisted message history (session resume). */
-  loadHistory(messages: MessageDTO[]): void {
+  loadHistory(
+    messages: MessageDTO[],
+    events: SessionEventRecord[] = [],
+    surfaceTurns: SessionTurnRecord[] = [],
+    agentId = 'main',
+  ): void {
     this.reset();
     let current: TurnView | null = null;
     const flush = () => {
@@ -239,6 +252,7 @@ export class TuiViewState {
         current = {
           turnId: `history-${this.history.length + 1}`,
           sessionId: '',
+          agentId: agentId || 'main',
           kind: 'user',
           userInput:
             typeof message.content === 'string'
@@ -262,6 +276,7 @@ export class TuiViewState {
           current = {
             turnId: `history-${this.history.length + 1}`,
             sessionId: '',
+            agentId: agentId || 'main',
             kind: 'user',
             userInput: '',
             attachments: [],
@@ -308,10 +323,73 @@ export class TuiViewState {
         if (tool) {
           tool.output = typeof message.content === 'string' ? message.content : '';
           tool.done = true;
+          tool.failed = /^\s*Error:/i.test(tool.output);
         }
       }
     }
     flush();
+
+    // Prefer the event-sourced turn surface for text/attachments.
+    if (surfaceTurns.length > 0) {
+      const userTurns = this.history.filter((turn) => turn.kind === 'user');
+      for (const [index, turn] of userTurns.entries()) {
+        const record = surfaceTurns[index];
+        if (!record) break;
+        turn.userInput = record.userInput;
+        if (Array.isArray(record.attachments)) {
+          turn.attachments = record.attachments as AttachmentDTO[];
+        }
+      }
+    }
+
+    // Replay append-only sidecar events (usage / compaction / reflection).
+    for (const record of events) {
+      const data = record.data ?? {};
+      if (record.type === 'usage') {
+        this.apply(
+          new TokenUsageReported({
+            promptTokens: Number(data.promptTokens ?? 0),
+            completionTokens: Number(data.completionTokens ?? 0),
+            totalTokens: Number(data.totalTokens ?? 0),
+            cacheHitTokens: Number(data.cacheHitTokens ?? 0),
+            cacheMissTokens: Number(data.cacheMissTokens ?? 0),
+          }),
+        );
+      } else if (record.type === 'compaction_started') {
+        this.apply(
+          new CompactionStarted({
+            id: String(data.id ?? ''),
+            reason: data.reason === 'auto' ? 'auto' : 'manual',
+            thresholdTokens: Number(data.thresholdTokens ?? 0),
+          }),
+        );
+      } else if (record.type === 'context_compacted' && data.result) {
+        this.apply(
+          new ContextCompacted({
+            result: data.result as ContextCompacted['result'],
+          }),
+        );
+      } else if (record.type === 'compaction_failed') {
+        this.apply(
+          new CompactionFailed({
+            id: String(data.id ?? ''),
+            reason: data.reason === 'auto' ? 'auto' : 'manual',
+            error: String(data.error ?? ''),
+          }),
+        );
+      } else if (record.type === 'skills_reflected') {
+        this.reflections.push({
+          at: new Date(record.at).getTime() || Date.now(),
+          created: Number(data.created ?? 0),
+          updated: Number(data.updated ?? 0),
+          deprecated: Number(data.deprecated ?? 0),
+          names: Array.isArray(data.names) ? (data.names as string[]) : [],
+          updatedNames: Array.isArray(data.updatedNames)
+            ? (data.updatedNames as string[])
+            : [],
+        });
+      }
+    }
   }
 
   apply(event: Event): void {
@@ -320,26 +398,26 @@ export class TuiViewState {
       return;
     }
     if (event instanceof TokenEmitted) {
-      const turn = this.ensureTurn(event.turnId, event.sessionId);
+      const turn = this.ensureTurn(event.turnId, event.sessionId, event.agentId);
       turn.content += event.delta;
       appendTextPart(turn, 'text', event.delta);
       return;
     }
     if (event instanceof ThinkingUpdated) {
-      const turn = this.ensureTurn(event.turnId, event.sessionId);
+      const turn = this.ensureTurn(event.turnId, event.sessionId, event.agentId);
       turn.thinking += event.delta;
       appendTextPart(turn, 'thinking', event.delta);
       return;
     }
     if (event instanceof SkillLoaded) {
-      const turn = this.ensureTurn(event.turnId, event.sessionId);
+      const turn = this.ensureTurn(event.turnId, event.sessionId, event.agentId);
       const skill = { name: event.skillName, pattern: event.skillPattern };
       turn.skills.push(skill);
       appendSkillPart(turn, skill);
       return;
     }
     if (event instanceof ToolStarted) {
-      const turn = this.ensureTurn(event.turnId, event.sessionId);
+      const turn = this.ensureTurn(event.turnId, event.sessionId, event.agentId);
       const tool: ToolCallView = {
         toolId: event.toolId,
         name: event.toolName,
@@ -352,11 +430,12 @@ export class TuiViewState {
       return;
     }
     if (event instanceof ToolFinished) {
-      const turn = this.ensureTurn(event.turnId, event.sessionId);
+      const turn = this.ensureTurn(event.turnId, event.sessionId, event.agentId);
       const tool = turn.tools.find((item) => item.toolId === event.toolId);
       if (tool) {
         tool.output = stringifyOutput(event.output);
         tool.done = true;
+        tool.failed = /^\s*Error:/i.test(tool.output);
       }
       return;
     }
@@ -364,6 +443,7 @@ export class TuiViewState {
       const turn: TurnView = this.active.get(event.turnId) ?? {
         turnId: event.turnId,
         sessionId: event.sessionId,
+        agentId: event.agentId || 'main',
         kind: event.kind,
         userInput: '',
         attachments: [],
@@ -388,7 +468,7 @@ export class TuiViewState {
       return;
     }
     if (event instanceof TurnFailed) {
-      const turn = this.ensureTurn(event.turnId, event.sessionId);
+      const turn = this.ensureTurn(event.turnId, event.sessionId, event.agentId);
       turn.status = 'failed';
       turn.error = event.error;
       this.finalize(turn);
@@ -427,6 +507,7 @@ export class TuiViewState {
         this.history.push({
           turnId: event.id,
           sessionId: event.sessionId,
+          agentId: event.agentId || 'main',
           kind: 'compaction',
           userInput: '',
           attachments: [],
@@ -502,12 +583,13 @@ export class TuiViewState {
     }
   }
 
-  private ensureTurn(turnId: string, sessionId: string): TurnView {
+  private ensureTurn(turnId: string, sessionId: string, agentId = 'main'): TurnView {
     let turn = turnId ? this.active.get(turnId) : undefined;
     if (!turn) {
       turn = {
         turnId,
         sessionId,
+        agentId: agentId || 'main',
         kind: 'user',
         userInput: '',
         attachments: [],

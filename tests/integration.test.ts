@@ -6,14 +6,14 @@ import { join } from 'node:path';
 import { AsyncEventBus } from '../src/kernel/bus';
 import { ModuleHost } from '../src/kernel/runtime';
 import { AgentModule } from '../src/modules/agent/module';
-import { MemoryModule } from '../src/modules/memory/module';
+import { SessionModule } from '../src/session/module';
 import { StoreModule } from '../src/modules/store/module';
 import { TuiModule } from '../src/modules/tui/module';
 import { ToolsModule } from '../src/tools/module';
 import { MCPModule } from '../src/mcp/module';
 import { SkillModule } from '../src/skill/module';
 import { CronModule } from '../src/cron/module';
-import { GetContext } from '../src/kernel/contracts/memory';
+import { GetSessionProjection } from '../src/kernel/contracts/session';
 import { ListSessions, LoadSession } from '../src/kernel/contracts/session';
 import { ExecuteTool } from '../src/kernel/contracts/tools';
 import { PermissionPolicy, AuditLogger } from '../src/tools/permissions';
@@ -47,7 +47,7 @@ describe('TUI as a bus module (integration)', () => {
     const agent = new AgentModule();
     const tui = new TuiModule();
 
-    host.register(new MemoryModule());
+    host.register(new SessionModule());
     host.register(new StoreModule({ sessionsDir }));
     host.register(new ToolsModule({ roots: [process.cwd()] }));
     host.register(new MCPModule({ configs: [] }));
@@ -67,7 +67,9 @@ describe('TUI as a bus module (integration)', () => {
     expect(turns[0]?.content).toBe('Echo: hello integration');
     expect(turns[0]?.userInput).toBe('hello integration');
 
-    const history = await bus.request(new GetContext({ sessionId: 's-int' }));
+    const history = (
+      await bus.request(new GetSessionProjection({ sessionId: 's-int' }))
+    ).messages;
     expect(history.map((message) => message.content)).toEqual([
       'hello integration',
       'Echo: hello integration',

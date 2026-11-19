@@ -8,13 +8,13 @@ import { CronStore, cronJobFromFile, deriveJobName } from '../src/cron/store';
 import { CronManager, type CronClock } from '../src/cron/manager';
 import { CronModule } from '../src/cron/module';
 import { AsyncEventBus } from '../src/kernel/bus';
-import { MemoryModule } from '../src/modules/memory/module';
+import { SessionModule } from '../src/session/module';
 import { AgentModule } from '../src/modules/agent/module';
 import { ToolsModule } from '../src/tools/module';
 import { PermissionPolicy, AuditLogger } from '../src/tools/permissions';
 import { ScheduleCron, CancelCron, ListCronJobs, CronJobEvent } from '../src/kernel/contracts/cron';
 import { ExecuteTool, GetToolCatalog } from '../src/kernel/contracts/tools';
-import { GetContext } from '../src/kernel/contracts/memory';
+import { GetSessionProjection } from '../src/kernel/contracts/session';
 
 const tempDirs: string[] = [];
 
@@ -246,6 +246,30 @@ describe('CronManager', () => {
     await manager.shutdown();
   });
 
+  test('binds an unbound job to a session and persists it', async () => {
+    const dir = await tempDir();
+    const clock = new FakeClock(localTime(2026, 1, 1, 8, 0));
+    const manager = new CronManager({
+      directory: dir,
+      clock,
+      runner: async () => 'ok',
+    });
+    const jobId = await manager.schedule({ cron: '0 9 * * *', prompt: 'bind me', durable: true });
+    expect(manager.getJob(jobId)?.sessionId).toBe('');
+    expect(await manager.bindSession(jobId, 'session-bound')).toBe(true);
+    expect(manager.getJob(jobId)?.sessionId).toBe('session-bound');
+    await manager.shutdown();
+
+    const second = new CronManager({
+      directory: dir,
+      clock,
+      runner: async () => 'ok',
+    });
+    await second.restore();
+    expect(second.getJob(jobId)?.sessionId).toBe('session-bound');
+    await second.shutdown();
+  });
+
   test('durable jobs are restored after restart', async () => {
     const dir = await tempDir();
     const clock = new FakeClock(localTime(2026, 1, 1, 8, 0));
@@ -291,7 +315,7 @@ describe('CronModule end-to-end', () => {
     const dir = await tempDir();
     const clock = new FakeClock(localTime(2026, 1, 1, 8, 0));
     const bus = new AsyncEventBus();
-    const memory = new MemoryModule();
+    const session = new SessionModule();
     const tools = new ToolsModule({
       roots: [dir],
       policy: new PermissionPolicy({ allowed: ['read', 'network'], env: {} }),
@@ -301,12 +325,12 @@ describe('CronModule end-to-end', () => {
     });
     const agent = new AgentModule();
     const cron = new CronModule({ directory: join(dir, 'cron'), clock });
-    await memory.start(bus);
+    await session.start(bus);
     await tools.start(bus);
     await agent.start(bus);
     await cron.start(bus);
     await bus.start();
-    return { bus, memory, tools, agent, cron, clock, dir };
+    return { bus, session, tools, agent, cron, clock, dir };
   }
 
   test('schedules, fires a turn and records the result', async () => {
@@ -332,7 +356,9 @@ describe('CronModule end-to-end', () => {
     expect(jobs[0]?.runsDone).toBe(1);
     expect(jobs[0]?.lastResult).toBe('Echo: ping cron');
 
-    const history = await bus.request(new GetContext({ sessionId: 's1' }));
+    const history = (
+      await bus.request(new GetSessionProjection({ sessionId: 's1' }))
+    ).messages;
     expect(history.map((message) => message.role)).toEqual(['user', 'assistant']);
     expect(history[1]?.content).toBe('Echo: ping cron');
     expect(history[0]?.alex_turn_kind).toBe('cron');
@@ -368,6 +394,56 @@ describe('CronModule end-to-end', () => {
     expect(cancelled.output).toContain('Cancelled:');
     expect(await bus.request(new ListCronJobs())).toHaveLength(0);
 
+    await bus.shutdown();
+  }, 20_000);
+
+  test('serializes cron turns per session', async () => {
+    const dir = await tempDir();
+    const clock = new FakeClock(localTime(2026, 1, 1, 8, 0));
+    const bus = new AsyncEventBus();
+    const session = new SessionModule();
+    const tools = new ToolsModule({
+      roots: [dir],
+      policy: new PermissionPolicy({ allowed: ['read', 'network'], env: {} }),
+      audit: new AuditLogger(join(dir, 'audit.jsonl')),
+      approvalTimeoutMs: 500,
+      plugins: false,
+    });
+    let active = 0;
+    let maxActive = 0;
+    const agent = new AgentModule({
+      responder: {
+        async *respond() {
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          await new Promise((resolve) => setTimeout(resolve, 15));
+          active -= 1;
+          yield 'serialized';
+        },
+      },
+    });
+    const cron = new CronModule({ directory: join(dir, 'cron'), clock });
+    await session.start(bus);
+    await tools.start(bus);
+    await agent.start(bus);
+    await cron.start(bus);
+    await bus.start();
+
+    await bus.request(
+      new ScheduleCron({ sessionId: 'same-session', cron: '* * * * *', prompt: 'a' }),
+    );
+    await bus.request(
+      new ScheduleCron({ sessionId: 'same-session', cron: '* * * * *', prompt: 'b' }),
+    );
+    await clock.advance(60_000);
+    await cron.whenIdle();
+    await agent.whenIdle();
+    await bus.idle();
+
+    expect(maxActive).toBe(1);
+    expect((await bus.request(new ListCronJobs())).map((job) => job.runsDone)).toEqual([
+      1, 1,
+    ]);
     await bus.shutdown();
   }, 20_000);
 

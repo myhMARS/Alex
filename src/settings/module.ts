@@ -34,8 +34,10 @@ export class SettingsModule implements Module {
       maxContextTokens: 131_072,
       maxOutputTokens: 4_096,
       compactThresholdRatio: 0.8,
+      imageMaxDimension: 2_048,
       thinkingEnabled: true,
       effort: 'high',
+      maxIterations: 10,
     };
     this.path = options.path;
     this.env = options.env ?? process.env;

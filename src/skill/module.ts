@@ -12,7 +12,12 @@ import { homedir } from 'node:os';
 import type { Module } from '../kernel/runtime';
 import type { AsyncEventBus } from '../kernel/bus';
 import type { SkillCard } from '../kernel/dto/skill';
-import { FeedbackSubmitted } from '../kernel/contracts/chat';
+import {
+  FeedbackSubmitted,
+  TurnCompleted,
+  TurnFailed,
+  UserTurnRequested,
+} from '../kernel/contracts/chat';
 import {
   DeleteSkill,
   DeprecateSkill,
@@ -26,9 +31,14 @@ import {
   SkillReflectError,
   SkillsReflected,
 } from '../kernel/contracts/skills';
-import { GetContext } from '../kernel/contracts/memory';
+import { GetSessionProjection } from '../kernel/contracts/session';
 import type { MessageDTO } from '../kernel/dto/message';
 import { RegisterTool } from '../kernel/contracts/tools';
+import {
+  RegisterPromptSection,
+  UnregisterPromptSection,
+} from '../kernel/contracts/prompt';
+import { skillsSectionPrompt } from '../prompts/skills-section';
 import type { MergeSkillsResult } from '../kernel/dto/skill';
 import type { ChatModel } from '../llm/client';
 import { SkillStore } from './store';
@@ -98,6 +108,30 @@ export class SkillModule implements Module {
     });
     bus.provide(MergeSkills, () => this.mergeSkills());
 
+    await bus.subscribe(UserTurnRequested, async (cmd) => {
+      const skills = retrieveSkills(this.store, cmd.userText, 3).map(skillToCard);
+      const id = `skills:${cmd.sessionId}`;
+      if (skills.length === 0) {
+        bus.publish(new UnregisterPromptSection({ id }));
+        return;
+      }
+      bus.publish(
+        new RegisterPromptSection({
+          section: {
+            id,
+            content: skillsSectionPrompt(skills),
+            order: 30,
+            source: 'skill',
+          },
+        }),
+      );
+    });
+    await bus.subscribe(TurnCompleted, (cmd) => {
+      bus.publish(new UnregisterPromptSection({ id: `skills:${cmd.sessionId}` }));
+    });
+    await bus.subscribe(TurnFailed, (cmd) => {
+      bus.publish(new UnregisterPromptSection({ id: `skills:${cmd.sessionId}` }));
+    });
     await bus.subscribe(ReflectSkills, (cmd) => this.reflect(cmd.sessionId));
     await bus.subscribe(FeedbackSubmitted, (cmd) => {
       if (!cmd.positive) return this.reflect(cmd.sessionId);
@@ -274,7 +308,7 @@ export class SkillModule implements Module {
     let messages: MessageDTO[] = [];
     if (sessionId) {
       try {
-        messages = (await bus.request(new GetContext({ sessionId }))) as MessageDTO[];
+        messages = (await bus.request(new GetSessionProjection({ sessionId }))).messages;
       } catch {
         messages = [];
       }

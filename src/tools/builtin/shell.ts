@@ -64,7 +64,7 @@ function makeShellTool(options: {
       summarise: (args) =>
         `${options.name}: ${String(args.command ?? '')} (cwd: ${String(args.cwd ?? args.working_dir ?? '') || '(default)'}, timeout: ${String(args.timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS)}s)`,
     },
-    async invoke(args) {
+    async invoke(args, ctx) {
       const command = typeof args.command === 'string' ? args.command : '';
       if (!command.trim()) return 'Error: command is required';
       const denied = checkShellCommand(command);
@@ -92,6 +92,7 @@ function makeShellTool(options: {
             cwd,
             timeout: timeoutMs,
             maxBuffer: 8 * MAX_OUTPUT,
+            signal: ctx.signal,
           });
           return [
             `$ ${command}`,

@@ -2,11 +2,12 @@ import { afterEach, describe, expect, test } from 'bun:test';
 
 import { AsyncEventBus } from '../src/kernel/bus';
 import { AgentModule } from '../src/modules/agent/module';
-import { MemoryModule } from '../src/modules/memory/module';
+import { SessionModule } from '../src/session/module';
 import {
-  AppendMessages,
-  GetContext,
-} from '../src/kernel/contracts/memory';
+  AppendSessionEvents,
+  GetSessionProjection,
+} from '../src/kernel/contracts/session';
+import { messageEvent } from '../src/session/projector';
 import { GetToolCatalog } from '../src/kernel/contracts/tools';
 import {
   CompactContext,
@@ -40,14 +41,14 @@ async function setup(
 ) {
   const bus = new AsyncEventBus();
   bus.provide(GetToolCatalog, () => []);
-  const memory = new MemoryModule();
+  const session = new SessionModule();
   const agent = new AgentModule({
     model,
     systemPrompt: 'SYS',
     contextWindowTokens: options.contextWindowTokens ?? 0,
     compactThresholdRatio: options.compactThresholdRatio ?? 0.8,
   });
-  await memory.start(bus);
+  await session.start(bus);
   await agent.start(bus);
   await bus.start();
   return { bus, agent };
@@ -69,9 +70,24 @@ describe('context compaction', () => {
         ? userMessage(`question ${index} `.repeat(12))
         : assistantMessage(`answer ${index} `.repeat(12)),
     );
-    await bus.request(new AppendMessages({ sessionId: 's1', messages: history }));
+    await bus.request(
+      new AppendSessionEvents({
+        sessionId: 's1',
+        events: history.map((message) =>
+          messageEvent(
+            message.role === 'user'
+              ? 'user_message'
+              : message.role === 'assistant'
+                ? 'assistant_message'
+                : 'tool_message',
+            message,
+          ),
+        ),
+      }),
+    );
 
     const result = await bus.request(new CompactContext({ sessionId: 's1' }));
+    await bus.idle();
     expect(result.skipped).toBe(false);
     expect(result.compactedMessages).toBeGreaterThan(1);
     expect(result.keptMessages).toBeGreaterThan(0);
@@ -79,7 +95,9 @@ describe('context compaction', () => {
     expect(events).toHaveLength(1);
     expect(events[0]?.result.id).toBe(result.id);
 
-    const context = await bus.request(new GetContext({ sessionId: 's1' }));
+    const context = (
+      await bus.request(new GetSessionProjection({ sessionId: 's1' }))
+    ).messages;
     expect(context[0]?.content).toContain('<compacted-summary>');
     expect(context[0]?.content).toContain('CONDENSED EARLIER CONTEXT');
     expect(context.length).toBe(result.keptMessages + 1);
@@ -98,7 +116,21 @@ describe('context compaction', () => {
         ? userMessage(`history user ${index} `.repeat(8))
         : assistantMessage(`history assistant ${index} `.repeat(8)),
     );
-    await bus.request(new AppendMessages({ sessionId: 's1', messages: history }));
+    await bus.request(
+      new AppendSessionEvents({
+        sessionId: 's1',
+        events: history.map((message) =>
+          messageEvent(
+            message.role === 'user'
+              ? 'user_message'
+              : message.role === 'assistant'
+                ? 'assistant_message'
+                : 'tool_message',
+            message,
+          ),
+        ),
+      }),
+    );
 
     bus.publish(new UserTurnRequested({ sessionId: 's1', userText: 'first' }));
     await agent.whenIdle();

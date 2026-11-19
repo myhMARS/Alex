@@ -11,6 +11,7 @@ import {
   ThinkingUpdated,
   TokenEmitted,
   TurnCompleted,
+  TurnFailed,
   TurnStarted,
   UserTurnRequested,
 } from '../src/kernel/contracts/chat';
@@ -21,6 +22,7 @@ import {
   ToolStarted,
 } from '../src/kernel/contracts/tools';
 import { ListSkills } from '../src/kernel/contracts/skills';
+import { ListAgents } from '../src/kernel/contracts/agents';
 import { GetToolCatalog, GetMCPStatus, ListDirectory } from '../src/kernel/contracts/tools';
 import {
   CompactContext,
@@ -28,8 +30,12 @@ import {
   ContextCompacted,
 } from '../src/kernel/contracts/compaction';
 import { ListCronJobs } from '../src/kernel/contracts/cron';
-import { ListSessions, LoadSession } from '../src/kernel/contracts/session';
-import { ReplaceMemory } from '../src/kernel/contracts/memory';
+import {
+  ListSessions,
+  LoadSession,
+  ReplaceSessionEvents,
+} from '../src/kernel/contracts/session';
+import { messageEvent } from '../src/session/projector';
 import { FeedbackSubmitted, TokenUsageReported } from '../src/kernel/contracts/chat';
 
 async function mountedTui(): Promise<{
@@ -39,6 +45,24 @@ async function mountedTui(): Promise<{
   quitCalls: { count: number };
 }> {
   const bus = new AsyncEventBus();
+  bus.provide(ListAgents, () => [
+    {
+      agentId: 'main',
+      parentAgentId: '',
+      teamId: 'default',
+      sessionId: 's1',
+      role: 'lead',
+      status: 'idle',
+    },
+    {
+      agentId: 'worker-1',
+      parentAgentId: 'main',
+      teamId: 'default',
+      sessionId: 's2',
+      role: 'worker',
+      status: 'running',
+    },
+  ]);
   const tui = new TuiModule();
   await tui.start(bus);
   await bus.start();
@@ -98,6 +122,86 @@ describe('TUI renderer', () => {
 
     expect(turns[0]?.userText).toBe('next message');
     expect(turns[0]?.sessionId).toBe('s1');
+    await bus.shutdown();
+  });
+
+  test('agents sidebar tab lists main and workers', async () => {
+    const { bus, tui, setup } = await mountedTui();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    if (tui.getSnapshot().sidebarCollapsed) tui.toggleSidebar();
+    await tui.setSidebarTab('agents');
+    await bus.idle();
+    await setup.renderOnce();
+    const frame = plain(setup.captureCharFrame());
+    expect(frame).toContain('AGENTS');
+    expect(frame).toContain('CONVERSATION AGENT');
+    expect(frame).toContain('main');
+    expect(frame).toContain('worker-1');
+    await bus.shutdown();
+  });
+
+  test('renders turn and tool errors instead of hiding them', async () => {
+    const { bus, setup } = await mountedTui();
+    bus.publish(
+      new TurnFailed({
+        agentId: 'main',
+        sessionId: 's1',
+        turnId: 'turn-error',
+        error: 'provider request failed: invalid api key',
+      }),
+    );
+    bus.publish(
+      new TurnStarted({
+        agentId: 'main',
+        sessionId: 's1',
+        turnId: 'turn-tool-error',
+        kind: 'user',
+        userInput: 'run failing tool',
+        attachments: [],
+      }),
+    );
+    bus.publish(
+      new ToolStarted({
+        agentId: 'main',
+        sessionId: 's1',
+        turnId: 'turn-tool-error',
+        toolId: 'tool-error-1',
+        toolName: 'spawn_agent',
+        toolInput: { prompt: 'x' },
+      }),
+    );
+    bus.publish(
+      new ToolFinished({
+        agentId: 'main',
+        sessionId: 's1',
+        turnId: 'turn-tool-error',
+        toolId: 'tool-error-1',
+        output: 'Error: permission denied by policy',
+      }),
+    );
+    await bus.idle();
+    await setup.renderOnce();
+    const frame = plain(setup.captureCharFrame());
+    expect(frame).toContain('provider request failed: invalid api key');
+    expect(frame).toContain('spawn_agent');
+    expect(frame).toContain('permission denied by policy');
+    expect(frame).toContain('✗');
+    await bus.shutdown();
+  });
+
+  test('/new starts a new session instead of clearing the view', async () => {
+    const { bus, tui, setup } = await mountedTui();
+    expect(tui.getSnapshot().sessionId).toBe('s1');
+    await setup.mockInput.typeText('/new');
+    await setup.mockInput.pressEnter();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await bus.idle();
+    expect(tui.getSnapshot().sessionId).not.toBe('s1');
+    expect(tui.getSnapshot().sessionId).toMatch(/^session-/);
+    expect(tui.getSnapshot().turns).toEqual([]);
+    await setup.renderOnce();
+    const frame = plain(setup.captureCharFrame());
+    expect(frame).toContain(tui.getSnapshot().sessionId.slice(0, 12));
     await bus.shutdown();
   });
 
@@ -178,15 +282,20 @@ describe('TUI renderer', () => {
         messageCount: 2,
       },
     ]);
+    bus.provide(ReplaceSessionEvents, () => ({ replaced: 2 }));
     bus.provide(LoadSession, () => ({
       sessionId: 'sess-a',
       messages: [
         { role: 'user', content: 'old question' },
         { role: 'assistant', content: 'old answer' },
       ],
+      events: [
+        { ...messageEvent('user_message', { role: 'user', content: 'old question' }), seq: 1 },
+        { ...messageEvent('assistant_message', { role: 'assistant', content: 'old answer' }), seq: 2 },
+      ],
       cronHistory: [],
+      formatVersion: 3,
     }));
-    bus.provide(ReplaceMemory, () => undefined);
     const tui = new TuiModule();
     await tui.start(bus);
     await bus.start();
@@ -516,7 +625,7 @@ describe('TUI renderer', () => {
     expect(frame).toContain('❯ /skills');
 
     // Selecting past the visible window scrolls the list.
-    for (let index = 0; index < 15; index += 1) {
+    for (let index = 0; index < 50; index += 1) {
       setup.mockInput.pressArrow('down');
     }
     await new Promise((resolve) => setTimeout(resolve, 30));

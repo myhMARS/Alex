@@ -17,6 +17,10 @@ import {
   type MCPStatusSnapshot,
 } from '../kernel/contracts/tools';
 import type { MCPServerConfig } from './config';
+import {
+  RegisterPromptSection,
+  UnregisterPromptSection,
+} from '../kernel/contracts/prompt';
 import { loadMcpConfig } from './config';
 import { MCPClient } from './client';
 
@@ -352,9 +356,34 @@ export class MCPModule implements Module {
     };
   }
 
+  /** Publish/refresh the MCP section consumed by PromptModule. */
+  private refreshPromptSection(): void {
+    if (!this.bus) return;
+    if (this.serverState.length === 0) {
+      this.bus.publish(new UnregisterPromptSection({ id: 'mcp' }));
+      return;
+    }
+    const lines = this.serverState.map((state) => {
+      const tools = state.tools.length > 0 ? ` (${state.tools.length} tools)` : '';
+      return `- ${state.name}: ${state.status}${tools}`;
+    });
+    this.bus.publish(
+      new RegisterPromptSection({
+        section: {
+          id: 'mcp',
+          title: 'MCP Servers',
+          content: ['## MCP Servers', '', ...lines].join('\n'),
+          order: 40,
+          source: 'mcp',
+        },
+      }),
+    );
+  }
+
   private publishToolsProvided(status: string): void {
     if (!this.bus) return;
     const specs = this.tools;
+    this.refreshPromptSection();
     this.bus.publish(
       new ToolsProvided({
         provider: 'mcp',

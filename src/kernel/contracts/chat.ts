@@ -32,6 +32,26 @@ export class TokenEmitted extends Event {
   }
 }
 
+/** Restore the exact last request header after a session resume. */
+export class SetRequestHeader extends Command {
+  header: Record<string, unknown>;
+
+  constructor(init: MessageContext & { header?: Record<string, unknown> } = {}) {
+    super(init);
+    this.header = init.header ?? {};
+  }
+}
+
+/** Restore provider prompt pressure after a session resume. */
+export class SetPromptPressure extends Command {
+  promptTokens: number;
+
+  constructor(init: MessageContext & { promptTokens?: number } = {}) {
+    super(init);
+    this.promptTokens = init.promptTokens ?? 0;
+  }
+}
+
 /** Update the live model effort / thinking switch without a restart. */
 export class SetModelEffort extends Request<{
   thinkingEnabled: boolean;

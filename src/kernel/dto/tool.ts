@@ -5,6 +5,8 @@ export interface ToolExecutionContext {
   turnId?: string;
   source?: 'user' | 'cron' | 'system';
   metadata?: Record<string, unknown>;
+  /** Caller cancellation propagated from the agent turn. */
+  signal?: AbortSignal;
 }
 
 export interface ToolSpec {
@@ -13,6 +15,8 @@ export interface ToolSpec {
   jsonSchema: Record<string, unknown>;
   provider?: 'builtin' | 'mcp' | 'plugin' | string;
   metadata?: Record<string, unknown>;
+  /** Caller cancellation propagated from the agent turn. */
+  signal?: AbortSignal;
 }
 
 export interface ToolResult {

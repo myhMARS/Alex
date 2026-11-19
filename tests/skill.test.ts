@@ -10,10 +10,8 @@ import { retrieveSkills } from '../src/skill/retriever';
 import { SkillReflector, parseReflection } from '../src/skill/reflector';
 import { createSkill, recordSkillUse } from '../src/skill/models';
 import { ToolsModule } from '../src/tools/module';
-import { MemoryModule } from '../src/modules/memory/module';
 import { PermissionPolicy, AuditLogger } from '../src/tools/permissions';
 import type { ChatModel, ChatRequest, ChatStreamEvent } from '../src/llm/client';
-import { AppendMessages } from '../src/kernel/contracts/memory';
 import { ExecuteTool, GetToolCatalog } from '../src/kernel/contracts/tools';
 import { FeedbackSubmitted } from '../src/kernel/contracts/chat';
 import {

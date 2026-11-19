@@ -17,8 +17,8 @@ import { CliError, VERSION, helpText, parseCliArgs } from './cli';
 import { AsyncEventBus } from './kernel/bus';
 import { ModuleHost } from './kernel/runtime';
 import { AgentModule } from './modules/agent/module';
-import { MemoryModule } from './modules/memory/module';
 import { StoreModule } from './modules/store/module';
+import { SessionModule } from './session/module';
 import { TuiModule } from './modules/tui/module';
 import { ToolsModule } from './tools/module';
 import { MCPModule } from './mcp/module';
@@ -27,12 +27,15 @@ import { loadDotEnv, loadLLMConfig } from './llm/config';
 import { loadSettings } from './settings/store';
 import { attachmentStoreDir } from './attachments/store';
 import { SettingsModule } from './settings/module';
-import { getSystemPrompt } from './prompts/system';
+import { PromptModule } from './prompts/module';
+import { AgentRegistryModule } from './agents/module';
 import { SkillModule } from './skill/module';
 import { CronModule } from './cron/module';
 import { launchTui } from './tui/launcher';
-import { GetContext } from './kernel/contracts/memory';
-import { ListSessions } from './kernel/contracts/session';
+import {
+  GetSessionProjection,
+  ListSessions,
+} from './kernel/contracts/session';
 import { GetMCPStatus, GetToolCatalog } from './kernel/contracts/tools';
 
 async function main(): Promise<void> {
@@ -98,11 +101,14 @@ async function main(): Promise<void> {
   const host = new ModuleHost(bus, logger);
   const agent = new AgentModule({
     model,
-    systemPrompt: getSystemPrompt(),
+    agentId: 'main',
+    teamId: 'default',
     contextWindowTokens: settings.maxContextTokens,
     compactThresholdRatio: settings.compactThresholdRatio,
+    imageMaxDimension: settings.imageMaxDimension,
     thinkingEnabled: settings.thinkingEnabled,
     effort: settings.effort,
+    maxIterations: settings.maxIterations,
   });
   const tui = new TuiModule({
     thinkingEnabled: settings.thinkingEnabled,
@@ -112,20 +118,27 @@ async function main(): Promise<void> {
   });
 
   host.register(
-    new MemoryModule({
-      maxContextTokens: settings.maxContextTokens,
-      reserveOutputTokens: settings.maxOutputTokens,
-    }),
-  );
-  host.register(
     new SettingsModule({
       settings,
       path: settingsEnv.ALEX_SETTINGS_PATH || undefined,
       env: settingsEnv,
     }),
   );
+  host.register(new PromptModule());
+  host.register(new SessionModule());
   host.register(new StoreModule(sessionsDir ? { sessionsDir } : {}));
   host.register(new ToolsModule({ roots: [process.cwd(), attachmentStoreDir()] }));
+  const registry = new AgentRegistryModule({
+    model,
+    defaultAgentId: 'main',
+    defaultTeamId: 'default',
+    persistTasks: true,
+    persistMailbox: true,
+    persistAgents: true,
+    maxIterations: settings.maxIterations,
+  });
+  registry.attachAgent(agent, { agentId: 'main', role: 'lead', teamId: 'default' });
+  host.register(registry);
   // In the demo we skip reading ~/.alex/mcp.json so the run stays offline.
   host.register(
     new MCPModule(!options.mcp || demo ? { configs: [] } : {}),
@@ -169,7 +182,7 @@ async function main(): Promise<void> {
       const [turn] = tui.viewState.turns;
       console.log(`view: ${turn?.status} "${turn?.content}" (${turn?.kind})`);
       console.log(
-        `history messages: ${(await bus.request(new GetContext({ sessionId: demoSessionId }))).length}`,
+        `history messages: ${(await bus.request(new GetSessionProjection({ sessionId: demoSessionId }))).messages.length}`,
       );
       console.log(`sessions persisted: ${(await bus.request(new ListSessions())).length}`);
       console.log(`tools in catalog: ${(await bus.request(new GetToolCatalog())).length}`);
