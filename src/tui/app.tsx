@@ -1,7 +1,7 @@
 /** OpenTUI React chat UI bound directly to the in-process TuiModule. */
 
 import { existsSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
+import { rm, stat } from 'node:fs/promises';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useKeyboard, useRenderer, useTerminalDimensions } from '@opentui/react';
 import { RGBA } from '@opentui/core';
@@ -78,11 +78,11 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
   const { width, height } = useTerminalDimensions();
   const renderer = useRenderer();
   const toggleProcessTurn = useCallback(
-    (turnId: string) => {
+    (turnId: string, expanded: boolean) => {
       // A disclosure click must not start or extend text selection over the
       // rows that are about to move.
       renderer.clearSelection();
-      tui.toggleToolTurn(turnId);
+      tui.toggleToolTurn(turnId, expanded);
     },
     [renderer, tui],
   );
@@ -104,6 +104,7 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
   const [inlineEdit, setInlineEdit] = useState<TuiSettingField | null>(null);
   const [inlineDraft, setInlineDraft] = useState('');
   const [pendingTeamDispose, setPendingTeamDispose] = useState<string | null>(null);
+  const [pendingSessionDelete, setPendingSessionDelete] = useState<number | null>(null);
   const approvalMaxOffset = approvalPreview
     ? Math.max(0, approvalPreview.lines.length - approvalVisibleLines)
     : 0;
@@ -331,6 +332,11 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
     setPaletteDismissed(false);
   }, []);
 
+  const focusComposer = useCallback(() => {
+    if (approval || inlineEdit) return;
+    inputRef.current?.focus();
+  }, [approval, inlineEdit]);
+
   const beginInlineEdit = useCallback(
     (field: TuiSettingField, index: number) => {
       renderer.clearSelection();
@@ -365,6 +371,7 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
 
   useEffect(() => {
     if (snapshot.page?.kind !== 'teams') setPendingTeamDispose(null);
+    if (snapshot.page?.kind !== 'sessions') setPendingSessionDelete(null);
   }, [snapshot.page?.kind]);
 
   useKeyboard((key) => {
@@ -591,7 +598,12 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
         .map((line) => line.trim().replace(/^["']|["']$/g, ''))
         .filter(Boolean);
       if (candidates.length === 0 || candidates.length > 10) return;
-      if (!candidates.every((path) => existsSync(path))) return;
+      const stats = await Promise.all(
+        candidates.map((path) => stat(path).catch(() => null)),
+      );
+      // A pasted folder path is normal text, not an attachment. Let the input
+      // handle it instead of warning that it is not a file.
+      if (stats.some((info) => !info?.isFile())) return;
       event.preventDefault();
       try {
         const attachments = await Promise.all(
@@ -672,6 +684,42 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
           clearInput();
           return;
         }
+      }
+      if (lower === '/sessions') {
+        tui.setSessionFilter('');
+        void tui.showPage('sessions');
+        clearInput();
+        return;
+      }
+      if (lower.startsWith('/sessions ')) {
+        tui.setSessionFilter(text.slice('/sessions'.length).trim());
+        void tui.showPage('sessions');
+        clearInput();
+        return;
+      }
+      const renameMatch = text.match(/^\/rename\s+(\S+)\s+(.+)$/i);
+      if (renameMatch) {
+        clearInput();
+        const target = /^\d+$/.test(renameMatch[1]!)
+          ? Number.parseInt(renameMatch[1]!, 10)
+          : renameMatch[1]!;
+        void tui.renameSession(target, renameMatch[2]!).then((result) => {
+          tui.setToast(`${result.ok ? '✓' : '✗'} ${result.message}`);
+        });
+        return;
+      }
+      if (lower.startsWith('/find ')) {
+        clearInput();
+        const result = tui.searchCurrentSession(text.slice('/find'.length).trim());
+        tui.setToast(`${result.ok ? '✓' : '✗'} ${result.message}`);
+        return;
+      }
+      if (lower === '/export') {
+        clearInput();
+        void tui.exportCurrentSession().then((result) => {
+          tui.setToast(`${result.ok ? '✓' : '✗'} ${result.message}`);
+        });
+        return;
       }
       if (lower === '/mcp reload' || lower === '/mcp refresh') {
         clearInput();
@@ -891,9 +939,13 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
         overflow: 'hidden',
         position: 'relative',
       }}
+      onMouseDown={() => {
+        if (!page && !approval) focusComposer();
+      }}
     >
       <Header
         sessionId={activeSessionId}
+        title={snapshot.sessionTitle}
         toolCount={toolCount}
         collapsed={snapshot.sidebarCollapsed}
         sidebarAvailable={showSidebar}
@@ -906,6 +958,9 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
             overflow: 'hidden',
             paddingLeft: 1,
             paddingRight: 1,
+          }}
+          onMouseDown={() => {
+            if (!page) focusComposer();
           }}
         >
           {approval ? (
@@ -932,6 +987,22 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
                 });
               }}
               pendingTeamId={pendingTeamDispose}
+              pendingSessionDelete={pendingSessionDelete}
+              onSessionAction={(index, action) => {
+                if (action === 'delete') {
+                  if (pendingSessionDelete !== index) {
+                    setPendingSessionDelete(index);
+                    tui.setToast('再次点击 [确认删除] 以删除会话');
+                    return;
+                  }
+                  setPendingSessionDelete(null);
+                } else {
+                  setPendingSessionDelete(null);
+                }
+                void tui.sessionAction(index, action).then((result) => {
+                  tui.setToast(`${result.ok ? '✓' : '✗'} ${result.message}`);
+                });
+              }}
               onTeamDispose={(teamId) => {
                 if (pendingTeamDispose === teamId) {
                   setPendingTeamDispose(null);
@@ -958,6 +1029,7 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
           ) : (
             <scrollbox
               style={{ flexGrow: 1, width: '100%' }}
+              onMouseDown={() => focusComposer()}
               stickyScroll
               stickyStart="bottom"
               scrollbarOptions={{ visible: false }}
@@ -969,6 +1041,7 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
                 skillsExpanded={snapshot.skillsExpanded}
                 toolOutputExpanded={snapshot.toolOutputExpanded}
                 toolTurnsExpanded={snapshot.toolTurnsExpanded}
+                toolTurnsCollapsed={snapshot.toolTurnsCollapsed}
                 onToggleToolTurn={toggleProcessTurn}
               />
             </scrollbox>
@@ -1183,11 +1256,13 @@ function CommandPalette({
 
 function Header({
   sessionId,
+  title,
   toolCount,
   collapsed,
   sidebarAvailable,
 }: {
   sessionId: string;
+  title?: string;
   toolCount?: number;
   collapsed: boolean;
   sidebarAvailable: boolean;
@@ -1208,7 +1283,9 @@ function Header({
       </text>
       <text fg={theme.border}>  │  </text>
       <text fg={theme.muted}>session </text>
-      <text fg={theme.text}>#{truncate(sessionId || '-', 21)}</text>
+      <text fg={theme.text}>
+        {title?.trim() ? truncate(title.trim(), 32) : `#${truncate(sessionId || '-', 21)}`}
+      </text>
       {toolCount !== undefined ? (
         <>
           <text fg={theme.border}>  ·  </text>
@@ -1272,6 +1349,7 @@ function Chat({
   skillsExpanded,
   toolOutputExpanded,
   toolTurnsExpanded,
+  toolTurnsCollapsed,
   onToggleToolTurn,
 }: {
   turns: TurnView[];
@@ -1280,7 +1358,8 @@ function Chat({
   skillsExpanded: boolean;
   toolOutputExpanded: boolean;
   toolTurnsExpanded: string[];
-  onToggleToolTurn: (turnId: string) => void;
+  toolTurnsCollapsed: string[];
+  onToggleToolTurn: (turnId: string, expanded: boolean) => void;
 }) {
   if (turns.length === 0) return null;
   return (
@@ -1294,7 +1373,8 @@ function Chat({
           skillsExpanded={skillsExpanded}
           toolOutputExpanded={toolOutputExpanded}
           toolGroupExpanded={toolTurnsExpanded.includes(turn.turnId)}
-          onToggleToolGroup={() => onToggleToolTurn(turn.turnId)}
+          toolGroupCollapsed={toolTurnsCollapsed.includes(turn.turnId)}
+          onToggleToolGroup={(expanded) => onToggleToolTurn(turn.turnId, expanded)}
         />
       ))}
     </box>
@@ -1486,7 +1566,7 @@ function ProcessGroup({
         onMouseDown={onToggle}
       >
         {expanded ? '▾' : '▸'} {running ? spinner : '✻'} {pieces.join(' · ') || '思考'} · {status}
-        {expanded ? '' : ' · click to expand'}
+        {expanded ? '  [收起]' : '  [展开]'}
       </text>
       {expanded ? (
         <box style={{ flexDirection: 'column', width, paddingLeft: 0 }}>
@@ -1550,6 +1630,7 @@ function TurnBlock({
   skillsExpanded,
   toolOutputExpanded,
   toolGroupExpanded,
+  toolGroupCollapsed,
   onToggleToolGroup,
 }: {
   turn: TurnView;
@@ -1558,7 +1639,8 @@ function TurnBlock({
   skillsExpanded: boolean;
   toolOutputExpanded: boolean;
   toolGroupExpanded: boolean;
-  onToggleToolGroup: () => void;
+  toolGroupCollapsed: boolean;
+  onToggleToolGroup: (expanded: boolean) => void;
 }) {
   if (turn.kind === 'compaction') {
     const part = turn.parts.find((item) => item.kind === 'compaction');
@@ -1623,6 +1705,13 @@ function TurnBlock({
                   : [];
             const processParts = parts.filter(isProcessPart);
             const firstProcessIndex = parts.findIndex(isProcessPart);
+            const expanded =
+              toolGroupExpanded ||
+              ((turn.error !== undefined ||
+                processParts.some(
+                  (item) => item.kind === 'tool' && item.tool.done && item.tool.failed,
+                )) &&
+                !toolGroupCollapsed);
             return parts.map((part, index) => {
               if (index === firstProcessIndex) {
                 return (
@@ -1631,11 +1720,7 @@ function TurnBlock({
                     parts={processParts}
                     width={width - 2}
                     marginTop={index > 0 ? 1 : 0}
-                    expanded={
-                      toolGroupExpanded ||
-                      turn.error !== undefined ||
-                      processParts.some((item) => item.kind === 'tool' && item.tool.done && item.tool.failed)
-                    }
+                    expanded={expanded}
                     running={streaming || processParts.some((item) => item.kind === 'tool' && !item.tool.done)}
                     failed={
                       turn.error !== undefined ||
@@ -1644,7 +1729,7 @@ function TurnBlock({
                     thinkingExpanded={thinkingExpanded}
                     skillsExpanded={skillsExpanded}
                     toolOutputExpanded={toolOutputExpanded}
-                    onToggle={onToggleToolGroup}
+                    onToggle={() => onToggleToolGroup(expanded)}
                   />
                 );
               }
@@ -2072,6 +2157,8 @@ function PagePanel({
   onSaveEdit,
   onMcpToggle,
   pendingTeamId,
+  pendingSessionDelete,
+  onSessionAction,
   onTeamDispose,
 }: {
   page: NonNullable<TuiSnapshot['page']>;
@@ -2085,6 +2172,8 @@ function PagePanel({
   onSaveEdit: (value: string) => void;
   onMcpToggle: (index: number, enabled: boolean) => void;
   pendingTeamId: string | null;
+  pendingSessionDelete: number | null;
+  onSessionAction: (index: number, action: 'pin' | 'archive' | 'title' | 'export' | 'delete') => void;
   onTeamDispose: (teamId: string) => void;
 }) {
   const fields = page.kind === 'settings' ? page.fields ?? [] : [];
@@ -2189,6 +2278,55 @@ function PagePanel({
                 );
               })
             : page.body.split('\n').map((line, index) => {
+                const sessionParts = page.kind === 'sessions' ? line.split('\t') : null;
+                if (sessionParts && sessionParts.length === 2) {
+                  const prefix = sessionParts[0]!;
+                  const rowIndex = Number.parseInt(prefix, 10);
+                  const buttons = [...sessionParts[1]!.matchAll(/\[([^\]]+)\]/g)].map(
+                    (match) => match[1]!,
+                  );
+                  const actionOf = (label: string): 'pin' | 'archive' | 'title' | 'export' | 'delete' => {
+                    if (label.includes('置顶')) return 'pin';
+                    if (label === '归档' || label === '恢复') return 'archive';
+                    if (label === '标题') return 'title';
+                    if (label === '导出') return 'export';
+                    return 'delete';
+                  };
+                  const colorOf = (action: ReturnType<typeof actionOf>): string =>
+                    action === 'delete'
+                      ? theme.error
+                      : action === 'export'
+                        ? theme.user
+                        : action === 'title'
+                          ? theme.skill
+                          : theme.muted;
+                  return (
+                    <box
+                      key={index}
+                      style={{ flexDirection: 'column', width: width - 4, height: 2 }}
+                    >
+                      <text fg={theme.text} style={{ width: width - 4 }}>
+                        {truncate(prefix, width - 6)}
+                      </text>
+                      <box style={{ flexDirection: 'row', width: width - 4 }}>
+                        {buttons.map((label) => {
+                          const action = actionOf(label);
+                          const confirming = action === 'delete' && pendingSessionDelete === rowIndex;
+                          return (
+                            <text
+                              key={label}
+                              fg={confirming ? theme.warning : colorOf(action)}
+                              selectable={false}
+                              onMouseDown={() => onSessionAction(rowIndex, action)}
+                            >
+                              {confirming ? '[确认删除] ' : `[${label}] `}
+                            </text>
+                          );
+                        })}
+                      </box>
+                    </box>
+                  );
+                }
                 if (page.kind === 'context' && line.startsWith('◆')) {
                   return (
                     <text key={index} fg={theme.accent} selectable={false}>

@@ -19,6 +19,7 @@ export interface LaunchTuiOptions {
  */
 export async function launchTui(options: LaunchTuiOptions): Promise<void> {
   options.tui.setSessionId(options.sessionId);
+  await options.tui.refreshSessionTitle();
   // useMouse enables wheel/click reporting so the chat scrollbox can scroll.
   const renderer = await createCliRenderer({ exitOnCtrlC: false, useMouse: true });
   let finished = false;

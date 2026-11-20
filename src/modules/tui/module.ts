@@ -92,8 +92,12 @@ import {
   ListSessions,
   LoadSession,
   RepairSession,
+  ExportSession,
+  RegenerateSessionTitle,
+  RemoveSession,
   ReplaceSessionEvents,
   SessionTitleUpdated,
+  UpdateSessionMeta,
   type SessionMeta,
 } from '../../kernel/contracts/session';
 import {
@@ -129,6 +133,10 @@ function messageContent(message: { content?: unknown }): string {
       .join('\n');
   }
   return message.content == null ? '' : String(message.content);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function formatSessionTime(iso: string): string {
@@ -169,6 +177,7 @@ export type TuiPageKind =
   | 'cron'
   | 'mcp'
   | 'sessions'
+  | 'search'
   | 'reflections'
   | 'context'
   | 'settings'
@@ -244,6 +253,7 @@ export interface TuiSnapshot {
   reflection: SkillsReflected | null;
   page: TuiPage | null;
   sessionId: string;
+  sessionTitle: string;
   sidebarTab: TuiSidebarTab;
   sidebarAgents: TuiSidebarAgent[];
   viewAgentId: string;
@@ -255,6 +265,7 @@ export interface TuiSnapshot {
   toolOutputExpanded: boolean;
   /** Turn ids whose tool-call group is manually expanded. */
   toolTurnsExpanded: string[];
+  toolTurnsCollapsed: string[];
   sidebarCollapsed: boolean;
   toast: string | null;
   thinkingEnabled: boolean;
@@ -327,7 +338,9 @@ export class TuiModule implements Module {
   private snapshot: TuiSnapshot;
   private page: TuiPage | null = null;
   private sessionId = '';
+  private sessionTitle = '';
   private sessionChoices: SessionMeta[] = [];
+  private sessionFilter = '';
   private mcpStatusMessage = '';
   private mcpServers: Record<string, unknown>[] = [];
   private readonly mcpExpanded = new Set<number>();
@@ -352,6 +365,7 @@ export class TuiModule implements Module {
   private skillsExpanded = false;
   private toolOutputExpanded = false;
   private readonly expandedToolTurns = new Set<string>();
+  private readonly collapsedToolTurns = new Set<string>();
   private sidebarCollapsed = true;
   private toast: string | null = null;
   private toastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -467,12 +481,31 @@ export class TuiModule implements Module {
     );
   }
 
+  /** Load the persisted title for the current session (startup / resume). */
+  async refreshSessionTitle(): Promise<void> {
+    const bus = this.bus;
+    if (!bus || !this.sessionId) return;
+    try {
+      const projection = await bus.request(
+        new GetSessionProjection({ sessionId: this.sessionId }),
+      );
+      const title = projection.title?.trim() ?? '';
+      if (title !== this.sessionTitle) {
+        this.sessionTitle = title;
+        this.refresh();
+      }
+    } catch {
+      // A title is optional; the header falls back to the session id.
+    }
+  }
+
   get currentSessionId(): string {
     return this.sessionId;
   }
 
   setSessionId(sessionId: string): void {
     this.sessionId = sessionId;
+    this.sessionTitle = '';
     if (this.viewAgentId === 'main') this.mainSessionId = sessionId;
     this.refresh();
   }
@@ -552,6 +585,7 @@ export class TuiModule implements Module {
       const surface = projectSessionSurface(events);
       this.viewState.loadHistory(messages, events, surface.turns, agentId);
       this.sessionId = bundle.sessionId;
+      this.sessionTitle = bundle.title ?? surface.title ?? '';
       this.viewAgentId = agentId;
       this.page = null;
       this.sessionChoices = [];
@@ -584,6 +618,7 @@ export class TuiModule implements Module {
       this.sessionId = sessionId;
       this.viewAgentId = agentId;
       const surface = projectSessionSurface(events);
+      this.sessionTitle = bundle.title ?? surface.title ?? '';
       this.viewState.loadHistory(messages, events, surface.turns, agentId);
       if (this.viewState.lastUsage) {
         this.publish(
@@ -737,6 +772,154 @@ export class TuiModule implements Module {
   }
 
   /** Select the n-th (1-based) session from the `/sessions` page. */
+  /** Filter /sessions by title, first message, id, date or time window. */
+  setSessionFilter(query: string): void {
+    this.sessionFilter = query.trim();
+  }
+
+  get currentSessionFilter(): string {
+    return this.sessionFilter;
+  }
+
+  /** Rename a session by 1-based list index or session id. */
+  async renameSession(target: number | string, title: string): Promise<{ ok: boolean; message: string }> {
+    const meta = this.resolveSession(target);
+    if (!meta) return { ok: false, message: '找不到会话' };
+    const clean = title.trim();
+    if (!clean) return { ok: false, message: '标题不能为空' };
+    const bus = this.bus;
+    if (!bus) return { ok: false, message: '会话服务不可用' };
+    try {
+      const ok = await bus.request(
+        new UpdateSessionMeta({ targetSessionId: meta.sessionId, patch: { title: clean } }),
+      );
+      if (ok && meta.sessionId === this.sessionId) this.sessionTitle = clean;
+      if (this.page?.kind === 'sessions') await this.showPage('sessions');
+      return { ok, message: ok ? `已重命名：${clean}` : '重命名失败' };
+    } catch (error) {
+      return { ok: false, message: `重命名失败：${errorMessage(error)}` };
+    }
+  }
+
+  /** Execute one session-row action. */
+  async sessionAction(
+    index: number,
+    action: 'pin' | 'archive' | 'title' | 'export' | 'delete',
+  ): Promise<{ ok: boolean; message: string }> {
+    const meta = this.resolveSession(index);
+    if (!meta) return { ok: false, message: '找不到会话' };
+    const bus = this.bus;
+    if (!bus) return { ok: false, message: '会话服务不可用' };
+    try {
+      if (action === 'pin') {
+        await bus.request(
+          new UpdateSessionMeta({
+            targetSessionId: meta.sessionId,
+            patch: { pinned: !meta.pinned },
+          }),
+        );
+        await this.showPage('sessions');
+        return { ok: true, message: meta.pinned ? '已取消置顶' : '已置顶' };
+      }
+      if (action === 'archive') {
+        await bus.request(
+          new UpdateSessionMeta({
+            targetSessionId: meta.sessionId,
+            patch: { archived: !meta.archived },
+          }),
+        );
+        await this.showPage('sessions');
+        return { ok: true, message: meta.archived ? '已取消归档' : '已归档' };
+      }
+      if (action === 'title') {
+        const result = await bus.request(
+          new RegenerateSessionTitle({ targetSessionId: meta.sessionId }),
+        );
+        if (!result?.title) return { ok: false, message: '标题生成失败' };
+        await this.showPage('sessions');
+        return { ok: true, message: `标题：${result.title}` };
+      }
+      if (action === 'export') {
+        const result = await bus.request(
+          new ExportSession({ targetSessionId: meta.sessionId }),
+        );
+        if (!result) return { ok: false, message: '导出失败' };
+        return { ok: true, message: `已导出：${result.path}` };
+      }
+      const removed = await bus.request(
+        new RemoveSession({ targetSessionId: meta.sessionId }),
+      );
+      if (!removed) return { ok: false, message: '删除失败' };
+      if (meta.sessionId === this.sessionId) await this.newSession();
+      else await this.showPage('sessions');
+      return { ok: true, message: `已删除会话：${meta.sessionId}` };
+    } catch (error) {
+      return { ok: false, message: `操作失败：${errorMessage(error)}` };
+    }
+  }
+
+  /** Export the current session as Markdown. */
+  async exportCurrentSession(): Promise<{ ok: boolean; message: string }> {
+    const bus = this.bus;
+    if (!bus || !this.sessionId) return { ok: false, message: '当前没有会话' };
+    try {
+      const result = await bus.request(
+        new ExportSession({ targetSessionId: this.sessionId }),
+      );
+      return result
+        ? { ok: true, message: `已导出：${result.path}` }
+        : { ok: false, message: '导出失败' };
+    } catch (error) {
+      return { ok: false, message: `导出失败：${errorMessage(error)}` };
+    }
+  }
+
+  /** Search user/assistant/tool text inside the current session view. */
+  searchCurrentSession(query: string): { ok: boolean; message: string } {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return { ok: false, message: '用法：/find <关键词>' };
+    const matches: string[] = [];
+    this.viewState.turns.forEach((turn, turnIndex) => {
+      if ((turn.agentId || 'main') !== this.viewAgentId) return;
+      const fields: Array<[string, string]> = [
+        ['user', turn.userInput],
+        ['assistant', turn.content],
+        ...turn.tools.map((tool) => [`tool:${tool.name}`, tool.output ?? ''] as [string, string]),
+      ];
+      for (const [label, text] of fields) {
+        const index = text.toLowerCase().indexOf(needle);
+        if (index < 0) continue;
+        const start = Math.max(0, index - 36);
+        const snippet = text
+          .slice(start, index + needle.length + 64)
+          .replace(/\s+/g, ' ')
+          .trim();
+        matches.push(
+          `${turnIndex + 1}. [${label}] ${start > 0 ? '…' : ''}${snippet}${start + needle.length + 64 < text.length ? '…' : ''}`,
+        );
+      }
+    });
+    this.page = {
+      kind: 'search',
+      title: '会话搜索',
+      body:
+        `查询：${query}\n匹配：${matches.length} 条\n\n` +
+        (matches.length > 0 ? matches.slice(0, 80).join('\n') : '（无匹配）'),
+    };
+    this.refresh();
+    return { ok: true, message: `找到 ${matches.length} 条匹配` };
+  }
+
+  private resolveSession(target: number | string): SessionMeta | undefined {
+    if (typeof target === 'number') {
+      return this.sessionChoices[target - 1];
+    }
+    const value = target.trim();
+    return this.sessionChoices.find(
+      (session) => session.sessionId === value || session.title === value,
+    );
+  }
+
   async chooseSession(index: number): Promise<boolean> {
     const choice = this.sessionChoices[index - 1];
     if (!choice) {
@@ -874,11 +1057,19 @@ export class TuiModule implements Module {
     return this.permissionMode;
   }
 
-  toggleToolTurn(turnId: string): boolean {
+  toggleToolTurn(turnId: string, currentlyExpanded?: boolean): boolean {
     if (!turnId) return false;
-    const next = !this.expandedToolTurns.has(turnId);
-    if (next) this.expandedToolTurns.add(turnId);
-    else this.expandedToolTurns.delete(turnId);
+    const next =
+      currentlyExpanded === undefined
+        ? !this.expandedToolTurns.has(turnId)
+        : !currentlyExpanded;
+    if (next) {
+      this.expandedToolTurns.add(turnId);
+      this.collapsedToolTurns.delete(turnId);
+    } else {
+      this.expandedToolTurns.delete(turnId);
+      this.collapsedToolTurns.add(turnId);
+    }
     this.refresh();
     return next;
   }
@@ -910,12 +1101,14 @@ export class TuiModule implements Module {
     const sessionId = `session-${Date.now().toString(36)}`;
     this.sessionId = sessionId;
     this.mainSessionId = sessionId;
+    this.sessionTitle = '';
     this.viewAgentId = 'main';
     this.page = null;
     this.sessionChoices = [];
     this.viewState.reset();
     this.queuedMessages.length = 0;
     this.expandedToolTurns.clear();
+    this.collapsedToolTurns.clear();
     this.refresh();
     const bus = this.bus;
     if (bus) {
@@ -942,6 +1135,7 @@ export class TuiModule implements Module {
   resetView(): void {
     this.viewState.reset();
     this.expandedToolTurns.clear();
+    this.collapsedToolTurns.clear();
     this.page = null;
     this.refresh();
   }
@@ -1363,6 +1557,7 @@ export class TuiModule implements Module {
       cron: '定时任务',
       mcp: 'MCP 状态',
       sessions: '会话列表',
+      search: '会话搜索',
       reflections: '反思记录',
       context: '上下文窗口',
       settings: '模型设置',
@@ -2040,21 +2235,68 @@ export class TuiModule implements Module {
         (session) => !session.agentId || ids.has(session.agentId),
       );
     }
-    const ordered = [...sessions].sort((a, b) => {
-      const left = a.updatedAt ?? a.createdAt;
-      const right = b.updatedAt ?? b.createdAt;
-      return right.localeCompare(left);
+
+    const rawFilter = this.sessionFilter.trim();
+    const lower = rawFilter.toLowerCase();
+    const showArchived = lower === 'archived';
+    const showAll = lower === 'all';
+    const textQuery = showArchived || showAll ? '' : lower;
+    const now = Date.now();
+    const matchesQuery = (session: SessionMeta): boolean => {
+      if (!textQuery) return true;
+      const when = session.updatedAt ?? session.createdAt;
+      const date = new Date(when);
+      if (textQuery === 'today') {
+        return date.toDateString() === new Date().toDateString();
+      }
+      const days = textQuery.match(/^(\d+)d$/);
+      if (days) {
+        return now - date.getTime() <= Number(days[1]) * 86_400_000;
+      }
+      const text = [
+        session.sessionId,
+        session.title ?? '',
+        session.firstMessage,
+        formatSessionTime(when),
+        when,
+      ]
+        .join(' ')
+        .toLowerCase();
+      return text.includes(textQuery);
+    };
+    let filtered = sessions.filter((session) => {
+      if (showArchived) return Boolean(session.archived) && matchesQuery(session);
+      if (showAll) return matchesQuery(session);
+      return !session.archived && matchesQuery(session);
     });
-    this.sessionChoices = ordered;
-    if (ordered.length === 0) return '暂无已保存的会话。';
-    return ordered
-      .map((session, index) => {
+    filtered = [...filtered].sort((a, b) => {
+      const pinDiff = Number(Boolean(b.pinned)) - Number(Boolean(a.pinned));
+      if (pinDiff !== 0) return pinDiff;
+      const archiveDiff = Number(Boolean(a.archived)) - Number(Boolean(b.archived));
+      if (archiveDiff !== 0) return archiveDiff;
+      return (b.updatedAt ?? b.createdAt).localeCompare(a.updatedAt ?? a.createdAt);
+    });
+    this.sessionChoices = filtered;
+    const scope = rawFilter
+      ? `筛选：${rawFilter} · ${filtered.length} 个会话`
+      : `共 ${filtered.length} 个会话（置顶优先 · 已归档默认隐藏）`;
+    if (filtered.length === 0) {
+      return `${scope}\n\n${rawFilter ? '没有匹配的会话。' : '暂无已保存的会话。'}`;
+    }
+    return [
+      scope,
+      '',
+      ...filtered.map((session, index) => {
         const when = formatSessionTime(session.updatedAt ?? session.createdAt);
         const message = session.firstMessage.replace(/\s+/g, ' ').trim();
-        const title = session.title?.trim();
+        const title = session.title?.trim() || session.sessionId;
+        const flags = `${session.pinned ? ' · pinned' : ''}${session.archived ? ' · archived' : ''}`;
+        const actions =
+          `${session.pinned ? '[取消置顶]' : '[置顶]'} ` +
+          `${session.archived ? '[恢复]' : '[归档]'} [标题] [导出] [删除]`;
         return [
-          `${String(index + 1).padStart(2, ' ')}. ${title || session.sessionId}`,
-          `    ${title ? `${session.sessionId} · ` : ''}${when} · ${session.messageCount} msgs`,
+          `${String(index + 1).padStart(2, ' ')}. ${title}${flags}\t${actions}`,
+          `    ${title === session.sessionId ? '' : `${session.sessionId} · `}${when} · ${session.messageCount} msgs`,
           session.parentSessionId
             ? `    ↳ fork of ${session.parentSessionId}${session.forkBoundarySeq !== undefined ? ` @ seq ${session.forkBoundarySeq}` : ''}`
             : '',
@@ -2063,15 +2305,20 @@ export class TuiModule implements Module {
         ]
           .filter(Boolean)
           .join('\n');
-      })
-      .join('\n');
+      }),
+      '点击按钮操作 · 数字加载 · /rename <n> <标题> · /find <关键词> 会话内搜索',
+    ].join('\n');
   }
 
   // ── internals ──────────────────────────────────────────────────────────
 
   private handle(event: Event): void {
     if (event instanceof SessionTitleUpdated) {
+      if (!event.sessionId || event.sessionId === this.sessionId) {
+        this.sessionTitle = event.title;
+      }
       if (this.page?.kind === 'sessions') void this.showPage('sessions');
+      this.refresh();
       return;
     }
     if (event instanceof TurnQueued) {
@@ -2112,6 +2359,7 @@ export class TuiModule implements Module {
       reflection: this.viewState.lastReflection,
       page: this.page,
       sessionId: this.sessionId,
+      sessionTitle: this.sessionTitle,
       sidebar: this.sidebar,
       sidebarTab: this.sidebarTab,
       sidebarAgents: this.sidebarAgents,
@@ -2123,6 +2371,7 @@ export class TuiModule implements Module {
       skillsExpanded: this.skillsExpanded,
       toolOutputExpanded: this.toolOutputExpanded,
       toolTurnsExpanded: [...this.expandedToolTurns],
+      toolTurnsCollapsed: [...this.collapsedToolTurns],
       sidebarCollapsed: this.sidebarCollapsed,
       toast: this.toast,
       thinkingEnabled: this.thinkingEnabled,

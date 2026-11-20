@@ -28,14 +28,18 @@ import type { MessageDTO } from '../../kernel/dto/message';
 import { TurnCompleted } from '../../kernel/contracts/chat';
 import {
   CheckpointSession,
+  ExportSession,
   ForkSession,
   ListSessions,
   LoadSession,
+  RemoveSession,
   RepairSession,
+  UpdateSessionMeta,
   type RepairResult,
   SessionEventAppended,
   type SessionBundle,
   type SessionEventRecord,
+  type SessionExportResult,
   type SessionMeta,
 } from '../../kernel/contracts/session';
 import { projectSessionEvents } from '../../session/projector';
@@ -69,6 +73,8 @@ interface SessionFile {
 
 export interface StoreModuleOptions {
   sessionsDir?: string;
+  /** Directory for Markdown exports (default ~/.alex/exports). */
+  exportsDir?: string;
 }
 
 export function defaultSessionsDir(): string {
@@ -79,9 +85,11 @@ export class StoreModule implements Module {
   readonly name = 'store';
   readonly dependencies: readonly string[] = [];
   private readonly sessionsDir: string;
+  private readonly exportsDir: string;
 
   constructor(options: StoreModuleOptions = {}) {
     this.sessionsDir = options.sessionsDir ?? defaultSessionsDir();
+    this.exportsDir = options.exportsDir ?? join(homedir(), '.alex', 'exports');
   }
 
   async start(bus: AsyncEventBus): Promise<void> {
@@ -96,6 +104,9 @@ export class StoreModule implements Module {
     bus.provide(ForkSession, (req) => this.forkSession(req));
     bus.provide(RepairSession, (req) => this.repairSession(req));
     bus.provide(CheckpointSession, (req) => this.checkpointSession(req));
+    bus.provide(UpdateSessionMeta, (req) => this.updateSessionMeta(req));
+    bus.provide(RemoveSession, (req) => this.removeSession(req.targetSessionId));
+    bus.provide(ExportSession, (req) => this.exportSession(req));
   }
 
   /** Flush the JSONL file to disk (DSH-style durability checkpoint). */
@@ -161,6 +172,74 @@ export class StoreModule implements Module {
       throw error;
     });
     return { repaired: true, validEvents: valid.length, droppedEvents: dropped };
+  }
+
+  private async updateSessionMeta(req: UpdateSessionMeta): Promise<boolean> {
+    const id = req.targetSessionId;
+    if (!id) return false;
+    const existing = await this.readSessionFile(id);
+    if (!existing) return false;
+    const events: SessionEventRecord[] = [];
+    if (req.patch.title !== undefined) {
+      const title = req.patch.title.trim();
+      if (!title) return false;
+      events.push({
+        seq: 0,
+        type: 'session_title',
+        at: new Date().toISOString(),
+        data: { title, auto: false },
+      });
+    }
+    if (req.patch.pinned !== undefined) {
+      events.push({
+        seq: 0,
+        type: 'session_pinned',
+        at: new Date().toISOString(),
+        data: { pinned: req.patch.pinned },
+      });
+    }
+    if (req.patch.archived !== undefined) {
+      events.push({
+        seq: 0,
+        type: 'session_archived',
+        at: new Date().toISOString(),
+        data: { archived: req.patch.archived },
+      });
+    }
+    if (events.length === 0) return true;
+    await this.appendEventRecords(id, events);
+    return true;
+  }
+
+  private async removeSession(sessionId: string): Promise<boolean> {
+    if (!sessionId) return false;
+    try {
+      await unlink(this.sessionPath(sessionId));
+      return true;
+    } catch (error) {
+      if (isNotFound(error)) return false;
+      throw error;
+    }
+  }
+
+  private async exportSession(req: ExportSession): Promise<SessionExportResult | null> {
+    const id = req.targetSessionId;
+    if (!id) return null;
+    const data = await this.readSessionFile(id);
+    if (!data) return null;
+    const messages = projectSessionEvents(data.events);
+    const title = sessionTitle(data.events) || data.session_id;
+    const markdown = renderSessionMarkdown(
+      title,
+      data.session_id,
+      data.created_at,
+      messages,
+    );
+    await mkdir(this.exportsDir, { recursive: true });
+    const safe = data.session_id.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const path = join(this.exportsDir, `${safe}.md`);
+    await writeFile(path, markdown, 'utf8');
+    return { path, markdown, messageCount: messages.length };
   }
 
   private async onTurnCompleted(event: TurnCompleted): Promise<void> {
@@ -337,6 +416,8 @@ export class StoreModule implements Module {
           firstMessage: (data.first_message || '').slice(0, 80),
           messageCount: projectSessionEvents(data.events).length,
           title: sessionTitle(data.events),
+          pinned: sessionFlag(data.events, 'session_pinned', 'pinned'),
+          archived: sessionFlag(data.events, 'session_archived', 'archived'),
           parentSessionId: data.parent_session_id,
           forkedAt: data.forked_at,
           forkBoundarySeq: data.fork_boundary_seq,
@@ -426,6 +507,48 @@ async function syncFile(path: string): Promise<void> {
   } finally {
     await handle.close();
   }
+}
+
+function sessionFlag(
+  events: SessionEventRecord[],
+  type: string,
+  field: string,
+): boolean | undefined {
+  let value: boolean | undefined;
+  for (const event of events) {
+    if (event.type !== type) continue;
+    const next = event.data?.[field];
+    if (typeof next === 'boolean') value = next;
+  }
+  return value;
+}
+
+function renderSessionMarkdown(
+  title: string,
+  sessionId: string,
+  createdAt: string,
+  messages: MessageDTO[],
+): string {
+  const lines = [
+    `# ${title}`,
+    '',
+    `- session: ${sessionId}`,
+    `- created: ${createdAt}`,
+    `- messages: ${messages.length}`,
+    '',
+    '---',
+    '',
+  ];
+  for (const message of messages) {
+    const role = message.role === 'assistant' ? 'Assistant' : message.role === 'tool' ? 'Tool' : 'User';
+    lines.push(`## ${role}`, '');
+    const content =
+      typeof message.content === 'string'
+        ? message.content
+        : JSON.stringify(message.content, null, 2);
+    lines.push(content || '(empty)', '');
+  }
+  return `${lines.join('\n').trimEnd()}\n`;
 }
 
 function sessionTitle(events: SessionEventRecord[]): string | undefined {

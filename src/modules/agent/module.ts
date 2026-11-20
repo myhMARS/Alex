@@ -49,6 +49,7 @@ import {
 import { estimateMessageTokens } from '../../session/token-meter';
 import { GetSettings } from '../../kernel/contracts/settings';
 import { SessionTitleUpdated } from '../../kernel/contracts/session';
+import { generateSessionTitle } from '../../session/title';
 import {
   CompactContext,
   CompactionFailed,
@@ -159,14 +160,6 @@ let turnCounter = 0;
 function nextTurnId(): string {
   turnCounter += 1;
   return `turn-${turnCounter.toString(36)}-${Date.now().toString(36)}`;
-}
-
-function normalizeGeneratedTitle(raw: string): string {
-  let title = raw.replace(/\s+/g, ' ').trim();
-  title = title.replace(/^title\s*[:：]\s*/i, '');
-  title = title.replace(/^[\s"'`“”‘’#*]+|[\s"'`“”‘’]+$/g, '');
-  title = title.replace(/[。.!！?？,，;；:：]+$/g, '').trim();
-  return title.length > 48 ? `${title.slice(0, 47).trimEnd()}…` : title;
 }
 
 let queueCounter = 0;
@@ -892,39 +885,7 @@ export class AgentModule implements Module {
       .catch(() => null);
     if (projection?.title?.trim()) return;
 
-    const user = userText.replace(/\s+/g, ' ').trim().slice(0, 1_200);
-    const assistant = assistantText.replace(/\s+/g, ' ').trim().slice(0, 1_800);
-    if (!user) return;
-
-    let raw = '';
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 15_000);
-    try {
-      for await (const event of this.model.streamChat({
-        messages: [
-          {
-            role: 'user',
-            content: `First user message:\n${user}\n\nAssistant reply:\n${assistant}`,
-          },
-        ],
-        systemPrompt:
-          'Generate a concise title for this conversation. Use the same language as the user. ' +
-          'Return only the title: no quotes, no markdown, no trailing punctuation. ' +
-          'Aim for 3-8 words and at most 40 characters.',
-        thinking: false,
-        temperature: 0.2,
-        maxTokens: 48,
-        signal: controller.signal,
-      })) {
-        if (event.type === 'content') raw += event.delta;
-      }
-    } catch {
-      return;
-    } finally {
-      clearTimeout(timer);
-    }
-
-    const title = normalizeGeneratedTitle(raw);
+    const title = await generateSessionTitle(this.model, userText, assistantText);
     if (!title) return;
     await this.appendSessionEvents(sessionId, [
       {

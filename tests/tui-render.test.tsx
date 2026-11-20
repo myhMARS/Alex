@@ -37,6 +37,8 @@ import {
   ListSessions,
   LoadSession,
   ReplaceSessionEvents,
+  SessionTitleUpdated,
+  UpdateSessionMeta,
 } from '../src/kernel/contracts/session';
 import { messageEvent } from '../src/session/projector';
 import { FeedbackSubmitted, TokenUsageReported } from '../src/kernel/contracts/chat';
@@ -165,7 +167,7 @@ describe('TUI renderer', () => {
   });
 
   test('renders turn and tool errors instead of hiding them', async () => {
-    const { bus, setup } = await mountedTui();
+    const { bus, tui, setup } = await mountedTui();
     bus.publish(
       new TurnFailed({
         agentId: 'main',
@@ -205,11 +207,22 @@ describe('TUI renderer', () => {
     );
     await bus.idle();
     await setup.renderOnce();
-    const frame = plain(setup.captureCharFrame());
+    let frame = plain(setup.captureCharFrame());
     expect(frame).toContain('provider request failed: invalid api key');
     expect(frame).toContain('spawn_agent');
     expect(frame).toContain('permission denied by policy');
     expect(frame).toContain('✗');
+    expect(frame).toContain('[收起]');
+
+    // A failed process group expands by default but the user can still collapse it.
+    tui.toggleToolTurn('turn-tool-error', true);
+    await setup.renderOnce();
+    frame = plain(setup.captureCharFrame());
+    expect(frame).not.toContain('permission denied by policy');
+    expect(frame).toContain('[展开]');
+    tui.toggleToolTurn('turn-tool-error', false);
+    await setup.renderOnce();
+    expect(plain(setup.captureCharFrame())).toContain('permission denied by policy');
     await bus.shutdown();
   });
 
@@ -271,6 +284,19 @@ describe('TUI renderer', () => {
     await bus.idle();
     await setup.renderOnce();
     expect(plain(setup.captureCharFrame())).not.toContain('Queued (1)');
+    await bus.shutdown();
+  });
+
+  test('header shows the session title instead of its id', async () => {
+    const { bus, setup } = await mountedTui();
+    bus.publish(
+      new SessionTitleUpdated({ sessionId: 's1', agentId: 'main', title: 'Project Alpha' }),
+    );
+    await bus.idle();
+    await setup.renderOnce();
+    const frame = plain(setup.captureCharFrame());
+    expect(frame).toContain('Project Alpha');
+    expect(frame).not.toContain('#s1');
     await bus.shutdown();
   });
 
@@ -1214,6 +1240,44 @@ describe('TUI renderer', () => {
     }
   });
 
+  test('pasting a folder path does not report an attachment error', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'alex-ts-folder-paste-'));
+    try {
+      const bus = new AsyncEventBus();
+      const tui = new TuiModule();
+      await tui.start(bus);
+      await bus.start();
+      const setup = await testRender(
+        <TuiApp tui={tui} sessionId="s1" toolCount={17} onQuit={() => {}} />,
+        { width: 100, height: 30 },
+      );
+      await setup.renderOnce();
+      await setup.mockInput.pasteBracketedText(dir);
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      await setup.renderOnce();
+      const frame = plain(setup.captureCharFrame());
+      expect(frame).not.toContain('附件失败');
+      expect(frame).not.toContain('不是文件');
+      expect(frame).toContain('alex-ts-folder-paste');
+      await bus.shutdown();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('clicking an empty area restores composer focus', async () => {
+    const { bus, setup } = await mountedTui();
+    await setup.renderOnce();
+    setup.renderer.currentFocusedRenderable?.blur();
+    await setup.renderOnce();
+    expect(setup.renderer.currentFocusedRenderable).toBeNull();
+    await setup.mockMouse.click(12, 10);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await setup.renderOnce();
+    expect(setup.renderer.currentFocusedRenderable).not.toBeNull();
+    await bus.shutdown();
+  });
+
   test('status bar shows the model and provider context percentage', async () => {
     const bus = new AsyncEventBus();
     const tui = new TuiModule({ model: 'deepseek-chat', contextWindowTokens: 128_000 });
@@ -1404,6 +1468,47 @@ describe('TUI renderer', () => {
     await bus.idle();
     await setup.renderOnce();
     expect(disposed).toBe(true);
+    await bus.shutdown();
+  });
+
+  test('session rows expose clickable actions', async () => {
+    const bus = new AsyncEventBus();
+    let pinned = false;
+    const sessions = [
+      {
+        sessionId: 's-actions',
+        createdAt: '2026-01-01T00:00:00Z',
+        updatedAt: '2026-01-01T00:00:00Z',
+        firstMessage: 'action topic',
+        messageCount: 1,
+        title: 'Action Session',
+      },
+    ];
+    bus.provide(ListSessions, () => sessions);
+    bus.provide(UpdateSessionMeta, (req) => {
+      if (req.patch.pinned !== undefined) pinned = req.patch.pinned;
+      return true;
+    });
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+    await tui.showPage('sessions');
+    const setup = await testRender(
+      <TuiApp tui={tui} sessionId="s-x" toolCount={0} onQuit={() => {}} />,
+      { width: 100, height: 30 },
+    );
+    await setup.renderOnce();
+    const lines = plain(setup.captureCharFrame()).split('\n');
+    const row = lines.findIndex((line) => line.includes('[置顶]'));
+    expect(row).toBeGreaterThanOrEqual(0);
+    expect(lines[row]).toContain('[归档]');
+    expect(lines[row]).toContain('[标题]');
+    expect(lines[row]).toContain('[导出]');
+    expect(lines[row]).toContain('[删除]');
+    await setup.mockMouse.click(lines[row]!.indexOf('[置顶]') + 2, row);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await bus.idle();
+    expect(pinned).toBe(true);
     await bus.shutdown();
   });
 

@@ -12,6 +12,10 @@ export interface SessionMeta {
   messageCount: number;
   /** Auto-generated or user-provided session title. */
   title?: string;
+  /** Pinned sessions sort before unpinned ones. */
+  pinned?: boolean;
+  /** Archived sessions are hidden from the default /sessions view. */
+  archived?: boolean;
   /** Session this one was forked from, when applicable. */
   parentSessionId?: string;
   forkedAt?: string;
@@ -47,6 +51,58 @@ export interface SessionBundle {
 }
 
 export class ListSessions extends Request<SessionMeta[]> {}
+
+export interface SessionMetaPatch {
+  title?: string;
+  pinned?: boolean;
+  archived?: boolean;
+}
+
+export class UpdateSessionMeta extends Request<boolean> {
+  targetSessionId: string;
+  patch: SessionMetaPatch;
+
+  constructor(
+    init: { targetSessionId?: string; sessionId?: string; patch?: SessionMetaPatch } = {},
+  ) {
+    super(init);
+    this.targetSessionId = init.targetSessionId ?? init.sessionId ?? '';
+    this.patch = init.patch ?? {};
+  }
+}
+
+export class RemoveSession extends Request<boolean> {
+  targetSessionId: string;
+
+  constructor(init: { targetSessionId?: string; sessionId?: string } = {}) {
+    super(init);
+    this.targetSessionId = init.targetSessionId ?? init.sessionId ?? '';
+  }
+}
+
+export interface SessionExportResult {
+  path: string;
+  markdown: string;
+  messageCount: number;
+}
+
+export class ExportSession extends Request<SessionExportResult | null> {
+  targetSessionId: string;
+
+  constructor(init: { targetSessionId?: string; sessionId?: string } = {}) {
+    super(init);
+    this.targetSessionId = init.targetSessionId ?? init.sessionId ?? '';
+  }
+}
+
+export class RegenerateSessionTitle extends Request<{ title: string } | null> {
+  targetSessionId: string;
+
+  constructor(init: { targetSessionId?: string; sessionId?: string } = {}) {
+    super(init);
+    this.targetSessionId = init.targetSessionId ?? init.sessionId ?? '';
+  }
+}
 
 /** Append typed events to the session log. */
 export class AppendSessionEvents extends Request<{ appended: number }> {

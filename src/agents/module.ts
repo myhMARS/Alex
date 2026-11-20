@@ -10,10 +10,14 @@ import { AgentMailbox } from './mailbox';
 import { TurnCompleted, TurnFailed, UserTurnRequested } from '../kernel/contracts/chat';
 import {
   AppendSessionEvents,
+  GetSessionProjection,
   LoadSession,
+  RegenerateSessionTitle,
   ReplaceSessionEvents,
+  SessionTitleUpdated,
 } from '../kernel/contracts/session';
 import { AgentModule, type AgentModuleOptions } from '../modules/agent/module';
+import { generateSessionTitle } from '../session/title';
 import {
   AckAgentMessages,
   AgentDisposed,
@@ -90,6 +94,22 @@ interface RegisteredAgent {
 interface TaskRecord {
   info: AgentTaskInfo;
   promise: Promise<string>;
+}
+
+function messageText(message: { content?: unknown } | undefined): string {
+  if (!message) return '';
+  const content = message.content;
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) =>
+        part && typeof part === 'object' && 'text' in part
+          ? String((part as { text?: unknown }).text ?? '')
+          : '',
+      )
+      .join(' ');
+  }
+  return content == null ? '' : String(content);
 }
 
 let counter = 0;
@@ -190,6 +210,50 @@ export class AgentRegistryModule implements Module {
     bus.provide(GetAgent, (req) => this.agents.get(req.agentId)?.info ?? null);
     bus.provide(DisposeAgent, (req) => this.dispose(req.agentId));
     bus.provide(DisposeTeam, (req) => this.disposeTeam(req.teamId));
+    bus.provide(RegenerateSessionTitle, async (req) => {
+      const sessionId = req.targetSessionId || req.sessionId;
+      const model = this.options.model;
+      if (!sessionId || !model) return null;
+      const projection = await bus
+        .request(new GetSessionProjection({ sessionId }))
+        .catch(() => null);
+      let messages = projection?.messages ?? [];
+      if (!messages.some((message) => message.role === 'user')) {
+        const bundle = await bus
+          .request(new LoadSession({ targetSessionId: sessionId }))
+          .catch(() => null);
+        messages = bundle?.messages ?? messages;
+      }
+      const user = [...messages].reverse().find((message) => message.role === 'user');
+      const assistant = [...messages]
+        .reverse()
+        .find((message) => message.role === 'assistant');
+      const userText = messageText(user);
+      if (!userText) return null;
+      const title = await generateSessionTitle(model, userText, messageText(assistant));
+      if (!title) return null;
+      await bus.request(
+        new AppendSessionEvents({
+          sessionId,
+          events: [
+            {
+              seq: 0,
+              type: 'session_title',
+              at: new Date().toISOString(),
+              data: { title, auto: false },
+            },
+          ],
+        }),
+      );
+      bus.publish(
+        new SessionTitleUpdated({
+          sessionId,
+          agentId: this.options.defaultAgentId,
+          title,
+        }),
+      );
+      return { title };
+    });
     bus.provide(CancelAgentTask, (req) => {
       const record = this.tasks.get(req.taskId);
       if (!record || record.info.status !== 'running') return false;

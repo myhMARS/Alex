@@ -6,10 +6,11 @@ import { join } from 'node:path';
 import { AsyncEventBus } from '../src/kernel/bus';
 import { AgentModule } from '../src/modules/agent/module';
 import { SessionModule } from '../src/session/module';
+import { AgentRegistryModule } from '../src/agents/module';
 import { SettingsModule } from '../src/settings/module';
 import { ToolsModule } from '../src/tools/module';
 import { PermissionPolicy, AuditLogger } from '../src/tools/permissions';
-import { GetSessionProjection } from '../src/kernel/contracts/session';
+import { AppendSessionEvents, GetSessionProjection, RegenerateSessionTitle } from '../src/kernel/contracts/session';
 import { UserTurnRequested } from '../src/kernel/contracts/chat';
 import type { ChatModel, ChatRequest, ChatStreamEvent } from '../src/llm/client';
 
@@ -106,6 +107,51 @@ describe('automatic session titles', () => {
     expect(projection.events.some((event) => event.type === 'session_title')).toBe(true);
     expect(model.calls).toBe(2);
     await agent.stop();
+    await bus.shutdown();
+  });
+
+  test('manually regenerates a title even when auto titles are off', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'alex-ts-retitle-'));
+    tempDirs.push(dir);
+    const bus = new AsyncEventBus();
+    const session = new SessionModule();
+    const model = new TitleModel();
+    const registry = new AgentRegistryModule({
+      model,
+      registerTools: false,
+      defaultAgentId: 'main',
+    });
+    await session.start(bus);
+    await registry.start(bus);
+    await bus.start();
+    await bus.request(
+      new AppendSessionEvents({
+        sessionId: 's-manual',
+        events: [
+          {
+            seq: 0,
+            type: 'user_message',
+            at: new Date().toISOString(),
+            data: { message: { role: 'user', content: 'Set up the project' } },
+          },
+          {
+            seq: 0,
+            type: 'assistant_message',
+            at: new Date().toISOString(),
+            data: { message: { role: 'assistant', content: 'I can help.' } },
+          },
+        ],
+      }),
+    );
+    const result = await bus.request(
+      new RegenerateSessionTitle({ targetSessionId: 's-manual' }),
+    );
+    expect(result?.title).toBe('Project Setup');
+    const projection = await bus.request(
+      new GetSessionProjection({ sessionId: 's-manual' }),
+    );
+    expect(projection.title).toBe('Project Setup');
+    await registry.stop();
     await bus.shutdown();
   });
 });
