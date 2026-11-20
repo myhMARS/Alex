@@ -36,6 +36,7 @@ interface PaletteCommand {
 
 const PALETTE_MAX_VISIBLE = 10;
 const SIDEBAR_WIDTH = 30;
+const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 const PAGE_COMMANDS: Record<string, TuiPageKind> = {
   '/help': 'help',
@@ -522,13 +523,10 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
     }
     if (key.name === 'y' || key.name === 'a') {
       tui.resolveApproval(approval.reqId, true, false);
-      clearInput();
     } else if (key.name === 's') {
       tui.resolveApproval(approval.reqId, true, true);
-      clearInput();
     } else if (key.name === 'n' || key.name === 'escape') {
       tui.resolveApproval(approval.reqId, false, false);
-      clearInput();
     }
   });
 
@@ -635,6 +633,13 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
           clearInput();
           return;
         }
+      }
+      if (lower === '/mcp reload' || lower === '/mcp refresh') {
+        clearInput();
+        void tui.reloadMcp().then((result) => {
+          tui.setToast(`${result.ok ? '✓' : '✗'} ${result.message}`);
+        });
+        return;
       }
       if (currentPage?.kind === 'mcp') {
         const index = Number.parseInt(text, 10);
@@ -939,6 +944,10 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
         </box>
       ) : null}
 
+      {snapshot.queued.length > 0 ? (
+        <QueueDock messages={snapshot.queued} width={width} />
+      ) : null}
+
       <box
         style={{
           height: 2,
@@ -991,6 +1000,42 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
         >
           <text fg={theme.text}>◆ {snapshot.toast}</text>
         </box>
+      ) : null}
+    </box>
+  );
+}
+
+function QueueDock({
+  messages,
+  width,
+}: {
+  messages: TuiSnapshot['queued'];
+  width: number;
+}) {
+  const visible = messages.slice(0, 3);
+  return (
+    <box
+      style={{
+        flexDirection: 'column',
+        flexShrink: 0,
+        height: 1 + visible.length + (messages.length > visible.length ? 1 : 0),
+        paddingLeft: 1,
+        paddingRight: 1,
+        backgroundColor: '#181825',
+        width: '100%',
+      }}
+    >
+      <text fg={theme.accent}>
+        ↳ Queued ({messages.length}) · sends after the current turn
+      </text>
+      {visible.map((message, index) => (
+        <text key={message.queueId} fg={theme.muted} style={{ width: width - 2 }}>
+          {`  ${index + 1}. ${truncate(message.userInput.replace(/\s+/g, ' '), Math.max(8, width - 12))}`}
+          {message.attachments.length > 0 ? `  (+${message.attachments.length} attachment(s))` : ''}
+        </text>
+      ))}
+      {messages.length > visible.length ? (
+        <text fg={theme.border}>{`  … ${messages.length - visible.length} more`}</text>
       ) : null}
     </box>
   );
@@ -1292,6 +1337,21 @@ function isProcessPart(part: TurnPart): part is ProcessPart {
   return part.kind === 'thinking' || part.kind === 'skills' || part.kind === 'tool';
 }
 
+function useSpinner(active: boolean): string {
+  const [frame, setFrame] = useState(0);
+  useEffect(() => {
+    if (!active) {
+      setFrame(0);
+      return;
+    }
+    const timer = setInterval(() => {
+      setFrame((value) => (value + 1) % SPINNER_FRAMES.length);
+    }, 120);
+    return () => clearInterval(timer);
+  }, [active]);
+  return SPINNER_FRAMES[frame] ?? '✻';
+}
+
 function ProcessGroup({
   parts,
   width,
@@ -1315,6 +1375,7 @@ function ProcessGroup({
   toolOutputExpanded: boolean;
   onToggle: () => void;
 }) {
+  const spinner = useSpinner(running);
   const thinking = parts.filter(
     (part): part is Extract<ProcessPart, { kind: 'thinking' }> => part.kind === 'thinking',
   );
@@ -1326,7 +1387,7 @@ function ProcessGroup({
   );
   const skillCount = skills.reduce((total, part) => total + part.skills.length, 0);
   const pieces: string[] = [];
-  if (thinking.length > 0) pieces.push('思考');
+  if (thinking.length > 0) pieces.push(running ? '思考中' : '思考');
   if (tools.length > 0) pieces.push(`${tools.length} 工具`);
   if (skillCount > 0) pieces.push(`${skillCount} 技能`);
   const status = failed ? 'failed' : running ? 'running' : 'done';
@@ -1340,7 +1401,7 @@ function ProcessGroup({
         selectable={false}
         onMouseDown={onToggle}
       >
-        {expanded ? '▾' : '▸'} ✻ {pieces.join(' · ') || '思考'} · {status}
+        {expanded ? '▾' : '▸'} {running ? spinner : '✻'} {pieces.join(' · ') || '思考'} · {status}
         {expanded ? '' : ' · click to expand'}
       </text>
       {expanded ? (

@@ -21,7 +21,9 @@ import {
   TokenEmitted,
   TokenUsageReported,
   TurnCompleted,
+  TurnDequeued,
   TurnFailed,
+  TurnQueued,
   TurnStarted,
   UserTurnRequested,
   SetModelEffort,
@@ -44,6 +46,7 @@ import {
 } from '../../kernel/contracts/compaction';
 import {
   PermissionModeChanged,
+  ReloadMCP,
   SetPermissionMode,
   ToolApprovalRequested,
   ToolApprovalResolved,
@@ -123,12 +126,6 @@ function messageContent(message: { content?: unknown }): string {
   return message.content == null ? '' : String(message.content);
 }
 
-function contextPreview(message: { content?: unknown }): string {
-  const text = messageContent(message).replace(/\s+/g, ' ').trim();
-  if (!text) return '(empty)';
-  return text.length > 48 ? `${text.slice(0, 48)}…` : text;
-}
-
 function formatSessionTime(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
@@ -138,6 +135,8 @@ function formatSessionTime(iso: string): string {
 
 const UI_EVENTS: EventClass[] = [
   TurnStarted,
+  TurnQueued,
+  TurnDequeued,
   TokenEmitted,
   TokenUsageReported,
   ThinkingUpdated,
@@ -185,6 +184,14 @@ export interface TuiSettingField {
   secret?: boolean;
 }
 
+export interface TuiQueuedMessage {
+  queueId: string;
+  sessionId: string;
+  agentId: string;
+  userInput: string;
+  attachments: AttachmentDTO[];
+}
+
 export interface TuiPage {
   kind: TuiPageKind;
   title: string;
@@ -222,6 +229,7 @@ export interface TuiSnapshot {
   turns: TurnView[];
   streaming: TurnView[];
   approvals: ApprovalView[];
+  queued: TuiQueuedMessage[];
   cron: CronEventView[];
   reflection: SkillsReflected | null;
   page: TuiPage | null;
@@ -254,7 +262,7 @@ const HELP_TEXT = [
   '  /reflect         立即触发一次技能反思',
   '  /merge           合并语义重复的 skills',
   '  /cron            定时任务列表',
-  '  /mcp             MCP 服务器状态',
+  '  /mcp             MCP 服务器状态（/mcp reload 重新加载）',
   '  /sessions        已持久化会话列表',
   '  /reflections     最近的技能反思记录',
   '  /context         当前对话上下文窗口状态',
@@ -312,6 +320,7 @@ export class TuiModule implements Module {
   private mcpStatusMessage = '';
   private mcpServers: Record<string, unknown>[] = [];
   private readonly mcpExpanded = new Set<number>();
+  private readonly queuedMessages: TuiQueuedMessage[] = [];
   private sidebar: TuiSidebar = { tools: 0, skills: 0, cron: 0, mcpStatus: 'unknown' };
   private sidebarTab: TuiSidebarTab = 'overview';
   private fileTree: FileTreeSnapshot = {
@@ -800,11 +809,32 @@ export class TuiModule implements Module {
   }
 
   /** Expand/collapse the tool-call group of one completed turn. */
+  /** Re-read mcp.json and reconnect all MCP servers. */
+  async reloadMcp(): Promise<{ ok: boolean; message: string }> {
+    const bus = this.bus;
+    if (!bus) return { ok: false, message: 'MCP 服务不可用' };
+    try {
+      const result = await bus.request(new ReloadMCP());
+      if (this.page?.kind === 'mcp') await this.showPage('mcp');
+      await this.refreshSidebar();
+      return { ok: result.ok, message: result.message };
+    } catch (error) {
+      return {
+        ok: false,
+        message: `MCP reload 失败：${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
   /** Cycle permission modes: manual → model → full → read-only. */
   async cyclePermissionMode(): Promise<PermissionMode> {
     const order: PermissionMode[] = ['manual', 'model', 'full', 'read-only'];
     const next = order[(order.indexOf(this.permissionMode) + 1) % order.length] ?? 'manual';
     const bus = this.bus;
+    // Update the status bar immediately; the tool gateway applies the mode
+    // before the request resolves, so the next tool call already sees it.
+    this.permissionMode = next;
+    this.refresh();
     if (!bus) return next;
     try {
       this.permissionMode = await bus.request(new SetPermissionMode({ mode: next }));
@@ -855,6 +885,7 @@ export class TuiModule implements Module {
     this.page = null;
     this.sessionChoices = [];
     this.viewState.reset();
+    this.queuedMessages.length = 0;
     this.expandedToolTurns.clear();
     this.refresh();
     const bus = this.bus;
@@ -1424,7 +1455,7 @@ export class TuiModule implements Module {
       }
       if (tools.length === 0) lines.push('   (no tools registered)');
     });
-    lines.push('', '输入数字展开/收起服务器工具');
+    lines.push('', '输入数字展开/收起服务器工具 · /mcp reload 重新加载');
     return lines.join('\n');
   }
 
@@ -1836,18 +1867,7 @@ export class TuiModule implements Module {
           : '最近请求：暂无 provider 上报',
         `历史消息：${messages.length} 条（无数量上限）`,
         `压缩阈值：${Math.round((this.compactRatioForDisplay ?? 0.8) * 100)}% · /compact 手动压缩`,
-        '',
-        '最近消息：',
       ];
-      if (messages.length === 0) {
-        lines.push('  （空上下文）');
-      } else {
-        messages.slice(-8).forEach((message, index) => {
-          lines.push(
-            `  ${String(index + 1).padStart(2, ' ')}. ${String(message.role).padEnd(9)} ${contextPreview(message)}`,
-          );
-        });
-      }
       return lines.join('\n');
     }
 
@@ -1931,7 +1951,22 @@ export class TuiModule implements Module {
   // ── internals ──────────────────────────────────────────────────────────
 
   private handle(event: Event): void {
-    this.viewState.apply(event);
+    if (event instanceof TurnQueued) {
+      if (!this.queuedMessages.some((item) => item.queueId === event.queueId)) {
+        this.queuedMessages.push({
+          queueId: event.queueId,
+          sessionId: event.sessionId,
+          agentId: event.agentId || 'main',
+          userInput: event.userInput,
+          attachments: event.attachments,
+        });
+      }
+    } else if (event instanceof TurnDequeued) {
+      const index = this.queuedMessages.findIndex((item) => item.queueId === event.queueId);
+      if (index >= 0) this.queuedMessages.splice(index, 1);
+    } else {
+      this.viewState.apply(event);
+    }
     this.refresh();
   }
 
@@ -1945,6 +1980,11 @@ export class TuiModule implements Module {
         (turn) => (turn.agentId || 'main') === this.viewAgentId,
       ),
       approvals: this.viewState.pendingApprovals,
+      queued: this.queuedMessages.filter(
+        (item) =>
+          (!item.sessionId || item.sessionId === this.sessionId) &&
+          item.agentId === this.viewAgentId,
+      ),
       cron: this.viewState.cron,
       reflection: this.viewState.lastReflection,
       page: this.page,

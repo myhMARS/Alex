@@ -38,6 +38,43 @@ export function defaultUserPromptPath(): string {
   return process.env.ALEX_SYSTEM_PROMPT_PATH || join(homedir(), '.alex', 'system-prompt.md');
 }
 
+/** Code-owned identity and runtime paths; always available even without a user prompt. */
+function identitySection(): PromptSection {
+  const home = join(homedir(), '.alex');
+  const path = (name: string): string => join(home, name);
+  return {
+    id: 'identity',
+    order: -10,
+    source: 'builtin',
+    content: [
+      '## Identity',
+      '',
+      'Your name is Alex — a terminal-first AI agent implemented by this project.',
+      'You are not Claude, ChatGPT, Gemini, or another vendor assistant. Never claim to be Claude.',
+      'You run on Bun and TypeScript with an event-driven module kernel.',
+      '',
+      '## Alex configuration and data',
+      '',
+      `- Settings: ${path('settings.json')}`,
+      `- Environment: .env in the working directory, then ${path('.env')}`,
+      `- MCP servers: ${path('mcp.json')}`,
+      `- Sessions: ${path('sessions')}`,
+      `- Skills: ${path('skills')}`,
+      `- Agent team: ${path('team')}`,
+      `- Cron jobs: ${path('cron')}`,
+      `- Audit log: ${path('audit')}`,
+      `- Tool plugins: ${path('plugins')}`,
+      `- User base prompt: ${path('system-prompt.md')}`,
+      `- User defaults: ${path('AGENTS.md')}`,
+      '',
+      'Workspace instructions are the nearest AGENTS.md in the working directory tree.',
+      'Use the configured tools to inspect or change these files. Do not assume Claude Code',
+      'paths such as ~/.claude or ~/.claude.json. When asked about model settings, MCP,',
+      'skills or sessions, refer to /settings, /mcp, /skills and /sessions.',
+    ].join('\n'),
+  };
+}
+
 export async function findAgentsFile(start = process.cwd()): Promise<string | undefined> {
   let dir = resolve(start);
   for (;;) {
@@ -126,7 +163,7 @@ export class PromptModule implements Module {
   }
 
   private listSections(): PromptSection[] {
-    const all: PromptSection[] = [];
+    const all: PromptSection[] = [identitySection()];
     if (this.baseContent.trim()) {
       all.push({
         id: 'base',

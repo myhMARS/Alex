@@ -1261,7 +1261,7 @@ describe('TuiModule as a bus module', () => {
     await bus.shutdown();
   });
 
-  test('context page shows memory window usage and recent messages', async () => {
+  test('context page shows memory window usage without recent messages', async () => {
     const bus = new AsyncEventBus();
     bus.provide(GetSessionProjection, () => ({
       messages: [
@@ -1313,8 +1313,7 @@ describe('TuiModule as a bus module', () => {
     expect(page?.body).toContain('缓存：命中 800 · 未命中 434 · 命中率 64.8%');
     expect(page?.body).toContain('最近请求：prompt 1,234 · completion 56 · total 1,290');
     expect(page?.body).toContain('历史消息：3 条（无数量上限）');
-    expect(page?.body).toContain('最近消息');
-    expect(page?.body).toContain('hello there');
+    expect(page?.body).not.toContain('最近消息');
     await bus.shutdown();
   });
 

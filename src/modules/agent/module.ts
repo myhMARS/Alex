@@ -37,7 +37,9 @@ import {
   SetRequestHeader,
   TokenUsageReported,
   TurnCompleted,
+  TurnDequeued,
   TurnFailed,
+  TurnQueued,
   TurnStarted,
   UserTurnRequested,
   type TurnKind,
@@ -153,6 +155,12 @@ let turnCounter = 0;
 function nextTurnId(): string {
   turnCounter += 1;
   return `turn-${turnCounter.toString(36)}-${Date.now().toString(36)}`;
+}
+
+let queueCounter = 0;
+function nextQueueId(): string {
+  queueCounter += 1;
+  return `queue-${queueCounter.toString(36)}-${Date.now().toString(36)}`;
 }
 
 function toToolSchema(spec: ToolSpec): ToolSchema {
@@ -276,14 +284,21 @@ export class AgentModule implements Module {
     });
     this.disposers.push(await bus.subscribe(UserTurnRequested, (cmd) => {
       if (!this.acceptsCommand(cmd)) return;
-      this.enqueueTurn(cmd.sessionId, () =>
-        this.runCore({
-          sessionId: cmd.sessionId,
-          userText: cmd.userText,
-          kind: 'user',
-          streamId: '',
+      this.enqueueTurn(
+        cmd.sessionId,
+        () =>
+          this.runCore({
+            sessionId: cmd.sessionId,
+            userText: cmd.userText,
+            kind: 'user',
+            streamId: '',
+            attachments: cmd.attachments,
+          }),
+        {
+          queueId: nextQueueId(),
+          userInput: cmd.userText,
           attachments: cmd.attachments,
-        }),
+        },
       );
     }));
     this.disposers.push(await bus.subscribe(AgentTeamMessage, (event) => {
@@ -408,9 +423,33 @@ export class AgentModule implements Module {
   private enqueueTurn(
     sessionId: string,
     run: () => Promise<TurnResult>,
+    queued?: { queueId: string; userInput: string; attachments: AttachmentDTO[] },
   ): Promise<TurnResult> {
+    const didQueue = this.turnQueues.has(sessionId) && queued !== undefined;
+    if (didQueue && queued && this.bus) {
+      this.bus.publish(
+        new TurnQueued({
+          ...this.agentContext(),
+          sessionId,
+          queueId: queued.queueId,
+          userInput: queued.userInput,
+          attachments: queued.attachments,
+        }),
+      );
+    }
     const previous = this.turnQueues.get(sessionId) ?? Promise.resolve();
-    const task = previous.catch(() => undefined).then(run);
+    const task = previous.catch(() => undefined).then(() => {
+      if (didQueue && queued && this.bus) {
+        this.bus.publish(
+          new TurnDequeued({
+            ...this.agentContext(),
+            sessionId,
+            queueId: queued.queueId,
+          }),
+        );
+      }
+      return run();
+    });
     const tail = task.then(
       () => undefined,
       () => undefined,

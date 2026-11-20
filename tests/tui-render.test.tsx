@@ -12,7 +12,9 @@ import {
   ThinkingUpdated,
   TokenEmitted,
   TurnCompleted,
+  TurnDequeued,
   TurnFailed,
+  TurnQueued,
   TurnStarted,
   UserTurnRequested,
 } from '../src/kernel/contracts/chat';
@@ -24,7 +26,7 @@ import {
 } from '../src/kernel/contracts/tools';
 import { ListSkills } from '../src/kernel/contracts/skills';
 import { ListAgentTasks, ListAgents } from '../src/kernel/contracts/agents';
-import { GetToolCatalog, GetMCPStatus, ListDirectory } from '../src/kernel/contracts/tools';
+import { GetToolCatalog, GetMCPStatus, ListDirectory, ReloadMCP } from '../src/kernel/contracts/tools';
 import {
   CompactContext,
   CompactionStarted,
@@ -227,6 +229,49 @@ describe('TUI renderer', () => {
     await bus.shutdown();
   });
 
+  test('shows queued user messages and removes them when dequeued', async () => {
+    const { bus, setup } = await mountedTui();
+    bus.publish(
+      new TurnQueued({
+        sessionId: 's1',
+        agentId: 'main',
+        queueId: 'q-1',
+        userInput: 'second question while busy',
+      }),
+    );
+    await bus.idle();
+    await setup.renderOnce();
+    let frame = plain(setup.captureCharFrame());
+    expect(frame).toContain('Queued (1)');
+    expect(frame).toContain('second question while busy');
+
+    bus.publish(new TurnDequeued({ sessionId: 's1', agentId: 'main', queueId: 'q-1' }));
+    await bus.idle();
+    await setup.renderOnce();
+    frame = plain(setup.captureCharFrame());
+    expect(frame).not.toContain('Queued (1)');
+    await bus.shutdown();
+  });
+
+  test('/mcp reload reconnects and reports the refreshed catalog', async () => {
+    const { bus, setup } = await mountedTui();
+    bus.provide(ReloadMCP, () => ({
+      ok: true,
+      servers: 1,
+      connected: 1,
+      tools: 2,
+      message: 'MCP 已重新加载：1/1 connected · 2 tools',
+    }));
+    await setup.mockInput.typeText('/mcp reload');
+    await setup.mockInput.pressEnter();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    await bus.idle();
+    await setup.renderOnce();
+    const frame = plain(setup.captureCharFrame());
+    expect(frame).toContain('MCP 已重新加载');
+    await bus.shutdown();
+  });
+
   test('Shift+Tab cycles permission modes in the status bar', async () => {
     const { bus, setup } = await mountedTui();
     let frame = plain(setup.captureCharFrame());
@@ -245,6 +290,8 @@ describe('TUI renderer', () => {
     await bus.subscribe(ToolApprovalResolved, (event) => {
       approvals.push(event);
     });
+    await setup.mockInput.typeText('draft text');
+    await setup.renderOnce();
 
     bus.publish(
       new ToolApprovalRequested({
@@ -258,7 +305,7 @@ describe('TUI renderer', () => {
     await bus.idle();
     await setup.renderOnce();
 
-    const frame = plain(setup.captureCharFrame());
+    let frame = plain(setup.captureCharFrame());
     expect(frame).toContain('Tool approval required');
     expect(frame).toContain('edit notes.txt');
     expect(frame).toContain('-old line');
@@ -272,6 +319,11 @@ describe('TUI renderer', () => {
     expect(approvals[0]?.reqId).toBe('req-1');
     expect(approvals[0]?.granted).toBe(true);
     expect(approvals[0]?.remember).toBe(false);
+    await setup.renderOnce();
+    frame = plain(setup.captureCharFrame());
+    expect(frame).toContain('draft text');
+    expect(frame).toContain('hello bus');
+    expect(frame).toContain('Hi there');
     await bus.shutdown();
   });
 
@@ -357,6 +409,31 @@ describe('TUI renderer', () => {
     expect(frame).toContain('old answer');
     expect(frame).toContain('#sess-a');
     expect(tui.getSnapshot().sessionId).toBe('sess-a');
+    await bus.shutdown();
+  });
+
+  test('animates the process row while thinking', async () => {
+    const bus = new AsyncEventBus();
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+    bus.publish(new TurnStarted({ sessionId: 's1', turnId: 'spin-1', userInput: 'think' }));
+    bus.publish(new ThinkingUpdated({ sessionId: 's1', turnId: 'spin-1', delta: 'still thinking' }));
+    await bus.idle();
+    const setup = await testRender(
+      <TuiApp tui={tui} sessionId="s1" toolCount={17} onQuit={() => {}} />,
+      { width: 100, height: 30 },
+    );
+    await setup.renderOnce();
+    let frame = plain(setup.captureCharFrame());
+    expect(frame).toContain('思考中');
+    expect(frame).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
+
+    bus.publish(new TurnCompleted({ sessionId: 's1', turnId: 'spin-1', content: 'done', messages: [] }));
+    await bus.idle();
+    await setup.renderOnce();
+    frame = plain(setup.captureCharFrame());
+    expect(frame).toContain('✻ 思考');
     await bus.shutdown();
   });
 

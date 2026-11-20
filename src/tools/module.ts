@@ -141,6 +141,20 @@ export class ToolsModule implements Module {
     bus.provide(SetPermissionMode, (req) => {
       this.permissionMode = req.mode;
       bus.publish(new PermissionModeChanged({ mode: this.permissionMode }));
+      // A mode change applies to approvals already waiting for input:
+      // full resolves them as allowed, read-only as denied. Manual/model
+      // leave existing prompts for the user/reviewer.
+      if (this.permissionMode === 'full' || this.permissionMode === 'read-only') {
+        for (const reqId of [...this.pending.keys()]) {
+          bus.publish(
+            new ToolApprovalResolved({
+              reqId,
+              granted: this.permissionMode === 'full',
+              remember: false,
+            }),
+          );
+        }
+      }
       return this.permissionMode;
     });
     bus.provide(ListFileTree, (req) => this.listFileTree(req.maxDepth, req.maxEntries));

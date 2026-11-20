@@ -56,6 +56,11 @@ describe('PromptModule', () => {
 
     const base = await bus.request(new GetSystemPrompt());
     expect(base).not.toContain('You are Alex');
+    expect(base).toContain('Your name is Alex');
+    expect(base).toContain('Never claim to be Claude');
+    expect(base).toContain('settings.json');
+    expect(base).toContain('mcp.json');
+    expect(base).toContain('system-prompt.md');
     expect(base).toContain('AGENTS.md');
     expect(base).toContain('Always use tabs for code.');
 

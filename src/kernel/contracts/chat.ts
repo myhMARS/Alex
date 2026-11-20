@@ -20,6 +20,36 @@ export class UserTurnRequested extends Command {
   }
 }
 
+/** A user turn accepted while the session was busy, waiting in FIFO order. */
+export class TurnQueued extends Event {
+  queueId: string;
+  userInput: string;
+  attachments: AttachmentDTO[];
+
+  constructor(
+    init: MessageContext & {
+      queueId?: string;
+      userInput?: string;
+      attachments?: AttachmentDTO[];
+    } = {},
+  ) {
+    super(init);
+    this.queueId = init.queueId ?? '';
+    this.userInput = init.userInput ?? '';
+    this.attachments = init.attachments ?? [];
+  }
+}
+
+/** A queued user turn started executing. */
+export class TurnDequeued extends Event {
+  queueId: string;
+
+  constructor(init: MessageContext & { queueId?: string } = {}) {
+    super(init);
+    this.queueId = init.queueId ?? '';
+  }
+}
+
 /** Streaming text delta for the chat bubble. */
 export class TokenEmitted extends Event {
   delta: string;

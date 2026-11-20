@@ -377,6 +377,16 @@ describe('MCP health check', () => {
       expect(toolsSection?.content).toContain('Use the provided tool schemas');
       expect(toolsSection?.content).not.toContain('mcp__health-demo__echo');
 
+      // Reload closes the old fleet, reconnects, and republishes the catalog.
+      const reloaded = await mcp.reload();
+      expect(reloaded.ok).toBe(true);
+      expect(reloaded.connected).toBe(1);
+      expect(reloaded.tools).toBe(1);
+      await bus.idle();
+      catalog = await bus.request(new GetToolCatalog());
+      expect(catalog.map((spec) => spec.name)).toContain('mcp__health-demo__echo2');
+      expect(notices.some((text) => text.includes('MCP reloaded'))).toBe(true);
+
       server.stop(true);
       await mcp.refreshHealth();
       await bus.idle();

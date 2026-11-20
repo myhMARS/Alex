@@ -13,7 +13,9 @@ import type { ToolResult, ToolSpec } from '../kernel/dto/tool';
 import {
   GetMCPStatus,
   InvokeProviderTool,
+  ReloadMCP,
   ToolsProvided,
+  type MCPReloadResult,
   type MCPStatusSnapshot,
 } from '../kernel/contracts/tools';
 import type { MCPServerConfig } from './config';
@@ -96,6 +98,7 @@ export class MCPModule implements Module {
     this.bus = bus;
     bus.provide(InvokeProviderTool, (req) => this.invokeProviderTool(req));
     bus.provide(GetMCPStatus, () => this.status());
+    bus.provide(ReloadMCP, () => this.reload());
 
     let configs: MCPServerConfig[];
     try {
@@ -144,6 +147,65 @@ export class MCPModule implements Module {
   /** Wait for the background connection pass (tests / graceful shutdown). */
   async whenIdle(): Promise<void> {
     if (this.connectTask) await this.connectTask;
+  }
+
+  /**
+   * Re-read mcp.json, reconnect every server and re-announce the tool catalog.
+   * Existing connections are closed first so a renamed/removed server cannot
+   * leave stale tools behind.
+   */
+  async reload(): Promise<MCPReloadResult> {
+    const bus = this.bus;
+    if (!bus) {
+      return { ok: false, servers: 0, connected: 0, tools: 0, message: 'MCP 未启动' };
+    }
+    if (this.connectTask) await this.connectTask.catch(() => undefined);
+    const beforeTools = new Set(this.entries.keys());
+    const beforeServers = new Set(this.serverState.map((state) => state.name));
+    for (const client of this.clients.values()) {
+      await client.close().catch(() => undefined);
+    }
+    this.clients.clear();
+    this.entries.clear();
+    this.serverState = [];
+    this.lastAvailability.clear();
+    this.lastPromptContent = '';
+    this.publishToolsProvided('reloading');
+
+    let configs: MCPServerConfig[];
+    try {
+      configs = this.options.configs ?? (await loadMcpConfig(this.options.configPath));
+    } catch (error) {
+      this.statusMessage = `MCP config error: ${error instanceof Error ? error.message : String(error)}`;
+      this.publishToolsProvided('config_error');
+      return { ok: false, servers: 0, connected: 0, tools: 0, message: this.statusMessage };
+    }
+
+    this.serverState = configs.map((config) => this.initialState(config));
+    if (configs.length === 0) {
+      this.statusMessage = 'No MCP servers configured';
+      this.publishToolsProvided('no_servers');
+      return { ok: true, servers: 0, connected: 0, tools: 0, message: this.statusMessage };
+    }
+
+    this.statusMessage = 'Reloading MCP servers…';
+    this.publishToolsProvided('reloading');
+    this.connectTask = this.connectAll(configs).catch((error) => {
+      this.statusMessage = `MCP connection failed: ${error instanceof Error ? error.message : String(error)}`;
+      this.publishToolsProvided('error');
+    });
+    if (this.options.healthCheck !== false && !this.healthTimer) this.startHealthLoop();
+    await this.connectTask;
+    const connected = this.serverState.filter((state) => state.status === 'CONNECTED').length;
+    const tools = this.tools.length;
+    this.publishReloadNotice(beforeTools, beforeServers, connected, tools);
+    return {
+      ok: connected > 0,
+      servers: this.serverState.length,
+      connected,
+      tools,
+      message: `MCP 已重新加载：${connected}/${this.serverState.length} connected · ${tools} tools`,
+    };
   }
 
   // ── health loop ────────────────────────────────────────────────────────
@@ -434,6 +496,40 @@ export class MCPModule implements Module {
       }
     }
     this.lastAvailability = next;
+  }
+
+  private publishReloadNotice(
+    beforeTools: Set<string>,
+    beforeServers: Set<string>,
+    connected: number,
+    toolCount: number,
+  ): void {
+    if (!this.bus) return;
+    const afterTools = new Set(this.entries.keys());
+    const afterServers = new Set(this.serverState.map((state) => state.name));
+    const added = [...afterTools].filter((name) => !beforeTools.has(name)).sort();
+    const removed = [...beforeTools].filter((name) => !afterTools.has(name)).sort();
+    const addedServers = [...afterServers].filter((name) => !beforeServers.has(name)).sort();
+    const removedServers = [...beforeServers].filter((name) => !afterServers.has(name)).sort();
+    const unavailable = this.serverState
+      .filter((state) => state.status !== 'CONNECTED')
+      .map((state) => state.name);
+    const details: string[] = [];
+    if (added.length > 0) details.push(`added tools: ${added.slice(0, 12).join(', ')}${added.length > 12 ? '…' : ''}`);
+    if (removed.length > 0) details.push(`removed tools: ${removed.slice(0, 12).join(', ')}${removed.length > 12 ? '…' : ''}`);
+    if (addedServers.length > 0) details.push(`added servers: ${addedServers.join(', ')}`);
+    if (removedServers.length > 0) details.push(`removed servers: ${removedServers.join(', ')}`);
+    if (unavailable.length > 0) details.push(`unavailable: ${unavailable.join(', ')}`);
+    const text =
+      `MCP reloaded: ${connected}/${this.serverState.length} servers connected, ${toolCount} tools.` +
+      (details.length > 0 ? ` ${details.join('; ')}.` : ' Tool catalog unchanged.');
+    this.bus.publish(
+      new RuntimeContextNotice({
+        key: 'mcp:reload',
+        source: 'mcp',
+        text,
+      }),
+    );
   }
 
   private publishToolsProvided(status: string): void {

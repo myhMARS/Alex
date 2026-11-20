@@ -264,6 +264,16 @@ export class ToolApprovalResolved extends Event {
 
 // ── MCP status (TUI → MCP module) ────────────────────────────────────────────
 
+export interface MCPReloadResult {
+  ok: boolean;
+  servers: number;
+  connected: number;
+  tools: number;
+  message: string;
+}
+
+export class ReloadMCP extends Request<MCPReloadResult> {}
+
 export interface MCPStatusSnapshot {
   servers: Record<string, unknown>[];
   statusMessage?: string;

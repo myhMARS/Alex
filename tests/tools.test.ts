@@ -7,6 +7,7 @@ import { join } from 'node:path';
 
 import { AsyncEventBus } from '../src/kernel/bus';
 import { ToolsModule, parseGitStatusPorcelainZ } from '../src/tools/module';
+import { TuiModule } from '../src/modules/tui/module';
 import { ToolRegistry } from '../src/tools/registry';
 import { AuditLogger, PermissionPolicy } from '../src/tools/permissions';
 import {
@@ -265,6 +266,29 @@ describe('ToolsModule over the bus', () => {
     const result = await run(bus, 'write', { path, content: 'reviewed' });
     expect(result.error).toContain('model reviewer denied');
     await expect(readFile(path, 'utf8')).rejects.toThrow();
+    await bus.shutdown();
+  });
+
+  test('switching to full mode resolves an already-pending approval', async () => {
+    const { bus, dir } = await makeEnv({ allowed: ['read'] });
+    let approvalId = '';
+    await bus.subscribe(ToolApprovalRequested, (event) => {
+      approvalId = event.reqId;
+    });
+    const resolved: ToolApprovalResolved[] = [];
+    await bus.subscribe(ToolApprovalResolved, (event) => resolved.push(event));
+
+    const path = join(dir, 'pending.txt');
+    const pending = run(bus, 'write', { path, content: 'pending' });
+    for (let index = 0; index < 20 && !approvalId; index += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(approvalId).not.toBe('');
+    await bus.request(new SetPermissionMode({ mode: 'full' }));
+    const result = await pending;
+    expect(result.error).toBeUndefined();
+    expect(await readFile(path, 'utf8')).toBe('pending');
+    expect(resolved.some((event) => event.granted)).toBe(true);
     await bus.shutdown();
   });
 
@@ -566,4 +590,19 @@ describe('ToolsModule over the bus', () => {
     expect(result.output).toContain('exit_code: 0');
     await bus.shutdown();
   }, 20_000);
+});
+
+describe('permission mode integration', () => {
+  test('TUI mode switches are enforced immediately', async () => {
+    const { bus, dir } = await makeEnv({ allowed: ['read'] });
+    const tui = new TuiModule();
+    await tui.start(bus);
+    expect(await tui.cyclePermissionMode()).toBe('model');
+    expect(await tui.cyclePermissionMode()).toBe('full');
+    const path = join(dir, 'immediate.txt');
+    const result = await run(bus, 'write', { path, content: 'ok' });
+    expect(result.error).toBeUndefined();
+    expect(await readFile(path, 'utf8')).toBe('ok');
+    await bus.shutdown();
+  });
 });

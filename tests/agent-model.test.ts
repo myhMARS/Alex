@@ -14,7 +14,9 @@ import {
   TokenEmitted,
   TokenUsageReported,
   TurnCompleted,
+  TurnDequeued,
   TurnFailed,
+  TurnQueued,
   TurnStarted,
   UserTurnRequested,
 } from '../src/kernel/contracts/chat';
@@ -65,6 +67,17 @@ class ScriptedModel implements ChatModel {
         finishReason: 'stop',
         usage: { promptTokens: 120, completionTokens: 8, totalTokens: 128 },
       },
+    };
+  }
+}
+
+class DelayedModel implements ChatModel {
+  async *streamChat(): AsyncIterable<ChatStreamEvent> {
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    yield { type: 'content', delta: 'delayed answer' };
+    yield {
+      type: 'done',
+      result: { content: 'delayed answer', thinking: '', toolCalls: [], finishReason: 'stop' },
     };
   }
 }
@@ -221,6 +234,22 @@ describe('AgentModule model loop', () => {
     expect(alwaysTools.calls).toBe(3);
     await bus.shutdown();
   }, 20_000);
+
+  test('emits queued/dequeued events for messages sent during a turn', async () => {
+    const { bus, agent } = await setup(new DelayedModel());
+    const queued: TurnQueued[] = [];
+    const dequeued: TurnDequeued[] = [];
+    await bus.subscribe(TurnQueued, (event) => queued.push(event));
+    await bus.subscribe(TurnDequeued, (event) => dequeued.push(event));
+    bus.publish(new UserTurnRequested({ sessionId: 's-queue', userText: 'first' }));
+    bus.publish(new UserTurnRequested({ sessionId: 's-queue', userText: 'second' }));
+    await agent.whenIdle();
+    await bus.idle();
+    expect(queued).toHaveLength(1);
+    expect(queued[0]?.userInput).toBe('second');
+    expect(dequeued[0]?.queueId).toBe(queued[0]?.queueId);
+    await bus.shutdown();
+  });
 
   test('injects runtime context notices into the next model request', async () => {
     const model = new ScriptedModel();
