@@ -38,6 +38,11 @@ import {
 } from '../src/kernel/contracts/session';
 import { messageEvent } from '../src/session/projector';
 import { FeedbackSubmitted, TokenUsageReported } from '../src/kernel/contracts/chat';
+import {
+  GetSettings,
+  UpdateSettings,
+  type SettingsSnapshot,
+} from '../src/kernel/contracts/settings';
 
 async function mountedTui(): Promise<{
   bus: AsyncEventBus;
@@ -596,6 +601,67 @@ describe('TUI renderer', () => {
     expect(frame).toContain('◆ Alex');
     expect(frame).toContain('❯ check file');
     expect(frame).toContain('⚙ read');
+    await bus.shutdown();
+  });
+
+  test('settings page edits a field directly', async () => {
+    const bus = new AsyncEventBus();
+    const current: SettingsSnapshot = {
+      provider: 'deepseek',
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-chat',
+      apiKey: 'sk-secret-1234',
+      maxContextTokens: 131_072,
+      maxOutputTokens: 4_096,
+      compactThresholdRatio: 0.8,
+      imageMaxDimension: 2_048,
+      thinkingEnabled: true,
+      effort: 'high',
+      maxIterations: 10,
+      autoReflect: true,
+      reflectionMinTools: 3,
+      reflectionMinWriteTools: 2,
+    };
+    bus.provide(GetSettings, () => ({ ...current }));
+    bus.provide(UpdateSettings, (req) => {
+      Object.assign(current, req.patch);
+      return { ...current };
+    });
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+    await tui.showPage('settings');
+
+    const setup = await testRender(
+      <TuiApp tui={tui} sessionId="s1" toolCount={17} onQuit={() => {}} />,
+      { width: 100, height: 30 },
+    );
+    await setup.renderOnce();
+    let frame = plain(setup.captureCharFrame());
+    expect(frame).toContain('❯ provider');
+    expect(frame).toContain('deepseek');
+    expect(frame).toContain('↑/↓ select · Enter edit');
+
+    await setup.mockInput.pressArrow('down');
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await setup.renderOnce();
+    frame = plain(setup.captureCharFrame());
+    expect(frame).toContain('❯ model');
+
+    await setup.mockInput.pressEnter();
+    await setup.renderOnce();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await setup.mockInput.typeText('new-model');
+    await setup.renderOnce();
+    await setup.mockInput.pressEnter();
+    await setup.renderOnce();
+    await bus.idle();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    await bus.idle();
+    await setup.renderOnce();
+    frame = plain(setup.captureCharFrame());
+    expect(current.model).toBe('new-model');
+    expect(frame).toContain('new-model');
     await bus.shutdown();
   });
 

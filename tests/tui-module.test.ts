@@ -1359,7 +1359,13 @@ describe('TuiModule as a bus module', () => {
     expect(body).toContain('effort        high');
     expect(body).toContain('max_iterations 10');
     expect(body).toContain('auto_reflect   on');
+    expect(body).not.toContain('可用键');
+    expect(body).not.toContain('max_context 会减去');
     expect(body).toContain('reflection_min_tools 3');
+    const fields = tui.getSnapshot().page?.fields ?? [];
+    expect(fields.find((field) => field.key === 'max_context')?.editValue).toBe('128K');
+    expect(fields.find((field) => field.key === 'api_key')?.value).toContain('sk-s…1234');
+    expect(fields.find((field) => field.key === 'api_key')?.secret).toBe(true);
 
     const ok = await tui.updateSetting('max_context', '1M');
     expect(ok.ok).toBe(true);
@@ -1371,6 +1377,9 @@ describe('TuiModule as a bus module', () => {
     expect(threshold.ok).toBe(true);
     expect(current.compactThresholdRatio).toBe(0.7);
     expect(tui.getSnapshot().page?.body).toContain('compact_ratio 0.7');
+    const ratio = await tui.updateSetting('compact_ratio', '0.6');
+    expect(ratio.ok).toBe(true);
+    expect(current.compactThresholdRatio).toBe(0.6);
 
     const badThreshold = await tui.updateSetting('compact_threshold', '2');
     expect(badThreshold.ok).toBe(false);

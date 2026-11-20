@@ -4,7 +4,7 @@
 
 [![Bun](https://img.shields.io/badge/Bun-1.4-black?logo=bun)](https://bun.sh)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue?logo=typescript)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-300%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-301%20passing-brightgreen)](#development)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 Alex runs an LLM agent loop in your terminal, with streaming replies, tool calling,

@@ -172,10 +172,22 @@ export type TuiPageKind =
   | 'teams'
   | 'task';
 
+export interface TuiSettingField {
+  key: string;
+  label: string;
+  /** Rendered value (secrets are masked). */
+  value: string;
+  /** Initial text when editing; omitted means use `value`. */
+  editValue?: string;
+  secret?: boolean;
+}
+
 export interface TuiPage {
   kind: TuiPageKind;
   title: string;
   body: string;
+  /** Structured, directly editable fields (currently settings). */
+  fields?: TuiSettingField[];
 }
 
 export type TuiSidebarTab = 'overview' | 'files' | 'agents';
@@ -1031,7 +1043,11 @@ export class TuiModule implements Module {
         return { ok: false, message: `无效的 effort：${value}（low/high/max）` };
       }
       patch.effort = raw;
-    } else if (normalized === 'compactthreshold' || normalized === 'threshold') {
+    } else if (
+      normalized === 'compactthreshold' ||
+      normalized === 'threshold' ||
+      normalized === 'compactratio'
+    ) {
       const parsed = Number(value);
       if (!Number.isFinite(parsed) || parsed <= 0 || parsed >= 1) {
         return { ok: false, message: `无效的压缩阈值：${value}（应为 0~1 之间，如 0.8）` };
@@ -1275,8 +1291,81 @@ export class TuiModule implements Module {
       body = `加载失败：${error instanceof Error ? error.message : String(error)}`;
     }
     if (notice) body = `${notice}\n\n${body}`;
-    this.page = { kind, title: titles[kind], body };
+    let fields: TuiSettingField[] | undefined;
+    if (kind === 'settings') {
+      try {
+        const settings = await this.bus?.request(new GetSettings());
+        if (settings) fields = this.buildSettingsFields(settings);
+      } catch {
+        fields = undefined;
+      }
+    }
+    this.page = { kind, title: titles[kind], body, ...(fields ? { fields } : {}) };
     this.refresh();
+  }
+
+  private buildSettingsFields(settings: SettingsSnapshot): TuiSettingField[] {
+    const fields: TuiSettingField[] = [
+      { key: 'provider', label: 'provider', value: settings.provider },
+      { key: 'model', label: 'model', value: settings.model },
+      {
+        key: 'api_key',
+        label: 'api_key',
+        value: maskApiKey(settings.apiKey),
+        editValue: '',
+        secret: true,
+      },
+      { key: 'base_url', label: 'base_url', value: settings.baseUrl },
+      {
+        key: 'max_context',
+        label: 'max_context',
+        value: `${formatTokenCount(settings.maxContextTokens)} (${settings.maxContextTokens.toLocaleString()} tokens)`,
+        editValue: formatTokenCount(settings.maxContextTokens),
+      },
+      {
+        key: 'max_output',
+        label: 'max_output',
+        value: `${formatTokenCount(settings.maxOutputTokens)} (${settings.maxOutputTokens.toLocaleString()} tokens)`,
+        editValue: formatTokenCount(settings.maxOutputTokens),
+      },
+      {
+        key: 'compact_ratio',
+        label: 'compact_ratio',
+        value: String(settings.compactThresholdRatio),
+      },
+      {
+        key: 'thinking',
+        label: 'thinking',
+        value: settings.thinkingEnabled ? 'on' : 'off',
+      },
+      { key: 'effort', label: 'effort', value: settings.effort },
+      {
+        key: 'image_max',
+        label: 'image_max',
+        value: String(settings.imageMaxDimension),
+      },
+      {
+        key: 'max_iterations',
+        label: 'max_iterations',
+        value: String(settings.maxIterations),
+      },
+      {
+        key: 'auto_reflect',
+        label: 'auto_reflect',
+        value: settings.autoReflect ? 'on' : 'off',
+      },
+      {
+        key: 'reflection_min_tools',
+        label: 'reflection_min_tools',
+        value: String(settings.reflectionMinTools),
+      },
+      {
+        key: 'reflection_min_write_tools',
+        label: 'reflection_min_write_tools',
+        value: String(settings.reflectionMinWriteTools),
+      },
+    ];
+    return fields;
   }
 
   /** Expand/collapse one MCP server in the open `/mcp` page. */
@@ -1671,13 +1760,6 @@ export class TuiModule implements Module {
           `auto_reflect   ${settings.autoReflect ? 'on' : 'off'}（turn 完成后自动反思）`,
           `reflection_min_tools ${settings.reflectionMinTools}（自动反思所需工具调用数）`,
           `reflection_min_write_tools ${settings.reflectionMinWriteTools}（含 write/edit 时的工具调用数）`,
-          '',
-          '可用键：provider · model · api_key · base_url · max_context · max_output · compact_threshold · thinking · effort · image_max · max_iterations · auto_reflect · reflection_min_tools · reflection_min_write_tools',
-          '示例：/set max_context 1M   /set max_iterations 20   /set auto_reflect off   /set reflection_min_tools 3',
-          '',
-          '单位：K = 1,024，M = 1,048,576（二进制）；也可直接输入精确值，',
-          '      如 /set max_context 131072（= 128K）。',
-          '说明：max_context 会减去 max_output 作为消息预算。',
         ].join('\n');
       } catch {
         return '设置服务不可用（SettingsModule 未启动）。';

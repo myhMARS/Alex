@@ -9,7 +9,12 @@ import type { InputRenderable, PasteEvent } from '@opentui/core';
 import type { AttachmentDTO } from '../kernel/dto/message';
 import { attachmentLabel, loadAttachment } from '../attachments/loader';
 import { copyTextToClipboard, readClipboardImagePath } from '../attachments/clipboard';
-import type { TuiModule, TuiPageKind, TuiSnapshot } from '../modules/tui/module';
+import type {
+  TuiModule,
+  TuiPageKind,
+  TuiSettingField,
+  TuiSnapshot,
+} from '../modules/tui/module';
 import type {
   ApprovalView,
   CompactionPart,
@@ -90,6 +95,9 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
   const [pendingAttachments, setPendingAttachments] = useState<AttachmentDTO[]>([]);
   const [paletteIndex, setPaletteIndex] = useState(0);
   const [paletteDismissed, setPaletteDismissed] = useState(false);
+  const [settingsIndex, setSettingsIndex] = useState(0);
+  const [inlineEdit, setInlineEdit] = useState<TuiSettingField | null>(null);
+  const [inlineDraft, setInlineDraft] = useState('');
   const approvalMaxOffset = approvalPreview
     ? Math.max(0, approvalPreview.lines.length - approvalVisibleLines)
     : 0;
@@ -102,6 +110,12 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
     setPaletteIndex(0);
     setPaletteDismissed(false);
   }, [inputValue]);
+
+  useEffect(() => {
+    setSettingsIndex(0);
+    setInlineEdit(null);
+    setInlineDraft('');
+  }, [page?.kind]);
 
   // The module owns the active session; seed it from the launcher/tests.
   useEffect(() => {
@@ -311,6 +325,16 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
     setPaletteDismissed(false);
   }, []);
 
+  const beginInlineEdit = useCallback(
+    (field: TuiSettingField, index: number) => {
+      renderer.clearSelection();
+      setSettingsIndex(index);
+      setInlineEdit(field);
+      setInlineDraft('');
+    },
+    [renderer],
+  );
+
   useKeyboard((key) => {
     if (key.ctrl && key.name === 'c') {
       const selected = renderer.getSelection()?.getSelectedText() ?? '';
@@ -407,6 +431,29 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
       setPendingAttachments([]);
       tui.setToast('已清空待发送附件');
       return;
+    }
+    if (inlineEdit && key.name === 'escape') {
+      setInlineEdit(null);
+      setInlineDraft('');
+      return;
+    }
+    if (
+      page?.kind === 'settings' &&
+      !inlineEdit &&
+      !approval &&
+      !paletteVisible &&
+      !inputValue &&
+      (page.fields?.length ?? 0) > 0
+    ) {
+      const count = page.fields?.length ?? 0;
+      if (key.name === 'up') {
+        setSettingsIndex((value) => Math.max(0, value - 1));
+        return;
+      }
+      if (key.name === 'down') {
+        setSettingsIndex((value) => Math.min(count - 1, value + 1));
+        return;
+      }
     }
     if (key.name === 'escape' && page) {
       tui.dismissPage();
@@ -543,10 +590,21 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
         .replace(/[\uFF01-\uFF5E]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
         .replace(/\u3000/g, ' ')
         .trim();
-      if (!text && pendingAttachments.length === 0) return;
-      const lower = text.toLowerCase();
       // Read the live snapshot: the callback closes over an older `page` value.
       const currentPage = tui.getSnapshot().page;
+      if (
+        !text &&
+        !inlineEdit &&
+        currentPage?.kind === 'settings' &&
+        (currentPage.fields?.length ?? 0) > 0
+      ) {
+        const fields = currentPage.fields ?? [];
+        const field = fields[Math.min(settingsIndex, fields.length - 1)];
+        if (field) beginInlineEdit(field, settingsIndex);
+        return;
+      }
+      if (!text && pendingAttachments.length === 0) return;
+      const lower = text.toLowerCase();
       if (paletteVisible) {
         const command = paletteMatches[paletteSelected] ?? paletteMatches[0];
         if (command) {
@@ -799,7 +857,24 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
               width={contentWidth}
             />
           ) : page ? (
-            <PagePanel page={page} width={contentWidth} />
+            <PagePanel
+              page={page}
+              width={contentWidth}
+              selectedIndex={settingsIndex}
+              editingKey={inlineEdit?.key}
+              draft={inlineDraft}
+              onBeginEdit={beginInlineEdit}
+              onDraftChange={setInlineDraft}
+              onSaveEdit={(value) => {
+                const field = inlineEdit;
+                setInlineEdit(null);
+                setInlineDraft('');
+                if (!field || !value.trim()) return;
+                void tui.updateSetting(field.key, value).then((result) => {
+                  tui.setToast(`${result.ok ? '✓' : '✗'} ${result.message}`);
+                });
+              }}
+            />
           ) : snapshot.turns.length === 0 && snapshot.streaming.length === 0 ? (
             <Welcome width={contentWidth} />
           ) : (
@@ -875,16 +950,18 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
           placeholder={
             approval
               ? 'y approve · s always · n deny'
-              : page
-                ? ':q close page · /help for commands'
-                : 'Message Alex… (/help for commands, /quit to exit)'
+              : page?.kind === 'settings'
+                ? 'click a setting value to edit · Esc close'
+                  : page
+                    ? ':q close page · /help for commands'
+                    : 'Message Alex… (/help for commands, /quit to exit)'
           }
           onInput={(value) => setInputValue(value)}
           onPaste={(event) => {
             void handlePaste(event);
           }}
           onSubmit={handleSubmit}
-          focused={!approval}
+          focused={!approval && !inlineEdit}
         />
       </box>
 
@@ -1801,7 +1878,62 @@ function Sidebar({
   );
 }
 
-function PagePanel({ page, width }: { page: NonNullable<TuiSnapshot['page']>; width: number }) {
+function InlineSettingInput({
+  value,
+  width,
+  placeholder,
+  onInput,
+  onSubmit,
+}: {
+  value: string;
+  width: number;
+  placeholder?: string;
+  onInput: (value: string) => void;
+  onSubmit: (value: string) => void;
+}) {
+  const ref = useRef<InputRenderable | null>(null);
+  useEffect(() => {
+    ref.current?.focus();
+    ref.current?.selectAll();
+  }, []);
+  return (
+    <input
+      ref={ref}
+      style={{ width }}
+      value={value}
+      focused
+      placeholder={placeholder ?? ''}
+      onInput={onInput}
+      onSubmit={(value: any) => onSubmit(String(value))}
+    />
+  );
+}
+
+function PagePanel({
+  page,
+  width,
+  selectedIndex,
+  editingKey,
+  draft,
+  onBeginEdit,
+  onDraftChange,
+  onSaveEdit,
+}: {
+  page: NonNullable<TuiSnapshot['page']>;
+  width: number;
+  selectedIndex: number;
+  editingKey?: string;
+  draft: string;
+  onBeginEdit: (field: TuiSettingField, index: number) => void;
+  onDraftChange: (value: string) => void;
+  onSaveEdit: (value: string) => void;
+}) {
+  const fields = page.kind === 'settings' ? page.fields ?? [] : [];
+  const labelWidth = Math.min(
+    36,
+    Math.max(24, ...fields.map((field) => field.label.length + 4)),
+  );
+  const valueWidth = Math.max(8, width - 4 - labelWidth - 2);
   return (
     <box
       style={{
@@ -1835,14 +1967,59 @@ function PagePanel({ page, width }: { page: NonNullable<TuiSnapshot['page']>; wi
         horizontalScrollbarOptions={{ visible: false }}
       >
         <box style={{ flexDirection: 'column', width: width - 4 }}>
-          {page.body.split('\n').map((line, index) => (
-            <text key={index} fg={theme.text} style={{ width: width - 4 }}>
-              {truncate(line, width - 6) || ' '}
-            </text>
-          ))}
+          {fields.length > 0
+            ? fields.map((field, index) => {
+                const editing = field.key === editingKey;
+                const selected = editing || index === selectedIndex;
+                return (
+                  <box
+                    key={field.key}
+                    style={{ flexDirection: 'row', width: width - 4, height: 1 }}
+                  >
+                    <text
+                      fg={selected ? theme.accent : theme.muted}
+                      style={{ width: labelWidth }}
+                      selectable={false}
+                      onMouseDown={() => onBeginEdit(field, index)}
+                    >
+                      {selected ? '❯ ' : '  '}
+                      {truncate(field.label, labelWidth - 2)}
+                    </text>
+                    {editing ? (
+                      <InlineSettingInput
+                        value={draft}
+                        width={valueWidth}
+                        placeholder={field.secret ? '输入新值（留空取消）' : field.value}
+                        onInput={onDraftChange}
+                        onSubmit={onSaveEdit}
+                      />
+                    ) : (
+                      <text
+                        fg={selected ? theme.accent : theme.text}
+                        style={{ width: valueWidth }}
+                        selectable={false}
+                        onMouseDown={() => onBeginEdit(field, index)}
+                      >
+                        {truncate(field.value, valueWidth)}
+                      </text>
+                    )}
+                  </box>
+                );
+              })
+            : page.body.split('\n').map((line, index) => (
+                <text key={index} fg={theme.text} style={{ width: width - 4 }}>
+                  {truncate(line, width - 6) || ' '}
+                </text>
+              ))}
         </box>
       </scrollbox>
-      <text fg={theme.muted}>:q / Esc close</text>
+      <text fg={theme.muted}>
+        {page.kind === 'settings'
+          ? editingKey
+            ? 'Enter save · Esc cancel'
+            : '↑/↓ select · Enter edit · Esc close'
+          : ':q / Esc close'}
+      </text>
     </box>
   );
 }
