@@ -7,6 +7,8 @@
  * back through `InvokeProviderTool`.
  */
 
+import { readFile, writeFile } from 'node:fs/promises';
+
 import type { Module } from '../kernel/runtime';
 import type { AsyncEventBus } from '../kernel/bus';
 import type { ToolResult, ToolSpec } from '../kernel/dto/tool';
@@ -14,8 +16,10 @@ import {
   GetMCPStatus,
   InvokeProviderTool,
   ReloadMCP,
+  SetMCPServerEnabled,
   ToolsProvided,
   type MCPReloadResult,
+  type MCPServerToggleResult,
   type MCPStatusSnapshot,
 } from '../kernel/contracts/tools';
 import type { MCPServerConfig } from './config';
@@ -24,7 +28,7 @@ import {
   RuntimeContextNotice,
   UnregisterPromptSection,
 } from '../kernel/contracts/prompt';
-import { loadMcpConfig } from './config';
+import { defaultMcpConfigPath, loadMcpConfig } from './config';
 import { MCPClient } from './client';
 
 export interface MCPModuleOptions {
@@ -82,6 +86,7 @@ export class MCPModule implements Module {
   private readonly options: MCPModuleOptions;
   private readonly clients = new Map<string, MCPClient>();
   private readonly entries = new Map<string, ToolEntry>();
+  private configs: MCPServerConfig[] = [];
   private serverState: ServerState[] = [];
   private statusMessage = '';
   private connectTask: Promise<void> | null = null;
@@ -99,6 +104,7 @@ export class MCPModule implements Module {
     bus.provide(InvokeProviderTool, (req) => this.invokeProviderTool(req));
     bus.provide(GetMCPStatus, () => this.status());
     bus.provide(ReloadMCP, () => this.reload());
+    bus.provide(SetMCPServerEnabled, (req) => this.setServerEnabled(req.name, req.enabled));
 
     let configs: MCPServerConfig[];
     try {
@@ -110,6 +116,7 @@ export class MCPModule implements Module {
       return;
     }
 
+    this.configs = configs;
     this.serverState = configs.map((config) => this.initialState(config));
     if (configs.length === 0) {
       this.statusMessage = 'No MCP servers configured';
@@ -140,6 +147,7 @@ export class MCPModule implements Module {
     }
     this.clients.clear();
     this.entries.clear();
+    this.configs = [];
     this.serverState = [];
     this.bus = null;
   }
@@ -147,6 +155,86 @@ export class MCPModule implements Module {
   /** Wait for the background connection pass (tests / graceful shutdown). */
   async whenIdle(): Promise<void> {
     if (this.connectTask) await this.connectTask;
+  }
+
+  /** Enable or disable one configured server without editing JSON by hand. */
+  async setServerEnabled(name: string, enabled: boolean): Promise<MCPServerToggleResult> {
+    const config = this.configs.find((item) => item.name === name);
+    const state = this.serverState.find((item) => item.name === name);
+    if (!config || !state) {
+      return { ok: false, enabled: false, message: `MCP server '${name}' not found` };
+    }
+    if (state.enabled === enabled) {
+      return {
+        ok: true,
+        enabled,
+        message: `${name} 已经是${enabled ? '启用' : '停用'}状态`,
+      };
+    }
+
+    config.enabled = enabled;
+    state.enabled = enabled;
+    if (!enabled) {
+      const client = this.clients.get(name);
+      this.clients.delete(name);
+      await client?.close().catch(() => undefined);
+      this.removeServerTools(name);
+      state.status = 'DISABLED';
+      state.error = null;
+      state.toolCount = 0;
+      state.tools = [];
+      this.updateStatusMessage();
+      this.publishToolsProvided('disabled');
+      this.publishToggleNotice(name, false);
+    } else {
+      state.status = 'connecting';
+      state.error = null;
+      this.publishToolsProvided('enabling');
+      await this.connectServer(config);
+      this.updateStatusMessage();
+      this.publishToolsProvided('enabled');
+      this.publishToggleNotice(name, true);
+    }
+    await this.persistEnabled(name, enabled);
+    return {
+      ok: true,
+      enabled,
+      message: `${name} 已${enabled ? '启用' : '停用'}`,
+    };
+  }
+
+  private publishToggleNotice(name: string, enabled: boolean): void {
+    if (!this.bus) return;
+    const state = this.serverState.find((item) => item.name === name);
+    const tools = state?.tools.map((tool) => tool.name).join(', ') || '(none)';
+    this.bus.publish(
+      new RuntimeContextNotice({
+        key: `mcp:${name}`,
+        source: 'mcp',
+        text: enabled
+          ? `MCP server '${name}' was enabled by the user. Available tools: ${tools}.`
+          : `MCP server '${name}' was disabled by the user; its tools were removed. Do not call them.`,
+      }),
+    );
+  }
+
+  /** Persist the disabled flag while preserving unknown fields in mcp.json. */
+  private async persistEnabled(name: string, enabled: boolean): Promise<void> {
+    if (this.options.configs) return;
+    const path = this.options.configPath ?? defaultMcpConfigPath();
+    try {
+      const raw = await readFile(path, 'utf8');
+      const data = JSON.parse(raw) as {
+        mcpServers?: Record<string, Record<string, unknown>>;
+      };
+      const server = data.mcpServers?.[name];
+      if (!server) return;
+      if (enabled) delete server.disabled;
+      else server.disabled = true;
+      await writeFile(path, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+    } catch {
+      // Runtime state still changed; persistence is best effort.
+    }
   }
 
   /**
@@ -181,6 +269,7 @@ export class MCPModule implements Module {
       return { ok: false, servers: 0, connected: 0, tools: 0, message: this.statusMessage };
     }
 
+    this.configs = configs;
     this.serverState = configs.map((config) => this.initialState(config));
     if (configs.length === 0) {
       this.statusMessage = 'No MCP servers configured';
@@ -289,6 +378,10 @@ export class MCPModule implements Module {
       this.statusMessage = `MCP: ${connected} connected, ${failed} failed`;
     } else if (connected > 0) {
       this.statusMessage = `MCP: ${connected} server(s) connected`;
+    } else if (this.serverState.some((state) => state.enabled)) {
+      this.statusMessage = 'MCP: connecting…';
+    } else if (this.serverState.length > 0) {
+      this.statusMessage = 'MCP: all servers disabled';
     } else {
       this.statusMessage = 'No MCP servers configured';
     }
@@ -305,14 +398,7 @@ export class MCPModule implements Module {
     await Promise.all(enabled.map((config) => this.connectServer(config)));
 
     const connected = this.serverState.filter((state) => state.status === 'CONNECTED').length;
-    const failed = this.serverState.filter((state) => state.status === 'ERROR').length;
-    if (connected === 0 && failed > 0) {
-      this.statusMessage = 'MCP servers unavailable';
-    } else if (failed > 0) {
-      this.statusMessage = `MCP: ${connected} connected, ${failed} failed`;
-    } else if (connected > 0) {
-      this.statusMessage = `MCP: ${connected} server(s) connected`;
-    }
+    this.updateStatusMessage();
     this.publishToolsProvided(connected > 0 ? 'connected' : 'error');
   }
 

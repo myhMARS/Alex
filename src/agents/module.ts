@@ -22,6 +22,7 @@ import {
   AgentTaskStarted,
   CancelAgentTask,
   DisposeAgent,
+  DisposeTeam,
   GetAgent,
   ResumeAgent,
   GetAgentMailboxStatus,
@@ -36,6 +37,7 @@ import {
   type AgentSpawnSpec,
   type AgentTaskInfo,
   type AgentMailboxEntry,
+  type DisposeTeamResult,
   type TeamLimits,
 } from '../kernel/contracts/agents';
 import {
@@ -187,6 +189,7 @@ export class AgentRegistryModule implements Module {
     );
     bus.provide(GetAgent, (req) => this.agents.get(req.agentId)?.info ?? null);
     bus.provide(DisposeAgent, (req) => this.dispose(req.agentId));
+    bus.provide(DisposeTeam, (req) => this.disposeTeam(req.teamId));
     bus.provide(CancelAgentTask, (req) => {
       const record = this.tasks.get(req.taskId);
       if (!record || record.info.status !== 'running') return false;
@@ -1370,6 +1373,78 @@ export class AgentRegistryModule implements Module {
       }),
     );
     return { ...info };
+  }
+
+  /** Disband a team: dispose members, cancel tasks and remove durable history. */
+  async disposeTeam(teamId: string): Promise<DisposeTeamResult> {
+    const id = teamId.trim();
+    const empty = (message: string): DisposeTeamResult => ({
+      ok: false,
+      teamId: id,
+      disposedAgents: 0,
+      cancelledTasks: 0,
+      removedTasks: 0,
+      message,
+    });
+    if (!id || id === '(none)') return empty('无效的 Team ID');
+
+    const members = [...this.agents.entries()].filter(
+      ([, registered]) => registered.info.teamId === id,
+    );
+    if (
+      members.some(
+        ([agentId, registered]) =>
+          agentId === this.options.defaultAgentId || registered.info.role === 'lead',
+      )
+    ) {
+      return empty('不能解散包含主 Agent 的 Team');
+    }
+
+    let disposedAgents = 0;
+    for (const [agentId] of members) {
+      if (await this.dispose(agentId)) disposedAgents += 1;
+    }
+
+    let cancelledTasks = 0;
+    let removedTasks = 0;
+    for (const [taskId, record] of [...this.tasks]) {
+      if (record.info.teamId !== id) continue;
+      if (record.info.status === 'running') {
+        record.info.status = 'cancelled';
+        record.info.failureReason = 'team disposed';
+        record.info.finishedAt = Date.now();
+        this.persistTask('finished', record.info);
+        this.bus?.publish(
+          new AgentTaskFinished({
+            agentId: record.info.agentId,
+            sessionId: record.info.sessionId,
+            teamId: id,
+            task: { ...record.info },
+          }),
+        );
+        cancelledTasks += 1;
+      }
+      this.tasks.delete(taskId);
+      removedTasks += 1;
+    }
+
+    await this.taskStore?.removeTeam(id);
+    await this.agentStore?.removeTeam(id);
+    await this.mailbox?.removeTeam(id);
+    this.teamLimits.delete(id);
+    this.teamSlots.delete(id);
+    for (const [agentId, info] of this.resumable) {
+      if (info.teamId === id) this.resumable.delete(agentId);
+    }
+
+    return {
+      ok: true,
+      teamId: id,
+      disposedAgents,
+      cancelledTasks,
+      removedTasks,
+      message: `已解散 ${id}：agents=${disposedAgents} tasks=${removedTasks} cancelled=${cancelledTasks}`,
+    };
   }
 
   private async dispose(agentId: string): Promise<boolean> {

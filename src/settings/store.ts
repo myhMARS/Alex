@@ -12,6 +12,7 @@ export const DEFAULT_COMPACT_THRESHOLD_RATIO = 0.8;
 export const DEFAULT_EFFORT: ModelEffort = 'high';
 export const DEFAULT_IMAGE_MAX_DIMENSION = 2_048;
 export const DEFAULT_MAX_ITERATIONS = 10;
+export const DEFAULT_SESSION_TITLE_GENERATION = false;
 export const DEFAULT_AUTO_REFLECT = true;
 export const DEFAULT_REFLECTION_MIN_TOOLS = 3;
 export const DEFAULT_REFLECTION_MIN_WRITE_TOOLS = 2;
@@ -119,6 +120,8 @@ function normalize(partial: Partial<AlexSettings>, base: AlexSettings): AlexSett
     effort: partial.effort ?? base.effort,
     imageMaxDimension: partial.imageMaxDimension ?? base.imageMaxDimension,
     maxIterations: partial.maxIterations ?? base.maxIterations,
+    sessionTitleGeneration:
+      partial.sessionTitleGeneration ?? base.sessionTitleGeneration ?? DEFAULT_SESSION_TITLE_GENERATION,
     autoReflect: partial.autoReflect ?? base.autoReflect,
     reflectionMinTools:
       partial.reflectionMinTools ?? base.reflectionMinTools,
@@ -148,6 +151,11 @@ export async function loadSettings(
       DEFAULT_IMAGE_MAX_DIMENSION,
     ),
     maxIterations: envInt(env, 'ALEX_MAX_ITERATIONS', DEFAULT_MAX_ITERATIONS, 1, 1_000),
+    sessionTitleGeneration: envBool(
+      env,
+      'ALEX_SESSION_TITLE_GENERATION',
+      DEFAULT_SESSION_TITLE_GENERATION,
+    ),
     autoReflect: envBool(env, 'ALEX_AUTO_REFLECT', DEFAULT_AUTO_REFLECT),
     reflectionMinTools: envInt(
       env,

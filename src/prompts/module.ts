@@ -49,9 +49,7 @@ function identitySection(): PromptSection {
     content: [
       '## Identity',
       '',
-      'Your name is Alex — a terminal-first AI agent implemented by this project.',
-      'You are not Claude, ChatGPT, Gemini, or another vendor assistant. Never claim to be Claude.',
-      'You run on Bun and TypeScript with an event-driven module kernel.',
+      'Your name is Alex.',
       '',
       '## Alex configuration and data',
       '',
@@ -66,11 +64,6 @@ function identitySection(): PromptSection {
       `- Tool plugins: ${path('plugins')}`,
       `- User base prompt: ${path('system-prompt.md')}`,
       `- User defaults: ${path('AGENTS.md')}`,
-      '',
-      'Workspace instructions are the nearest AGENTS.md in the working directory tree.',
-      'Use the configured tools to inspect or change these files. Do not assume Claude Code',
-      'paths such as ~/.claude or ~/.claude.json. When asked about model settings, MCP,',
-      'skills or sessions, refer to /settings, /mcp, /skills and /sessions.',
     ].join('\n'),
   };
 }

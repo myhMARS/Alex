@@ -284,3 +284,21 @@ export class AgentDisposed extends Event {
     this.agentId = init.agentId ?? '';
   }
 }
+
+export interface DisposeTeamResult {
+  ok: boolean;
+  teamId: string;
+  disposedAgents: number;
+  cancelledTasks: number;
+  removedTasks: number;
+  message: string;
+}
+
+export class DisposeTeam extends Request<DisposeTeamResult> {
+  override teamId: string;
+
+  constructor(init: { teamId?: string; sessionId?: string } = {}) {
+    super(init);
+    this.teamId = init.teamId ?? '';
+  }
+}

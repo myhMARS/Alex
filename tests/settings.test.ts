@@ -64,6 +64,7 @@ describe('settings parsing', () => {
       ALEX_EFFORT: 'low',
       ALEX_IMAGE_MAX_DIMENSION: '1024',
       ALEX_MAX_ITERATIONS: '25',
+      ALEX_SESSION_TITLE_GENERATION: 'on',
       ALEX_AUTO_REFLECT: 'off',
       ALEX_REFLECTION_MIN_TOOLS: '5',
       ALEX_REFLECTION_MIN_WRITE_TOOLS: '4',
@@ -77,6 +78,7 @@ describe('settings parsing', () => {
     expect(loaded.effort).toBe('low');
     expect(loaded.imageMaxDimension).toBe(1_024);
     expect(loaded.maxIterations).toBe(25);
+    expect(loaded.sessionTitleGeneration).toBe(true);
     expect(loaded.autoReflect).toBe(false);
     expect(loaded.reflectionMinTools).toBe(5);
     expect(loaded.reflectionMinWriteTools).toBe(4);
@@ -89,6 +91,7 @@ describe('settings parsing', () => {
         imageMaxDimension: 1_568,
         maxIterations: 50,
         autoReflect: true,
+        sessionTitleGeneration: false,
         reflectionMinTools: 6,
         reflectionMinWriteTools: 3,
       },
@@ -103,6 +106,7 @@ describe('settings parsing', () => {
     expect(reloaded.maxOutputTokens).toBe(65_536);
     expect(reloaded.imageMaxDimension).toBe(1_568);
     expect(reloaded.maxIterations).toBe(50);
+    expect(reloaded.sessionTitleGeneration).toBe(false);
     expect(reloaded.autoReflect).toBe(true);
     expect(reloaded.reflectionMinTools).toBe(6);
     expect(reloaded.reflectionMinWriteTools).toBe(3);

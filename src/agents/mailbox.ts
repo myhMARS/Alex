@@ -1,6 +1,6 @@
 /** Durable per-agent mailbox log (JSONL). */
 
-import { appendFile, mkdir, readFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -239,5 +239,21 @@ export class AgentMailbox {
     } catch {
       // Mailbox persistence must never break message delivery.
     }
+  }
+
+  /** Remove all mailbox entries for a team from memory and the JSONL log. */
+  async removeTeam(teamId: string): Promise<number> {
+    if (!teamId) return 0;
+    const kept = this.entries.filter((entry) => entry.teamId !== teamId);
+    const removed = this.entries.length - kept.length;
+    if (removed === 0) return 0;
+    this.entries = kept;
+    await mkdir(dirname(this.path), { recursive: true });
+    await writeFile(
+      this.path,
+      kept.length > 0 ? `${kept.map((entry) => JSON.stringify(entry)).join('\n')}\n` : '',
+      'utf8',
+    );
+    return removed;
   }
 }

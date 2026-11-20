@@ -1,6 +1,6 @@
 /** Durable agent-task log (JSONL), one record per start/finish. */
 
-import { appendFile, mkdir, readFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -74,5 +74,35 @@ export class AgentTaskStore {
       }
     }
     return [...latest.values()];
+  }
+
+  /** Remove every task record belonging to a team; returns removed task count. */
+  async removeTeam(teamId: string): Promise<number> {
+    if (!teamId) return 0;
+    let raw = '';
+    try {
+      raw = await readFile(this.path, 'utf8');
+    } catch {
+      return 0;
+    }
+    const kept: string[] = [];
+    const removed = new Set<string>();
+    for (const line of raw.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      try {
+        const record = JSON.parse(line) as TaskLogRecord;
+        if (record.task?.teamId === teamId) {
+          removed.add(record.task.taskId);
+          continue;
+        }
+      } catch {
+        // Keep unreadable lines rather than deleting unrelated history.
+      }
+      kept.push(line);
+    }
+    if (removed.size === 0) return 0;
+    await mkdir(dirname(this.path), { recursive: true });
+    await writeFile(this.path, kept.length > 0 ? `${kept.join('\n')}\n` : '', 'utf8');
+    return removed.size;
   }
 }

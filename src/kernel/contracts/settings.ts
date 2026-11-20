@@ -22,6 +22,8 @@ export interface SettingsSnapshot {
   imageMaxDimension: number;
   /** Maximum tool-call iterations per agent turn. */
   maxIterations: number;
+  /** Generate a concise title for new sessions after their first turn. */
+  sessionTitleGeneration?: boolean;
   /** Whether completed turns may trigger skill reflection automatically. */
   autoReflect: boolean;
   /** Minimum tool calls for an automatic reflection. */

@@ -18,12 +18,13 @@ import {
   ToolStarted,
 } from '../src/kernel/contracts/tools';
 import { CronJobEvent, ListCronJobs } from '../src/kernel/contracts/cron';
-import { GetMCPStatus, GetToolCatalog, ListDirectory } from '../src/kernel/contracts/tools';
+import { GetMCPStatus, GetToolCatalog, ListDirectory, SetMCPServerEnabled } from '../src/kernel/contracts/tools';
 import { ListSkills } from '../src/kernel/contracts/skills';
 import { GetPromptInfo } from '../src/kernel/contracts/prompt';
 import {
   AgentTaskFinished,
   DisposeAgent,
+  DisposeTeam,
   ListAgentMessages,
   ListAgents,
   ListAgentTasks,
@@ -571,7 +572,19 @@ describe('TuiModule as a bus module', () => {
         agentId: 'b1',
       },
     ]);
-    bus.provide(ListAgentTasks, () => [
+        let disposedTeam = '';
+    bus.provide(DisposeTeam, (req) => {
+      disposedTeam = req.teamId;
+      return {
+        ok: true,
+        teamId: req.teamId,
+        disposedAgents: 1,
+        cancelledTasks: 0,
+        removedTasks: 1,
+        message: `已解散 ${req.teamId}`,
+      };
+    });
+bus.provide(ListAgentTasks, () => [
       {
         taskId: 'task-a',
         agentId: 'a1',
@@ -605,6 +618,10 @@ describe('TuiModule as a bus module', () => {
     expect(tui.getSnapshot().page?.title).toBe('Teams');
     expect(body).toContain('team-a: agents=1 running=0 tasks=1 task_running=0 completed=1');
     expect(body).toContain('team-b: agents=1 running=1 tasks=1 task_running=1 completed=0');
+    expect(body).toContain('[解散]');
+    const disposed = await tui.disposeTeam('team-b');
+    expect(disposed.ok).toBe(true);
+    expect(disposedTeam).toBe('team-b');
     await bus.shutdown();
   });
 
@@ -1308,11 +1325,16 @@ describe('TuiModule as a bus module', () => {
     const page = tui.getSnapshot().page;
     expect(page?.kind).toBe('context');
     expect(page?.title).toBe('上下文窗口');
-    expect(page?.body).toContain('上下文：1,234 / 128,000');
-    expect(page?.body).toContain('本次会话：输入 1,234 · 输出 56 · 请求 1 次');
-    expect(page?.body).toContain('缓存：命中 800 · 未命中 434 · 命中率 64.8%');
-    expect(page?.body).toContain('最近请求：prompt 1,234 · completion 56 · total 1,290');
-    expect(page?.body).toContain('历史消息：3 条（无数量上限）');
+    expect(page?.body).toContain('◆ 用量概览');
+    expect(page?.body).toContain('1,234 / 128,000 tokens');
+    expect(page?.body).toContain('◆ 本次会话');
+    expect(page?.body).toContain('输入        1,234');
+    expect(page?.body).toContain('输出        56');
+    expect(page?.body).toContain('◆ 缓存');
+    expect(page?.body).toContain('命中率      64.8%');
+    expect(page?.body).toContain('◆ 最近请求');
+    expect(page?.body).toContain('prompt 1,234');
+    expect(page?.body).toContain('3 条消息（无数量上限）');
     expect(page?.body).not.toContain('最近消息');
     await bus.shutdown();
   });
@@ -1358,6 +1380,7 @@ describe('TuiModule as a bus module', () => {
     expect(body).toContain('effort        high');
     expect(body).toContain('max_iterations 10');
     expect(body).toContain('auto_reflect   on');
+    expect(body).toContain('session_title  off');
     expect(body).not.toContain('可用键');
     expect(body).not.toContain('max_context 会减去');
     expect(body).toContain('reflection_min_tools 3');
@@ -1393,6 +1416,10 @@ describe('TuiModule as a bus module', () => {
     const autoReflect = await tui.updateSetting('auto_reflect', 'off');
     expect(autoReflect.ok).toBe(true);
     expect(current.autoReflect).toBe(false);
+
+    const titleSetting = await tui.updateSetting('session_title', 'on');
+    expect(titleSetting.ok).toBe(true);
+    expect(current.sessionTitleGeneration).toBe(true);
     const minTools = await tui.updateSetting('reflection_min_tools', '5');
     expect(minTools.ok).toBe(true);
     expect(current.reflectionMinTools).toBe(5);
@@ -1458,6 +1485,7 @@ describe('TuiModule as a bus module', () => {
         updatedAt: '2026-03-01T00:00:00Z',
         firstMessage: 'recent message',
         messageCount: 7,
+        title: 'Recent work',
       },
     ]);
     const tui = new TuiModule();
@@ -1469,7 +1497,8 @@ describe('TuiModule as a bus module', () => {
     expect(body.indexOf('recent-session')).toBeLessThan(body.indexOf('older-session'));
     expect(body).toContain('7 msgs');
     expect(body).toContain('recent message');
-    expect(body).toMatch(/1\. recent-session/);
+    expect(body).toMatch(/1\. Recent work/);
+    expect(body).toContain('recent-session');
     expect(body).toMatch(/2\. older-session/);
     expect(body.split('\n').filter((line) => line.includes('recent-session'))).toHaveLength(1);
     expect(body.split('\n').filter((line) => line.includes('recent message'))).toHaveLength(1);
@@ -1601,6 +1630,48 @@ describe('TuiModule as a bus module', () => {
     expect(tui.toggleMcpServer(1)).toBe(true);
     expect(tui.getSnapshot().page?.body).not.toContain('🔧 echo');
     expect(tui.toggleMcpServer(9)).toBe(false);
+    await bus.shutdown();
+  });
+
+  test('MCP page can enable and disable a server', async () => {
+    const bus = new AsyncEventBus();
+    let enabled = true;
+    const changes: boolean[] = [];
+    bus.provide(GetMCPStatus, () => ({
+      statusMessage: enabled ? 'MCP: 1 server(s) connected' : 'MCP: all servers disabled',
+      servers: [
+        {
+          name: 'demo-server',
+          status: enabled ? 'CONNECTED' : 'DISABLED',
+          enabled,
+          transport: 'stdio',
+          tool_count: enabled ? 1 : 0,
+          tools: enabled ? [{ name: 'echo' }] : [],
+        },
+      ],
+    }));
+    bus.provide(SetMCPServerEnabled, (req) => {
+      enabled = req.enabled;
+      changes.push(enabled);
+      return { ok: true, enabled, message: `${req.name} 已${enabled ? '启用' : '停用'}` };
+    });
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+    await tui.showPage('mcp');
+    expect(tui.getSnapshot().page?.body).toContain('[ ON ]');
+
+    const disabled = await tui.setMcpServerEnabled(1, false);
+    expect(disabled.ok).toBe(true);
+    expect(changes).toEqual([false]);
+    expect(tui.getSnapshot().page?.body).toContain('[ OFF ]');
+    expect(tui.getSnapshot().page?.body).toContain('DISABLED');
+
+    const reenabled = await tui.setMcpServerEnabled(1, true);
+    expect(reenabled.ok).toBe(true);
+    expect(changes).toEqual([false, true]);
+    expect(tui.getSnapshot().page?.body).toContain('[ ON ]');
+    expect(tui.getSnapshot().page?.body).toContain('CONNECTED');
     await bus.shutdown();
   });
 

@@ -25,8 +25,8 @@ import {
   ToolStarted,
 } from '../src/kernel/contracts/tools';
 import { ListSkills } from '../src/kernel/contracts/skills';
-import { ListAgentTasks, ListAgents } from '../src/kernel/contracts/agents';
-import { GetToolCatalog, GetMCPStatus, ListDirectory, ReloadMCP } from '../src/kernel/contracts/tools';
+import { DisposeTeam, ListAgentTasks, ListAgents } from '../src/kernel/contracts/agents';
+import { GetToolCatalog, GetMCPStatus, ListDirectory, ReloadMCP, SetMCPServerEnabled } from '../src/kernel/contracts/tools';
 import {
   CompactContext,
   CompactionStarted,
@@ -250,6 +250,27 @@ describe('TUI renderer', () => {
     await setup.renderOnce();
     frame = plain(setup.captureCharFrame());
     expect(frame).not.toContain('Queued (1)');
+    await bus.shutdown();
+  });
+
+  test('removes a queued message from the dock', async () => {
+    const { bus, tui, setup } = await mountedTui();
+    bus.publish(
+      new TurnQueued({
+        sessionId: 's1',
+        agentId: 'main',
+        queueId: 'q-remove',
+        userInput: 'remove me',
+      }),
+    );
+    await bus.idle();
+    await setup.renderOnce();
+    expect(plain(setup.captureCharFrame())).toContain('remove me');
+    const result = tui.cancelQueuedMessage('q-remove');
+    expect(result.ok).toBe(true);
+    await bus.idle();
+    await setup.renderOnce();
+    expect(plain(setup.captureCharFrame())).not.toContain('Queued (1)');
     await bus.shutdown();
   });
 
@@ -695,6 +716,67 @@ describe('TUI renderer', () => {
     await bus.shutdown();
   });
 
+  test('settings page switches toggles by click', async () => {
+    const bus = new AsyncEventBus();
+    const current: SettingsSnapshot = {
+      provider: 'deepseek',
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-chat',
+      apiKey: 'sk-secret-1234',
+      maxContextTokens: 131_072,
+      maxOutputTokens: 4_096,
+      compactThresholdRatio: 0.8,
+      imageMaxDimension: 2_048,
+      thinkingEnabled: true,
+      effort: 'high',
+      maxIterations: 10,
+      sessionTitleGeneration: false,
+      autoReflect: true,
+      reflectionMinTools: 3,
+      reflectionMinWriteTools: 2,
+    };
+    bus.provide(GetSettings, () => ({ ...current }));
+    bus.provide(UpdateSettings, (req) => {
+      Object.assign(current, req.patch);
+      return { ...current };
+    });
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+    await tui.showPage('settings');
+    const setup = await testRender(
+      <TuiApp tui={tui} sessionId="s1" toolCount={17} onQuit={() => {}} />,
+      { width: 100, height: 32 },
+    );
+    await setup.renderOnce();
+    let lines = plain(setup.captureCharFrame()).split('\n');
+    let row = lines.findIndex((line) => line.includes('thinking') && line.includes('● ON'));
+    expect(row).toBeGreaterThanOrEqual(0);
+    await setup.mockMouse.click(lines[row]!.indexOf('● ON') + 1, row);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await bus.idle();
+    await setup.renderOnce();
+    expect(current.thinkingEnabled).toBe(false);
+    lines = plain(setup.captureCharFrame()).split('\n');
+    row = lines.findIndex((line) => line.includes('thinking') && line.includes('○ OFF'));
+    expect(row).toBeGreaterThanOrEqual(0);
+
+    row = lines.findIndex((line) => line.includes('session_title') && line.includes('○ OFF'));
+    expect(row).toBeGreaterThanOrEqual(0);
+    await setup.mockMouse.click(lines[row]!.indexOf('○ OFF') + 1, row);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await bus.idle();
+    expect(current.sessionTitleGeneration).toBe(true);
+
+    row = lines.findIndex((line) => line.includes('effort') && line.includes('‹ high ›'));
+    expect(row).toBeGreaterThanOrEqual(0);
+    await setup.mockMouse.click(lines[row]!.indexOf('high'), row);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await bus.idle();
+    expect(current.effort).toBe('max');
+    await bus.shutdown();
+  });
+
   test('settings page edits a field directly', async () => {
     const bus = new AsyncEventBus();
     const current: SettingsSnapshot = {
@@ -731,7 +813,7 @@ describe('TUI renderer', () => {
     let frame = plain(setup.captureCharFrame());
     expect(frame).toContain('❯ provider');
     expect(frame).toContain('deepseek');
-    expect(frame).toContain('↑/↓ select · Enter edit');
+    expect(frame).toContain('↑/↓ select · Enter 切换/编辑');
 
     await setup.mockInput.pressArrow('down');
     await new Promise((resolve) => setTimeout(resolve, 30));
@@ -1143,7 +1225,7 @@ describe('TUI renderer', () => {
       { width: 110, height: 30 },
     );
     await setup.renderOnce();
-    expect(plain(setup.captureCharFrame())).toContain('model deepseek-chat');
+    expect(plain(setup.captureCharFrame())).toContain('◆ deepseek-chat');
 
     bus.publish(
       new TokenUsageReported({
@@ -1152,12 +1234,15 @@ describe('TUI renderer', () => {
         promptTokens: 12_800,
         completionTokens: 10,
         totalTokens: 12_810,
+        cacheHitTokens: 8_000,
+        cacheMissTokens: 4_800,
       }),
     );
     await bus.idle();
     await setup.renderOnce();
     const frame = plain(setup.captureCharFrame());
     expect(frame).toContain('ctx 10%');
+    expect(frame).toContain('cache 62.5%');
     await bus.shutdown();
   });
 
@@ -1212,6 +1297,113 @@ describe('TUI renderer', () => {
     await setup.renderOnce();
     frame = plain(setup.captureCharFrame());
     expect(frame).toContain('已压缩 8 条');
+    await bus.shutdown();
+  });
+
+  test('clicking the MCP switch toggles a server', async () => {
+    const bus = new AsyncEventBus();
+    let enabled = true;
+    bus.provide(GetMCPStatus, () => ({
+      statusMessage: enabled ? 'MCP: 1 server(s) connected' : 'MCP: all servers disabled',
+      servers: [
+        {
+          name: 'demo-server',
+          status: enabled ? 'CONNECTED' : 'DISABLED',
+          enabled,
+          transport: 'stdio',
+          tool_count: enabled ? 1 : 0,
+          tools: [],
+        },
+      ],
+    }));
+    bus.provide(SetMCPServerEnabled, (req) => {
+      enabled = req.enabled;
+      return { ok: true, enabled, message: `${req.name} 已${enabled ? '启用' : '停用'}` };
+    });
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+    await tui.showPage('mcp');
+    const setup = await testRender(
+      <TuiApp tui={tui} sessionId="s-mcp" toolCount={0} onQuit={() => {}} />,
+      { width: 100, height: 30 },
+    );
+    await setup.renderOnce();
+    const lines = plain(setup.captureCharFrame()).split('\n');
+    const row = lines.findIndex((line) => line.includes('● ON'));
+    expect(row).toBeGreaterThanOrEqual(0);
+    const column = lines[row]!.indexOf('● ON');
+    await setup.mockMouse.click(column + 2, row);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await bus.idle();
+    await setup.renderOnce();
+    expect(enabled).toBe(false);
+    expect(plain(setup.captureCharFrame())).toContain('○ OFF');
+    await bus.shutdown();
+  });
+
+  test('clicking [解散] twice disbands a team', async () => {
+    const bus = new AsyncEventBus();
+    let disposed = false;
+    bus.provide(ListAgents, () => [
+      {
+        agentId: 'w1',
+        parentAgentId: 'main',
+        teamId: 'team-a',
+        sessionId: 's1',
+        role: 'worker',
+        status: 'idle',
+      },
+    ]);
+    bus.provide(ListAgentTasks, () => [
+      {
+        taskId: 't1',
+        agentId: 'w1',
+        sessionId: 's1',
+        teamId: 'team-a',
+        prompt: 'work',
+        status: 'completed',
+        result: 'ok',
+        error: '',
+        startedAt: 1,
+        finishedAt: 2,
+      },
+    ]);
+    bus.provide(DisposeTeam, (req) => {
+      disposed = true;
+      return {
+        ok: true,
+        teamId: req.teamId,
+        disposedAgents: 1,
+        cancelledTasks: 0,
+        removedTasks: 1,
+        message: `已解散 ${req.teamId}`,
+      };
+    });
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+    await tui.showPage('teams');
+    const setup = await testRender(
+      <TuiApp tui={tui} sessionId="s-team" toolCount={0} onQuit={() => {}} />,
+      { width: 100, height: 30 },
+    );
+    await setup.renderOnce();
+    let lines = plain(setup.captureCharFrame()).split('\n');
+    let row = lines.findIndex((line) => line.includes('[ 解散 ]'));
+    expect(row).toBeGreaterThanOrEqual(0);
+    await setup.mockMouse.click(lines[row]!.indexOf('[ 解散 ]') + 2, row);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await setup.renderOnce();
+    expect(disposed).toBe(false);
+    lines = plain(setup.captureCharFrame()).split('\n');
+    row = lines.findIndex((line) => line.includes('[ 确认解散 ]'));
+    expect(row).toBeGreaterThanOrEqual(0);
+    await setup.mockMouse.click(lines[row]!.indexOf('[ 确认解散 ]') + 2, row);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    await bus.idle();
+    await setup.renderOnce();
+    expect(disposed).toBe(true);
     await bus.shutdown();
   });
 

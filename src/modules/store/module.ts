@@ -336,6 +336,7 @@ export class StoreModule implements Module {
           updatedAt: info ? new Date(info.mtimeMs).toISOString() : data.created_at,
           firstMessage: (data.first_message || '').slice(0, 80),
           messageCount: projectSessionEvents(data.events).length,
+          title: sessionTitle(data.events),
           parentSessionId: data.parent_session_id,
           forkedAt: data.forked_at,
           forkBoundarySeq: data.fork_boundary_seq,
@@ -359,6 +360,7 @@ export class StoreModule implements Module {
       sessionId: data.session_id || sessionId,
       createdAt: data.created_at,
       firstMessage: data.first_message,
+      title: sessionTitle(data.events),
       messages,
       cronHistory: data.cron_history,
       events: data.events,
@@ -424,6 +426,16 @@ async function syncFile(path: string): Promise<void> {
   } finally {
     await handle.close();
   }
+}
+
+function sessionTitle(events: SessionEventRecord[]): string | undefined {
+  let title: string | undefined;
+  for (const event of events) {
+    if (event.type !== 'session_title') continue;
+    const value = event.data?.title;
+    if (typeof value === 'string' && value.trim()) title = value.trim();
+  }
+  return title;
 }
 
 function sessionAgentId(events: SessionEventRecord[]): string | undefined {

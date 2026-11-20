@@ -15,6 +15,7 @@ import {
   ExecuteTool,
   GetMCPStatus,
   GetToolCatalog,
+  SetMCPServerEnabled,
 } from '../src/kernel/contracts/tools';
 import {
   RegisterPromptSection,
@@ -376,6 +377,28 @@ describe('MCP health check', () => {
       const toolsSection = sections.find((section) => section.id === 'tools');
       expect(toolsSection?.content).toContain('Use the provided tool schemas');
       expect(toolsSection?.content).not.toContain('mcp__health-demo__echo');
+
+      const disabled = await bus.request(
+        new SetMCPServerEnabled({ name: 'health-demo', enabled: false }),
+      );
+      expect(disabled.ok).toBe(true);
+      await bus.idle();
+      status = await bus.request(new GetMCPStatus());
+      expect(status.servers[0]?.status).toBe('DISABLED');
+      catalog = await bus.request(new GetToolCatalog());
+      expect(catalog.map((spec) => spec.name)).not.toContain('mcp__health-demo__echo2');
+      expect(notices.some((text) => text.includes('disabled by the user'))).toBe(true);
+
+      const enabled = await bus.request(
+        new SetMCPServerEnabled({ name: 'health-demo', enabled: true }),
+      );
+      expect(enabled.ok).toBe(true);
+      await bus.idle();
+      status = await bus.request(new GetMCPStatus());
+      expect(status.servers[0]?.status).toBe('CONNECTED');
+      catalog = await bus.request(new GetToolCatalog());
+      expect(catalog.map((spec) => spec.name)).toContain('mcp__health-demo__echo2');
+      expect(notices.some((text) => text.includes('enabled by the user'))).toBe(true);
 
       // Reload closes the old fleet, reconnects, and republishes the catalog.
       const reloaded = await mcp.reload();

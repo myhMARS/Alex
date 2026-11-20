@@ -274,6 +274,23 @@ export interface MCPReloadResult {
 
 export class ReloadMCP extends Request<MCPReloadResult> {}
 
+export interface MCPServerToggleResult {
+  ok: boolean;
+  enabled: boolean;
+  message: string;
+}
+
+export class SetMCPServerEnabled extends Request<MCPServerToggleResult> {
+  name: string;
+  enabled: boolean;
+
+  constructor(init: { name?: string; enabled?: boolean } = {}) {
+    super();
+    this.name = init.name ?? '';
+    this.enabled = init.enabled ?? false;
+  }
+}
+
 export interface MCPStatusSnapshot {
   servers: Record<string, unknown>[];
   statusMessage?: string;

@@ -89,6 +89,7 @@ export function projectSessionSurface(
   const customEvents: SessionEventRecord[] = [];
   const messageHeaderSeqs: Array<number | null> = [];
   let lastRequestHeader: Record<string, unknown> | undefined;
+  let title: string | undefined;
   for (const event of events) {
     const data = event.data ?? {};
     if (
@@ -113,6 +114,8 @@ export function projectSessionSurface(
       });
     } else if (event.type === 'request_header') {
       lastRequestHeader = data;
+    } else if (event.type === 'session_title' && typeof data.title === 'string') {
+      title = data.title;
     }
     if (!CORE_EVENT_TYPES.has(event.type)) customEvents.push(event);
   }
@@ -124,5 +127,6 @@ export function projectSessionSurface(
     lastRequestHeader,
     messageHeaderSeqs,
     customEvents,
+    ...(title ? { title } : {}),
   };
 }

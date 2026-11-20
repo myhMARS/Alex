@@ -1,6 +1,6 @@
 /** Session contracts — TypeScript port of alex/kernel/contracts/session.py. */
 
-import { Event, Request } from '../message';
+import { Event, Request, type MessageContext } from '../message';
 import type { MessageDTO } from '../dto/message';
 
 export interface SessionMeta {
@@ -10,6 +10,8 @@ export interface SessionMeta {
   updatedAt?: string;
   firstMessage: string;
   messageCount: number;
+  /** Auto-generated or user-provided session title. */
+  title?: string;
   /** Session this one was forked from, when applicable. */
   parentSessionId?: string;
   forkedAt?: string;
@@ -31,6 +33,7 @@ export interface SessionBundle {
   sessionId: string;
   createdAt?: string;
   firstMessage?: string;
+  title?: string;
   messages: MessageDTO[];
   cronHistory: Record<string, unknown>[];
   /** Append-only sidecar events (v2 format). */
@@ -88,6 +91,17 @@ export interface SessionProjection {
   messageHeaderSeqs: Array<number | null>;
   /** Plugin/custom event records that are not part of the core schema. */
   customEvents: SessionEventRecord[];
+  /** Latest session title, when one has been generated. */
+  title?: string;
+}
+
+export class SessionTitleUpdated extends Event {
+  title: string;
+
+  constructor(init: MessageContext & { title?: string } = {}) {
+    super(init);
+    this.title = init.title ?? '';
+  }
 }
 
 export class GetSessionProjection extends Request<SessionProjection> {}

@@ -38,6 +38,7 @@ export class SettingsModule implements Module {
       thinkingEnabled: true,
       effort: 'high',
       maxIterations: 10,
+      sessionTitleGeneration: false,
       autoReflect: true,
       reflectionMinTools: 3,
       reflectionMinWriteTools: 2,

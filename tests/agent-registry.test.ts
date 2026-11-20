@@ -8,6 +8,7 @@ import {
   AgentDisposed,
   AgentSpawned,
   DisposeAgent,
+  DisposeTeam,
   GetAgent,
   GetTeamLimits,
   ResumeAgent,
@@ -902,6 +903,37 @@ describe('AgentRegistryModule', () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+
+  test('disposes a whole team and clears its limits', async () => {
+    const bus = new AsyncEventBus();
+    const session = new SessionModule();
+    const registry = new AgentRegistryModule({ registerTools: false });
+    await session.start(bus);
+    await registry.start(bus);
+    await bus.start();
+    await bus.request(new SpawnAgent({ spec: { agentId: 'a1', teamId: 'team-a' } }));
+    await bus.request(new SpawnAgent({ spec: { agentId: 'a2', teamId: 'team-a' } }));
+    await bus.request(new SpawnAgent({ spec: { agentId: 'b1', teamId: 'team-b' } }));
+    await bus.request(
+      new SetTeamLimits({ limits: { teamId: 'team-a', maxAgents: 5 } }),
+    );
+
+    const result = await bus.request(new DisposeTeam({ teamId: 'team-a' }));
+    expect(result.ok).toBe(true);
+    expect(result.disposedAgents).toBe(2);
+    expect((await bus.request(new ListAgents())).map((info) => info.agentId)).toEqual(['b1']);
+    expect((await bus.request(new GetTeamLimits())).map((limits) => limits.teamId)).not.toContain(
+      'team-a',
+    );
+
+    // The main/lead team is protected from a bulk delete.
+    await bus.request(new SpawnAgent({ spec: { agentId: 'lead', teamId: 'core', role: 'lead' } }));
+    const protectedResult = await bus.request(new DisposeTeam({ teamId: 'core' }));
+    expect(protectedResult.ok).toBe(false);
+    expect((await bus.request(new ListAgents())).map((info) => info.agentId)).toContain('lead');
+    await registry.stop();
+    await bus.shutdown();
   });
 
   test('serializes concurrent dispose calls', async () => {

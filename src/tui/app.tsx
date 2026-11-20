@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useKeyboard, useRenderer, useTerminalDimensions } from '@opentui/react';
+import { RGBA } from '@opentui/core';
 import type { InputRenderable, PasteEvent } from '@opentui/core';
 
 import type { AttachmentDTO } from '../kernel/dto/message';
@@ -27,6 +28,9 @@ import { MarkdownText } from './markdown-view';
 import { theme } from './theme';
 import { formatToolOutput, summarizeToolArgs } from './tool-format';
 import { formatApprovalPreview } from './approval-format';
+
+const PANEL_BG = RGBA.fromInts(24, 24, 37, 220);
+const ACTIVE_ROW_BG = RGBA.fromInts(49, 50, 68, 235);
 
 interface PaletteCommand {
   name: string;
@@ -99,6 +103,7 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
   const [settingsIndex, setSettingsIndex] = useState(0);
   const [inlineEdit, setInlineEdit] = useState<TuiSettingField | null>(null);
   const [inlineDraft, setInlineDraft] = useState('');
+  const [pendingTeamDispose, setPendingTeamDispose] = useState<string | null>(null);
   const approvalMaxOffset = approvalPreview
     ? Math.max(0, approvalPreview.lines.length - approvalVisibleLines)
     : 0;
@@ -336,6 +341,32 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
     [renderer],
   );
 
+  const activateSettingField = useCallback(
+    (field: TuiSettingField, index: number) => {
+      renderer.clearSelection();
+      setSettingsIndex(index);
+      let next: string | null = null;
+      if (field.kind === 'toggle') {
+        next = field.value === 'on' ? 'off' : 'on';
+      } else if (field.kind === 'choice' && field.choices?.length) {
+        const current = field.choices.indexOf(field.value);
+        next = field.choices[(current + 1) % field.choices.length] ?? null;
+      }
+      if (next === null) {
+        beginInlineEdit(field, index);
+        return;
+      }
+      void tui.updateSetting(field.key, next).then((result) => {
+        tui.setToast(`${result.ok ? '✓' : '✗'} ${result.message}`);
+      });
+    },
+    [renderer, tui, beginInlineEdit],
+  );
+
+  useEffect(() => {
+    if (snapshot.page?.kind !== 'teams') setPendingTeamDispose(null);
+  }, [snapshot.page?.kind]);
+
   useKeyboard((key) => {
     if (key.ctrl && key.name === 'c') {
       const selected = renderer.getSelection()?.getSelectedText() ?? '';
@@ -460,6 +491,14 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
       if (key.name === 'down') {
         setSettingsIndex((value) => Math.min(count - 1, value + 1));
         return;
+      }
+      if (key.name === 'left' || key.name === 'right') {
+        const fields = page.fields ?? [];
+        const field = fields[Math.min(settingsIndex, fields.length - 1)];
+        if (field?.kind === 'toggle' || field?.kind === 'choice') {
+          activateSettingField(field, settingsIndex);
+          return;
+        }
       }
     }
     if (key.name === 'escape' && page) {
@@ -604,7 +643,7 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
       ) {
         const fields = currentPage.fields ?? [];
         const field = fields[Math.min(settingsIndex, fields.length - 1)];
-        if (field) beginInlineEdit(field, settingsIndex);
+        if (field) activateSettingField(field, settingsIndex);
         return;
       }
       if (!text && pendingAttachments.length === 0) return;
@@ -642,6 +681,16 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
         return;
       }
       if (currentPage?.kind === 'mcp') {
+        const action = text.match(/^([ed])\s*(\d+)$/i);
+        if (action) {
+          clearInput();
+          void tui
+            .setMcpServerEnabled(Number.parseInt(action[2]!, 10), action[1]!.toLowerCase() === 'e')
+            .then((result) => {
+              tui.setToast(`${result.ok ? '✓' : '✗'} ${result.message}`);
+            });
+          return;
+        }
         const index = Number.parseInt(text, 10);
         if (Number.isInteger(index) && index > 0) {
           tui.toggleMcpServer(index);
@@ -875,7 +924,25 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
               editingKey={inlineEdit?.key}
               draft={inlineDraft}
               onBeginEdit={beginInlineEdit}
+              onActivateField={activateSettingField}
               onDraftChange={setInlineDraft}
+              onMcpToggle={(index, enabled) => {
+                void tui.setMcpServerEnabled(index, enabled).then((result) => {
+                  tui.setToast(`${result.ok ? '✓' : '✗'} ${result.message}`);
+                });
+              }}
+              pendingTeamId={pendingTeamDispose}
+              onTeamDispose={(teamId) => {
+                if (pendingTeamDispose === teamId) {
+                  setPendingTeamDispose(null);
+                  void tui.disposeTeam(teamId).then((result) => {
+                    tui.setToast(`${result.ok ? '✓' : '✗'} ${result.message}`);
+                  });
+                } else {
+                  setPendingTeamDispose(teamId);
+                  tui.setToast(`再次点击 [确认解散] 以解散 Team：${teamId}`);
+                }
+              }}
               onSaveEdit={(value) => {
                 const field = inlineEdit;
                 setInlineEdit(null);
@@ -945,7 +1012,15 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
       ) : null}
 
       {snapshot.queued.length > 0 ? (
-        <QueueDock messages={snapshot.queued} width={width} />
+        <QueueDock
+          messages={snapshot.queued}
+          width={width}
+          onCancel={(queueId) => {
+            renderer.clearSelection();
+            const result = tui.cancelQueuedMessage(queueId);
+            tui.setToast(`${result.ok ? '✓' : '✗'} ${result.message}`);
+          }}
+        />
       ) : null}
 
       <box
@@ -980,7 +1055,7 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
         />
       </box>
 
-      <StatusBar snapshot={snapshot} />
+      <StatusBar snapshot={snapshot} width={width} />
 
       {snapshot.toast ? (
         <box
@@ -1008,9 +1083,11 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
 function QueueDock({
   messages,
   width,
+  onCancel,
 }: {
   messages: TuiSnapshot['queued'];
   width: number;
+  onCancel: (queueId: string) => void;
 }) {
   const visible = messages.slice(0, 3);
   return (
@@ -1021,17 +1098,24 @@ function QueueDock({
         height: 1 + visible.length + (messages.length > visible.length ? 1 : 0),
         paddingLeft: 1,
         paddingRight: 1,
-        backgroundColor: '#181825',
+        backgroundColor: PANEL_BG,
         width: '100%',
       }}
     >
       <text fg={theme.accent}>
-        ↳ Queued ({messages.length}) · sends after the current turn
+        ↳ Queued ({messages.length}) · sends after the current turn · click ✕ to remove
       </text>
       {visible.map((message, index) => (
-        <text key={message.queueId} fg={theme.muted} style={{ width: width - 2 }}>
-          {`  ${index + 1}. ${truncate(message.userInput.replace(/\s+/g, ' '), Math.max(8, width - 12))}`}
+        <text
+          key={message.queueId}
+          fg={theme.muted}
+          style={{ width: width - 2 }}
+          selectable={false}
+          onMouseDown={() => onCancel(message.queueId)}
+        >
+          {`  ${index + 1}. ${truncate(message.userInput.replace(/\s+/g, ' '), Math.max(8, width - 16))}`}
           {message.attachments.length > 0 ? `  (+${message.attachments.length} attachment(s))` : ''}
+          <span fg={theme.error}>  ✕</span>
         </text>
       ))}
       {messages.length > visible.length ? (
@@ -1057,7 +1141,7 @@ function CommandPalette({
       style={{
         flexDirection: 'column',
         width: '100%',
-        backgroundColor: '#181825',
+        backgroundColor: PANEL_BG,
         paddingLeft: 1,
         paddingRight: 1,
       }}
@@ -1081,7 +1165,7 @@ function CommandPalette({
             style={{
               flexDirection: 'row',
               paddingLeft: 1,
-              backgroundColor: active ? '#313244' : undefined,
+              backgroundColor: active ? ACTIVE_ROW_BG : undefined,
             }}
           >
             <text fg={active ? theme.accent : theme.muted}>{active ? '❯ ' : '  '}</text>
@@ -1983,8 +2067,12 @@ function PagePanel({
   editingKey,
   draft,
   onBeginEdit,
+  onActivateField,
   onDraftChange,
   onSaveEdit,
+  onMcpToggle,
+  pendingTeamId,
+  onTeamDispose,
 }: {
   page: NonNullable<TuiSnapshot['page']>;
   width: number;
@@ -1992,8 +2080,12 @@ function PagePanel({
   editingKey?: string;
   draft: string;
   onBeginEdit: (field: TuiSettingField, index: number) => void;
+  onActivateField: (field: TuiSettingField, index: number) => void;
   onDraftChange: (value: string) => void;
   onSaveEdit: (value: string) => void;
+  onMcpToggle: (index: number, enabled: boolean) => void;
+  pendingTeamId: string | null;
+  onTeamDispose: (teamId: string) => void;
 }) {
   const fields = page.kind === 'settings' ? page.fields ?? [] : [];
   const labelWidth = Math.min(
@@ -2038,6 +2130,7 @@ function PagePanel({
             ? fields.map((field, index) => {
                 const editing = field.key === editingKey;
                 const selected = editing || index === selectedIndex;
+                const actionable = field.kind === 'toggle' || field.kind === 'choice';
                 return (
                   <box
                     key={field.key}
@@ -2047,12 +2140,16 @@ function PagePanel({
                       fg={selected ? theme.accent : theme.muted}
                       style={{ width: labelWidth }}
                       selectable={false}
-                      onMouseDown={() => onBeginEdit(field, index)}
+                      onMouseDown={() =>
+                        actionable
+                          ? onActivateField(field, index)
+                          : onBeginEdit(field, index)
+                      }
                     >
                       {selected ? '❯ ' : '  '}
                       {truncate(field.label, labelWidth - 2)}
                     </text>
-                    {editing ? (
+                    {editing && !actionable ? (
                       <InlineSettingInput
                         value={draft}
                         width={valueWidth}
@@ -2060,6 +2157,24 @@ function PagePanel({
                         onInput={onDraftChange}
                         onSubmit={onSaveEdit}
                       />
+                    ) : field.kind === 'toggle' ? (
+                      <text
+                        fg={field.value === 'on' ? theme.user : theme.muted}
+                        style={{ width: valueWidth }}
+                        selectable={false}
+                        onMouseDown={() => onActivateField(field, index)}
+                      >
+                        {field.value === 'on' ? '● ON' : '○ OFF'}
+                      </text>
+                    ) : field.kind === 'choice' ? (
+                      <text
+                        fg={selected ? theme.warning : theme.muted}
+                        style={{ width: valueWidth }}
+                        selectable={false}
+                        onMouseDown={() => onActivateField(field, index)}
+                      >
+                        {`‹ ${field.value} ›`}
+                      </text>
                     ) : (
                       <text
                         fg={selected ? theme.accent : theme.text}
@@ -2073,19 +2188,124 @@ function PagePanel({
                   </box>
                 );
               })
-            : page.body.split('\n').map((line, index) => (
-                <text key={index} fg={theme.text} style={{ width: width - 4 }}>
-                  {truncate(line, width - 6) || ' '}
-                </text>
-              ))}
+            : page.body.split('\n').map((line, index) => {
+                if (page.kind === 'context' && line.startsWith('◆')) {
+                  return (
+                    <text key={index} fg={theme.accent} selectable={false}>
+                      <strong>{line}</strong>
+                    </text>
+                  );
+                }
+                const bar = page.kind === 'context' ? line.match(/^(\s*)([█░]+)(.*)$/) : null;
+                if (bar) {
+                  return (
+                    <box
+                      key={index}
+                      style={{ flexDirection: 'row', width: width - 4, height: 1 }}
+                    >
+                      <text fg={theme.text}>{bar[1]}</text>
+                      <text fg={theme.accent} selectable={false}>
+                        {bar[2]}
+                      </text>
+                      <text fg={theme.text}>{truncate(bar[3]!, Math.max(8, width - 34))}</text>
+                    </box>
+                  );
+                }
+                const team = page.kind === 'teams'
+                  ? line.match(/^-\s+(\S+):(.*?)\s*\[解散\]$/)
+                  : null;
+                if (team) {
+                  const confirming = pendingTeamId === team[1];
+                  const stats = Object.fromEntries(
+                    [...team[2]!.matchAll(/(\w+)=(\d+)/g)].map((match) => [match[1], match[2]]),
+                  );
+                  const summary =
+                    `agents ${stats.agents ?? '0'} · tasks ${stats.tasks ?? '0'}` +
+                    (Number(stats.running ?? 0) > 0 ? ` · running ${stats.running}` : '') +
+                    ` · done ${stats.completed ?? '0'}`;
+                  const prefixWidth = Math.max(24, width - 22);
+                  return (
+                    <box
+                      key={index}
+                      style={{ flexDirection: 'row', width: width - 4, height: 1 }}
+                    >
+                      <text fg={theme.accent} style={{ width: 2 }}>
+                        ◆
+                      </text>
+                      <text fg={theme.text} style={{ width: prefixWidth - 2 }}>
+                        {truncate(` ${team[1]}  ${summary}`, prefixWidth - 3)}
+                      </text>
+                      <text
+                        fg={confirming ? theme.warning : theme.error}
+                        selectable={false}
+                        onMouseDown={() => onTeamDispose(team[1]!)}
+                      >
+                        {confirming ? '[ 确认解散 ]' : '[ 解散 ]'}
+                      </text>
+                    </box>
+                  );
+                }
+                const row = page.kind === 'mcp' ? line.match(/^(\d+)\.\s/) : null;
+                const toggle = page.kind === 'mcp' ? line.match(/^(.*?)(\[ ON \]|\[ OFF \])(.*)$/) : null;
+                if (row && toggle) {
+                  const switchOn = toggle[2] === '[ ON ]';
+                  const switchLabel = switchOn ? '● ON ' : '○ OFF';
+                  const prefixWidth = Math.min(44, Math.max(20, width - 46));
+                  return (
+                    <box
+                      key={index}
+                      style={{ flexDirection: 'row', width: width - 4, height: 1 }}
+                    >
+                      <text fg={theme.text} style={{ width: prefixWidth }}>
+                        {truncate(toggle[1]!, prefixWidth - 1)}
+                      </text>
+                      <text
+                        fg={switchOn ? theme.user : theme.muted}
+                        selectable={false}
+                        onMouseDown={() =>
+                          onMcpToggle(Number.parseInt(row[1]!, 10), !switchOn)
+                        }
+                      >
+                        {switchLabel}
+                      </text>
+                      <text
+                        fg={theme.text}
+                        selectable={false}
+                        style={{
+                          width: Math.max(8, width - 6 - prefixWidth - switchLabel.length),
+                        }}
+                      >
+                        {truncate(
+                          toggle[3]!,
+                          Math.max(8, width - 8 - prefixWidth - switchLabel.length),
+                        )}
+                      </text>
+                    </box>
+                  );
+                }
+                return (
+                  <text
+                    key={index}
+                    fg={theme.text}
+                    style={{ width: width - 4 }}
+                    selectable={false}
+                  >
+                    {truncate(line, width - 6) || ' '}
+                  </text>
+                );
+              })}
         </box>
       </scrollbox>
       <text fg={theme.muted}>
         {page.kind === 'settings'
           ? editingKey
             ? 'Enter save · Esc cancel'
-            : '↑/↓ select · Enter edit · Esc close'
-          : ':q / Esc close'}
+            : '↑/↓ select · Enter 切换/编辑 · Esc close'
+          : page.kind === 'mcp'
+            ? '点击 [ ON ] / [ OFF ] 切换 · 数字展开 · Esc close'
+            : page.kind === 'context'
+              ? '/compact 手动压缩 · Esc close'
+              : ':q / Esc close'}
       </text>
     </box>
   );
@@ -2150,22 +2370,57 @@ function ApprovalPanel({
   );
 }
 
-function StatusBar({ snapshot }: { snapshot: TuiSnapshot }) {
+function StatusBar({ snapshot, width }: { snapshot: TuiSnapshot; width: number }) {
+  const streaming = snapshot.streaming.length > 0;
+  const statusColor = streaming ? theme.warning : theme.user;
+  const modeColor =
+    snapshot.permissionMode === 'full'
+      ? theme.user
+      : snapshot.permissionMode === 'model'
+        ? theme.skill
+        : snapshot.permissionMode === 'read-only'
+          ? theme.muted
+          : theme.accent;
+  const ctx = snapshot.contextPercent;
+  const ctxColor = ctx === null ? theme.muted : ctx >= 80 ? theme.error : ctx >= 60 ? theme.warning : theme.accent;
+  const cache = snapshot.cacheHitRate;
+  const cacheColor =
+    cache === null ? theme.muted : cache >= 50 ? theme.user : cache >= 20 ? theme.warning : theme.error;
+  const model = truncate(snapshot.model || '-', Math.max(10, Math.min(28, width - 56)));
   return (
     <box
       style={{
         height: 2,
         flexDirection: 'row',
-        paddingLeft: 1,
+        alignItems: 'center',
+        paddingLeft: 2,
         border: ['top'],
         borderColor: theme.border,
       }}
     >
       <text fg={theme.muted}>
-        {snapshot.streaming.length > 0 ? '● streaming' : '○ idle'} · perm{' '}
-        <span fg={theme.accent}>{permissionModeLabel(snapshot.permissionMode)}</span>
-        {' '}· Shift+Tab · model {snapshot.model || '-'} · effort {snapshot.effort} · ctx{' '}
-        {snapshot.contextPercent === null ? '-' : `${snapshot.contextPercent}%`}
+        <span fg={statusColor}>{streaming ? '●' : '○'}</span>
+        {' '}
+        <span fg={statusColor}>{streaming ? 'streaming' : 'idle'}</span>
+        <span fg={theme.border}> │ </span>
+        <span fg={theme.accent}>◆</span>
+        {' '}
+        <span fg={theme.text}>{model}</span>
+        <span fg={theme.border}> │ </span>
+        <span fg={theme.muted}>effort</span>
+        {' '}
+        <span fg={theme.warning}>{snapshot.effort}</span>
+        <span fg={theme.border}> │ </span>
+        <span fg={theme.muted}>ctx</span>
+        {' '}
+        <span fg={ctxColor}>{ctx === null ? '-' : `${ctx}%`}</span>
+        <span fg={theme.border}> │ </span>
+        <span fg={theme.muted}>cache</span>
+        {' '}
+        <span fg={cacheColor}>{cache === null ? '-' : `${cache.toFixed(1)}%`}</span>
+        <span fg={theme.border}> │ </span>
+        <span fg={modeColor}>perm {permissionModeLabel(snapshot.permissionMode)}</span>
+        <span fg={theme.border}> ⇥</span>
       </text>
     </box>
   );

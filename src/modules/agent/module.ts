@@ -29,6 +29,7 @@ import {
   SkillLoaded,
 } from '../../kernel/contracts/skills';
 import {
+  CancelQueuedTurn,
   ThinkingUpdated,
   TokenEmitted,
   GetSystemPrompt,
@@ -40,11 +41,14 @@ import {
   TurnDequeued,
   TurnFailed,
   TurnQueued,
+  TurnQueueCancelled,
   TurnStarted,
   UserTurnRequested,
   type TurnKind,
 } from '../../kernel/contracts/chat';
 import { estimateMessageTokens } from '../../session/token-meter';
+import { GetSettings } from '../../kernel/contracts/settings';
+import { SessionTitleUpdated } from '../../kernel/contracts/session';
 import {
   CompactContext,
   CompactionFailed,
@@ -157,6 +161,14 @@ function nextTurnId(): string {
   return `turn-${turnCounter.toString(36)}-${Date.now().toString(36)}`;
 }
 
+function normalizeGeneratedTitle(raw: string): string {
+  let title = raw.replace(/\s+/g, ' ').trim();
+  title = title.replace(/^title\s*[:：]\s*/i, '');
+  title = title.replace(/^[\s"'`“”‘’#*]+|[\s"'`“”‘’]+$/g, '');
+  title = title.replace(/[。.!！?？,，;；:：]+$/g, '').trim();
+  return title.length > 48 ? `${title.slice(0, 47).trimEnd()}…` : title;
+}
+
 let queueCounter = 0;
 function nextQueueId(): string {
   queueCounter += 1;
@@ -214,6 +226,8 @@ export class AgentModule implements Module {
   private readonly tasks = new Set<Promise<unknown>>();
   private readonly turnAborts = new Map<string, AbortController>();
   private readonly turnQueues = new Map<string, Promise<void>>();
+  private readonly titleInFlight = new Set<string>();
+  private readonly queuedTurns = new Map<string, { cancelled: boolean; started: boolean }>();
   private readonly disposers: Array<() => Promise<void>> = [];
   private bus: AsyncEventBus | null = null;
 
@@ -299,6 +313,19 @@ export class AgentModule implements Module {
           userInput: cmd.userText,
           attachments: cmd.attachments,
         },
+      );
+    }));
+    this.disposers.push(await bus.subscribe(CancelQueuedTurn, (cmd) => {
+      if (cmd.targetAgentId && cmd.targetAgentId !== this.agentId) return;
+      const state = this.queuedTurns.get(cmd.queueId);
+      if (!state || state.started) return;
+      state.cancelled = true;
+      bus.publish(
+        new TurnQueueCancelled({
+          ...this.agentContext(),
+          sessionId: cmd.sessionId,
+          queueId: cmd.queueId,
+        }),
       );
     }));
     this.disposers.push(await bus.subscribe(AgentTeamMessage, (event) => {
@@ -426,19 +453,29 @@ export class AgentModule implements Module {
     queued?: { queueId: string; userInput: string; attachments: AttachmentDTO[] },
   ): Promise<TurnResult> {
     const didQueue = this.turnQueues.has(sessionId) && queued !== undefined;
-    if (didQueue && queued && this.bus) {
-      this.bus.publish(
-        new TurnQueued({
-          ...this.agentContext(),
-          sessionId,
-          queueId: queued.queueId,
-          userInput: queued.userInput,
-          attachments: queued.attachments,
-        }),
-      );
+    let queuedState: { cancelled: boolean; started: boolean } | undefined;
+    if (didQueue && queued) {
+      queuedState = { cancelled: false, started: false };
+      this.queuedTurns.set(queued.queueId, queuedState);
+      if (this.bus) {
+        this.bus.publish(
+          new TurnQueued({
+            ...this.agentContext(),
+            sessionId,
+            queueId: queued.queueId,
+            userInput: queued.userInput,
+            attachments: queued.attachments,
+          }),
+        );
+      }
     }
     const previous = this.turnQueues.get(sessionId) ?? Promise.resolve();
-    const task = previous.catch(() => undefined).then(() => {
+    const task = previous.catch(() => undefined).then(async () => {
+      if (queuedState?.cancelled) {
+        if (queued) this.queuedTurns.delete(queued.queueId);
+        return { content: '', ok: false, error: 'queued turn cancelled' };
+      }
+      if (queuedState) queuedState.started = true;
       if (didQueue && queued && this.bus) {
         this.bus.publish(
           new TurnDequeued({
@@ -448,7 +485,11 @@ export class AgentModule implements Module {
           }),
         );
       }
-      return run();
+      try {
+        return await run();
+      } finally {
+        if (queued) this.queuedTurns.delete(queued.queueId);
+      }
     });
     const tail = task.then(
       () => undefined,
@@ -813,11 +854,87 @@ export class AgentModule implements Module {
       if (this.autoReflect && kind === 'user' && loadedSkills.size === 0) {
         bus.publish(new ReflectSkills({ ...this.agentContext(), sessionId, auto: true }));
       }
+      if (kind === 'user' && finalContent.trim()) {
+        this.queueSessionTitle(sessionId, userText, finalContent);
+      }
       return { content: finalContent, ok: true };
     } catch (error) {
       bus.publish(new TurnFailed({ ...this.agentContext(), sessionId, turnId, error: errorText(error), streamId }));
       return { content: '', ok: false, error: errorText(error) };
     }
+  }
+
+  /** Fire-and-forget title generation after the first successful user turn. */
+  private queueSessionTitle(
+    sessionId: string,
+    userText: string,
+    assistantText: string,
+  ): void {
+    if (!this.model || this.titleInFlight.has(sessionId)) return;
+    this.titleInFlight.add(sessionId);
+    const task = this.generateSessionTitle(sessionId, userText, assistantText)
+      .catch(() => undefined)
+      .finally(() => this.titleInFlight.delete(sessionId));
+    this.schedule(task);
+  }
+
+  private async generateSessionTitle(
+    sessionId: string,
+    userText: string,
+    assistantText: string,
+  ): Promise<void> {
+    const bus = this.requireBus();
+    const settings = await bus.request(new GetSettings()).catch(() => null);
+    if (!settings?.sessionTitleGeneration || !this.model) return;
+
+    const projection = await bus
+      .request(new GetSessionProjection({ ...this.agentContext(), sessionId }))
+      .catch(() => null);
+    if (projection?.title?.trim()) return;
+
+    const user = userText.replace(/\s+/g, ' ').trim().slice(0, 1_200);
+    const assistant = assistantText.replace(/\s+/g, ' ').trim().slice(0, 1_800);
+    if (!user) return;
+
+    let raw = '';
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15_000);
+    try {
+      for await (const event of this.model.streamChat({
+        messages: [
+          {
+            role: 'user',
+            content: `First user message:\n${user}\n\nAssistant reply:\n${assistant}`,
+          },
+        ],
+        systemPrompt:
+          'Generate a concise title for this conversation. Use the same language as the user. ' +
+          'Return only the title: no quotes, no markdown, no trailing punctuation. ' +
+          'Aim for 3-8 words and at most 40 characters.',
+        thinking: false,
+        temperature: 0.2,
+        maxTokens: 48,
+        signal: controller.signal,
+      })) {
+        if (event.type === 'content') raw += event.delta;
+      }
+    } catch {
+      return;
+    } finally {
+      clearTimeout(timer);
+    }
+
+    const title = normalizeGeneratedTitle(raw);
+    if (!title) return;
+    await this.appendSessionEvents(sessionId, [
+      {
+        seq: 0,
+        type: 'session_title',
+        at: new Date().toISOString(),
+        data: { title, auto: true, ...this.agentContext() },
+      },
+    ]);
+    bus.publish(new SessionTitleUpdated({ ...this.agentContext(), sessionId, title }));
   }
 
   /** PromptModule owns the assembled prompt; Agent keeps a static fallback for tests. */

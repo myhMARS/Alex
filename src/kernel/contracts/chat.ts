@@ -40,6 +40,26 @@ export class TurnQueued extends Event {
   }
 }
 
+/** Cancel one queued user turn before it starts. */
+export class CancelQueuedTurn extends Command {
+  queueId: string;
+
+  constructor(init: MessageContext & { queueId?: string } = {}) {
+    super(init);
+    this.queueId = init.queueId ?? '';
+  }
+}
+
+/** A queued user turn was removed before execution. */
+export class TurnQueueCancelled extends Event {
+  queueId: string;
+
+  constructor(init: MessageContext & { queueId?: string } = {}) {
+    super(init);
+    this.queueId = init.queueId ?? '';
+  }
+}
+
 /** A queued user turn started executing. */
 export class TurnDequeued extends Event {
   queueId: string;

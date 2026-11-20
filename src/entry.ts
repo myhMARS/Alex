@@ -166,10 +166,14 @@ async function main(): Promise<void> {
   host.register(tui);
 
   await host.startAll();
-  console.log(
-    `modules started: ${host.startedModules.map((module) => module.name).join(' → ')}`,
-  );
-  console.log(`agent mode: ${useModel ? `llm:${llmConfig.model}` : 'echo (no ALEX_API_KEY)'}`);
+  // The TUI owns the full screen; startup diagnostics would scroll into the
+  // terminal history and look like stray output above the interface.
+  if (!tuiMode) {
+    console.log(
+      `modules started: ${host.startedModules.map((module) => module.name).join(' → ')}`,
+    );
+    console.log(`agent mode: ${useModel ? `llm:${llmConfig.model}` : 'echo (no ALEX_API_KEY)'}`);
+  }
 
   const sessionId =
     options.sessionId ??

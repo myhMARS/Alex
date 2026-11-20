@@ -16,6 +16,7 @@ import type { AttachmentDTO } from '../../kernel/dto/message';
 import type { AsyncEventBus, EventClass, EventHandler } from '../../kernel/bus';
 import type { Event } from '../../kernel/message';
 import {
+  CancelQueuedTurn,
   FeedbackSubmitted,
   ThinkingUpdated,
   TokenEmitted,
@@ -24,6 +25,7 @@ import {
   TurnDequeued,
   TurnFailed,
   TurnQueued,
+  TurnQueueCancelled,
   TurnStarted,
   UserTurnRequested,
   SetModelEffort,
@@ -47,6 +49,7 @@ import {
 import {
   PermissionModeChanged,
   ReloadMCP,
+  SetMCPServerEnabled,
   SetPermissionMode,
   ToolApprovalRequested,
   ToolApprovalResolved,
@@ -72,6 +75,7 @@ import {
   AgentDisposed,
   AgentSpawned,
   DisposeAgent,
+  DisposeTeam,
   AgentTaskFinished,
   AgentTaskStarted,
   ListAgentMessages,
@@ -89,6 +93,7 @@ import {
   LoadSession,
   RepairSession,
   ReplaceSessionEvents,
+  SessionTitleUpdated,
   type SessionMeta,
 } from '../../kernel/contracts/session';
 import {
@@ -137,6 +142,7 @@ const UI_EVENTS: EventClass[] = [
   TurnStarted,
   TurnQueued,
   TurnDequeued,
+  TurnQueueCancelled,
   TokenEmitted,
   TokenUsageReported,
   ThinkingUpdated,
@@ -154,6 +160,7 @@ const UI_EVENTS: EventClass[] = [
   CompactionStarted,
   ContextCompacted,
   CompactionFailed,
+  SessionTitleUpdated,
 ];
 
 export type TuiPageKind =
@@ -182,6 +189,9 @@ export interface TuiSettingField {
   /** Initial text when editing; omitted means use `value`. */
   editValue?: string;
   secret?: boolean;
+  /** Click/Enter activates a switch or cycles choices instead of editing text. */
+  kind?: 'toggle' | 'choice';
+  choices?: string[];
 }
 
 export interface TuiQueuedMessage {
@@ -251,6 +261,7 @@ export interface TuiSnapshot {
   effort: string;
   model: string;
   contextPercent: number | null;
+  cacheHitRate: number | null;
   permissionMode: PermissionMode;
 }
 
@@ -809,6 +820,24 @@ export class TuiModule implements Module {
   }
 
   /** Expand/collapse the tool-call group of one completed turn. */
+  /** Remove one queued user message before it starts executing. */
+  cancelQueuedMessage(queueId: string): { ok: boolean; message: string } {
+    const bus = this.bus;
+    if (!bus) return { ok: false, message: '服务不可用' };
+    const index = this.queuedMessages.findIndex((item) => item.queueId === queueId);
+    if (index < 0) return { ok: false, message: '排队消息不存在' };
+    this.queuedMessages.splice(index, 1);
+    bus.publish(
+      new CancelQueuedTurn({
+        queueId,
+        targetAgentId: this.viewAgentId === 'main' ? '' : this.viewAgentId,
+        sessionId: this.sessionId,
+      }),
+    );
+    this.refresh();
+    return { ok: true, message: '已移除排队消息' };
+  }
+
   /** Re-read mcp.json and reconnect all MCP servers. */
   async reloadMcp(): Promise<{ ok: boolean; message: string }> {
     const bus = this.bus;
@@ -1131,6 +1160,15 @@ export class TuiModule implements Module {
       }
       patch.autoReflect = ['on', 'true', '1'].includes(raw);
     } else if (
+      normalized === 'sessiontitle' ||
+      normalized === 'sessiontitlegeneration'
+    ) {
+      const raw = value.trim().toLowerCase();
+      if (!['on', 'off', 'true', 'false', '1', '0'].includes(raw)) {
+        return { ok: false, message: `无效的 session_title：${value}（on/off）` };
+      }
+      patch.sessionTitleGeneration = ['on', 'true', '1'].includes(raw);
+    } else if (
       normalized === 'reflectionmintools' ||
       normalized === 'reflectionmintoolcalls'
     ) {
@@ -1172,6 +1210,7 @@ export class TuiModule implements Module {
       patch.effort !== undefined ||
       patch.maxIterations !== undefined ||
       patch.autoReflect !== undefined ||
+      patch.sessionTitleGeneration !== undefined ||
       patch.reflectionMinTools !== undefined ||
       patch.reflectionMinWriteTools !== undefined;
     return {
@@ -1392,8 +1431,15 @@ export class TuiModule implements Module {
         key: 'thinking',
         label: 'thinking',
         value: settings.thinkingEnabled ? 'on' : 'off',
+        kind: 'toggle',
       },
-      { key: 'effort', label: 'effort', value: settings.effort },
+      {
+        key: 'effort',
+        label: 'effort',
+        value: settings.effort,
+        kind: 'choice',
+        choices: ['low', 'high', 'max'],
+      },
       {
         key: 'image_max',
         label: 'image_max',
@@ -1408,6 +1454,13 @@ export class TuiModule implements Module {
         key: 'auto_reflect',
         label: 'auto_reflect',
         value: settings.autoReflect ? 'on' : 'off',
+        kind: 'toggle',
+      },
+      {
+        key: 'session_title',
+        label: 'session_title',
+        value: settings.sessionTitleGeneration ? 'on' : 'off',
+        kind: 'toggle',
       },
       {
         key: 'reflection_min_tools',
@@ -1421,6 +1474,47 @@ export class TuiModule implements Module {
       },
     ];
     return fields;
+  }
+
+  /** Disband one team from the `/teams` page. */
+  async disposeTeam(teamId: string): Promise<{ ok: boolean; message: string }> {
+    const bus = this.bus;
+    if (!bus) return { ok: false, message: 'AgentRegistry 不可用' };
+    try {
+      const result = await bus.request(new DisposeTeam({ teamId }));
+      await this.showPage('teams');
+      return { ok: result.ok, message: result.message };
+    } catch (error) {
+      return {
+        ok: false,
+        message: `解散失败：${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
+  /** Enable or disable one MCP server from the `/mcp` page. */
+  async setMcpServerEnabled(
+    index: number,
+    enabled: boolean,
+  ): Promise<{ ok: boolean; message: string }> {
+    if (this.page?.kind !== 'mcp') return { ok: false, message: '请先打开 /mcp 页面' };
+    if (index < 1 || index > this.mcpServers.length) {
+      return { ok: false, message: `无效的服务器编号：${index}` };
+    }
+    const bus = this.bus;
+    if (!bus) return { ok: false, message: 'MCP 服务不可用' };
+    const name = String(this.mcpServers[index - 1]?.name ?? '');
+    if (!name) return { ok: false, message: '服务器名称为空' };
+    try {
+      const result = await bus.request(new SetMCPServerEnabled({ name, enabled }));
+      await this.showPage('mcp');
+      return { ok: result.ok, message: result.message };
+    } catch (error) {
+      return {
+        ok: false,
+        message: `操作失败：${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
   }
 
   /** Expand/collapse one MCP server in the open `/mcp` page. */
@@ -1441,9 +1535,10 @@ export class TuiModule implements Module {
       const position = index + 1;
       const expanded = this.mcpExpanded.has(position);
       const toolCount = Number(server.tool_count ?? server.toolCount ?? 0);
+      const enabled = server.enabled !== false;
       lines.push(
         `${position}. ${expanded ? '▼' : '▶'} ${String(server.name ?? '')} [${String(server.status ?? '')}] ` +
-          `transport=${String(server.transport ?? '')} tools=${toolCount}` +
+          `${enabled ? '[ ON ]' : '[ OFF ]'} transport=${String(server.transport ?? '')} tools=${toolCount}` +
           (server.error ? ` error=${String(server.error)}` : ''),
       );
       if (!expanded) return;
@@ -1455,7 +1550,7 @@ export class TuiModule implements Module {
       }
       if (tools.length === 0) lines.push('   (no tools registered)');
     });
-    lines.push('', '输入数字展开/收起服务器工具 · /mcp reload 重新加载');
+    lines.push('', '点击 [ ON ] / [ OFF ] 切换 · 数字展开/收起 · /mcp reload 重新加载');
     return lines.join('\n');
   }
 
@@ -1631,12 +1726,14 @@ export class TuiModule implements Module {
         teams.set(key, entry);
       }
       if (teams.size === 0) return '当前没有 Team。';
-      return [...teams.entries()]
-        .map(
+      return [
+        ...[...teams.entries()].map(
           ([teamId, entry]) =>
-            `- ${teamId}: agents=${entry.agents} running=${entry.running} tasks=${entry.tasks} task_running=${entry.taskRunning} completed=${entry.completed}`,
-        )
-        .join('\n');
+            `- ${teamId}: agents=${entry.agents} running=${entry.running} tasks=${entry.tasks} task_running=${entry.taskRunning} completed=${entry.completed} [解散]`,
+        ),
+        '',
+        '点击 [解散] 两次确认 · 包含主 Agent 的 Team 不能解散',
+      ].join('\n');
     }
 
     if (kind === 'tasks') {
@@ -1813,6 +1910,7 @@ export class TuiModule implements Module {
           `image_max     ${settings.imageMaxDimension} px（请求时图片最大边）`,
           `max_iterations ${settings.maxIterations}（单轮最多工具循环次数）`,
           `auto_reflect   ${settings.autoReflect ? 'on' : 'off'}（turn 完成后自动反思）`,
+          `session_title  ${settings.sessionTitleGeneration ? 'on' : 'off'}（首轮对话后自动生成会话标题）`,
           `reflection_min_tools ${settings.reflectionMinTools}（自动反思所需工具调用数）`,
           `reflection_min_write_tools ${settings.reflectionMinWriteTools}（含 write/edit 时的工具调用数）`,
         ].join('\n');
@@ -1848,25 +1946,45 @@ export class TuiModule implements Module {
       const cacheTotal = totals.cacheHitTokens + totals.cacheMissTokens;
       const hitRate =
         cacheTotal > 0 ? (totals.cacheHitTokens / cacheTotal) * 100 : null;
-      const barFor = (ratio: number): string => {
-        const filled = Math.round(ratio * 10);
-        return `${'█'.repeat(filled)}${'░'.repeat(10 - filled)}`;
+      const barFor = (ratio: number, width = 24): string => {
+        const filled = Math.max(0, Math.min(width, Math.round(ratio * width)));
+        return `${'█'.repeat(filled)}${'░'.repeat(width - filled)}`;
       };
       const lines = [
-        `会话：${sessionId || '-'}`,
+        '◆ 用量概览',
+        `  会话        ${sessionId || '-'}`,
+        '',
         usage && capacity > 0
-          ? `上下文：${latestPrompt.toLocaleString()} / ${capacity.toLocaleString()}（${Math.round(contextRatio * 100)}%）`
-          : '上下文：等待 provider 上报',
-        usage && capacity > 0 ? `      [${barFor(contextRatio)}]` : '',
-        `本次会话：输入 ${totals.inputTokens.toLocaleString()} · 输出 ${totals.outputTokens.toLocaleString()} · 请求 ${totals.requests} 次`,
+          ? `  ${barFor(contextRatio)}  ${latestPrompt.toLocaleString()} / ${capacity.toLocaleString()} tokens  ${Math.round(contextRatio * 100)}%`
+          : '  ░░░░░░░░░░░░░░░░░░░░░░░░  waiting for provider usage',
+        '',
+        '◆ 本次会话',
+        `  输入        ${totals.inputTokens.toLocaleString()}`,
+        `  输出        ${totals.outputTokens.toLocaleString()}`,
+        `  请求        ${totals.requests}`,
+        '',
+        '◆ 缓存',
         cacheTotal > 0
-          ? `缓存：命中 ${totals.cacheHitTokens.toLocaleString()} · 未命中 ${totals.cacheMissTokens.toLocaleString()} · 命中率 ${hitRate?.toFixed(1)}%`
-          : '缓存：provider 未上报（DeepSeek 缓存字段）',
+          ? `  命中        ${totals.cacheHitTokens.toLocaleString()}`
+          : '  命中        -',
+        cacheTotal > 0
+          ? `  未命中      ${totals.cacheMissTokens.toLocaleString()}`
+          : '  未命中      -',
+        cacheTotal > 0
+          ? `  命中率      ${hitRate?.toFixed(1)}%`
+          : '  命中率      -',
+        cacheTotal > 0 && hitRate !== null
+          ? `  ${barFor(hitRate / 100)}`
+          : '  provider 未上报（DeepSeek 缓存字段）',
+        '',
+        '◆ 最近请求',
         usage
-          ? `最近请求：prompt ${usage.promptTokens.toLocaleString()} · completion ${usage.completionTokens.toLocaleString()} · total ${usage.totalTokens.toLocaleString()} · cache ${usage.cacheHitTokens.toLocaleString()}/${(usage.cacheHitTokens + usage.cacheMissTokens).toLocaleString()}`
-          : '最近请求：暂无 provider 上报',
-        `历史消息：${messages.length} 条（无数量上限）`,
-        `压缩阈值：${Math.round((this.compactRatioForDisplay ?? 0.8) * 100)}% · /compact 手动压缩`,
+          ? `  prompt ${usage.promptTokens.toLocaleString()} · completion ${usage.completionTokens.toLocaleString()} · total ${usage.totalTokens.toLocaleString()} · cache ${usage.cacheHitTokens.toLocaleString()}/${(usage.cacheHitTokens + usage.cacheMissTokens).toLocaleString()}`
+          : '  暂无 provider 上报',
+        '',
+        '◆ 历史',
+        `  ${messages.length} 条消息（无数量上限）`,
+        `  压缩阈值 ${Math.round((this.compactRatioForDisplay ?? 0.8) * 100)}% · /compact 手动压缩`,
       ];
       return lines.join('\n');
     }
@@ -1933,9 +2051,10 @@ export class TuiModule implements Module {
       .map((session, index) => {
         const when = formatSessionTime(session.updatedAt ?? session.createdAt);
         const message = session.firstMessage.replace(/\s+/g, ' ').trim();
+        const title = session.title?.trim();
         return [
-          `${String(index + 1).padStart(2, ' ')}. ${session.sessionId}`,
-          `    ${when} · ${session.messageCount} msgs`,
+          `${String(index + 1).padStart(2, ' ')}. ${title || session.sessionId}`,
+          `    ${title ? `${session.sessionId} · ` : ''}${when} · ${session.messageCount} msgs`,
           session.parentSessionId
             ? `    ↳ fork of ${session.parentSessionId}${session.forkBoundarySeq !== undefined ? ` @ seq ${session.forkBoundarySeq}` : ''}`
             : '',
@@ -1951,6 +2070,10 @@ export class TuiModule implements Module {
   // ── internals ──────────────────────────────────────────────────────────
 
   private handle(event: Event): void {
+    if (event instanceof SessionTitleUpdated) {
+      if (this.page?.kind === 'sessions') void this.showPage('sessions');
+      return;
+    }
     if (event instanceof TurnQueued) {
       if (!this.queuedMessages.some((item) => item.queueId === event.queueId)) {
         this.queuedMessages.push({
@@ -1961,7 +2084,7 @@ export class TuiModule implements Module {
           attachments: event.attachments,
         });
       }
-    } else if (event instanceof TurnDequeued) {
+    } else if (event instanceof TurnDequeued || event instanceof TurnQueueCancelled) {
       const index = this.queuedMessages.findIndex((item) => item.queueId === event.queueId);
       if (index >= 0) this.queuedMessages.splice(index, 1);
     } else {
@@ -2014,6 +2137,11 @@ export class TuiModule implements Module {
               ),
             )
           : null,
+      cacheHitRate: (() => {
+        const totals = this.viewState.sessionUsage;
+        const total = totals.cacheHitTokens + totals.cacheMissTokens;
+        return total > 0 ? (totals.cacheHitTokens / total) * 100 : null;
+      })(),
       permissionMode: this.permissionMode,
     };
   }

@@ -13,6 +13,7 @@ import type { ChatModel, ChatRequest, ChatStreamEvent, ToolCall } from '../src/l
 import {
   TokenEmitted,
   TokenUsageReported,
+  CancelQueuedTurn,
   TurnCompleted,
   TurnDequeued,
   TurnFailed,
@@ -72,7 +73,10 @@ class ScriptedModel implements ChatModel {
 }
 
 class DelayedModel implements ChatModel {
+  calls = 0;
+
   async *streamChat(): AsyncIterable<ChatStreamEvent> {
+    this.calls += 1;
     await new Promise((resolve) => setTimeout(resolve, 40));
     yield { type: 'content', delta: 'delayed answer' };
     yield {
@@ -248,6 +252,24 @@ describe('AgentModule model loop', () => {
     expect(queued).toHaveLength(1);
     expect(queued[0]?.userInput).toBe('second');
     expect(dequeued[0]?.queueId).toBe(queued[0]?.queueId);
+    await bus.shutdown();
+  });
+
+  test('cancels a queued turn before it starts', async () => {
+    const model = new DelayedModel();
+    const { bus, agent } = await setup(model);
+    const queued: TurnQueued[] = [];
+    await bus.subscribe(TurnQueued, (event) => queued.push(event));
+    bus.publish(new UserTurnRequested({ sessionId: 's-cancel', userText: 'first' }));
+    bus.publish(new UserTurnRequested({ sessionId: 's-cancel', userText: 'second' }));
+    for (let index = 0; index < 20 && queued.length === 0; index += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(queued).toHaveLength(1);
+    bus.publish(new CancelQueuedTurn({ queueId: queued[0]!.queueId }));
+    await agent.whenIdle();
+    await bus.idle();
+    expect(model.calls).toBe(1);
     await bus.shutdown();
   });
 
