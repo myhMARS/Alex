@@ -364,14 +364,19 @@ describe('TUI renderer', () => {
     );
     await setup.renderOnce();
     let frame = plain(setup.captureCharFrame());
-    expect(frame).toContain('Thinking (');
+    expect(frame).toContain('思考 · 1 工具');
+    expect(frame).toContain('1 工具');
+    expect(frame).not.toContain('Thinking (');
     expect(frame).not.toContain('deep-thought-xyz');
-    expect(frame).toContain('Tools (1) · done · click to expand');
     expect(frame).not.toContain('file-body-xyz');
 
     tui.toggleToolTurn('exp-1');
     await setup.renderOnce();
     frame = plain(setup.captureCharFrame());
+    console.log(frame.split('\n').slice(1, 12).map((line, i) => `${String(i + 1).padStart(2)}|${line}`).join('\n'));
+    expect(frame).toContain('Thinking (16 chars) · Ctrl+T');
+    expect(frame).toContain('└ ⚙ read');
+    expect(frame).not.toContain('└ │ ⚙');
     // Large output is collapsed to a line count for readability.
     expect(frame).toContain('5 line(s) · Ctrl+O');
 

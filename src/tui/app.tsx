@@ -67,6 +67,15 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
   const snapshot = React.useSyncExternalStore(tui.subscribe, tui.getSnapshot, tui.getSnapshot);
   const { width, height } = useTerminalDimensions();
   const renderer = useRenderer();
+  const toggleProcessTurn = useCallback(
+    (turnId: string) => {
+      // A disclosure click must not start or extend text selection over the
+      // rows that are about to move.
+      renderer.clearSelection();
+      tui.toggleToolTurn(turnId);
+    },
+    [renderer, tui],
+  );
   const inputRef = useRef<InputRenderable | null>(null);
   const approval = snapshot.approvals[0] ?? null;
   const page = snapshot.page;
@@ -807,7 +816,7 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
                 skillsExpanded={snapshot.skillsExpanded}
                 toolOutputExpanded={snapshot.toolOutputExpanded}
                 toolTurnsExpanded={snapshot.toolTurnsExpanded}
-                onToggleToolTurn={(turnId) => tui.toggleToolTurn(turnId)}
+                onToggleToolTurn={toggleProcessTurn}
               />
             </scrollbox>
           )}
@@ -1126,10 +1135,13 @@ function ToolCallBlock({
   tool,
   width,
   toolOutputExpanded,
+  compact = false,
 }: {
   tool: ToolCallView;
   width: number;
   toolOutputExpanded: boolean;
+  /** Inside the process tree: no extra border/indent, just the call row. */
+  compact?: boolean;
 }) {
   const args = summarizeToolArgs(tool.input);
   const preview = tool.output
@@ -1143,9 +1155,7 @@ function ToolCallBlock({
     <box
       style={{
         flexDirection: 'column',
-        border: ['left'],
-        borderColor: toolColor,
-        paddingLeft: 1,
+        ...(compact ? {} : { border: ['left'] as const, borderColor: toolColor, paddingLeft: 1 }),
         width,
       }}
     >
@@ -1187,6 +1197,118 @@ function ToolCallBlock({
                 : ''
               : `⎿ ${preview.lines.length + preview.hidden} line(s) · Ctrl+O 展开`}
           </text>
+        </box>
+      ) : null}
+    </box>
+  );
+}
+
+type ProcessPart = Extract<TurnPart, { kind: 'thinking' | 'skills' | 'tool' }>;
+
+function isProcessPart(part: TurnPart): part is ProcessPart {
+  return part.kind === 'thinking' || part.kind === 'skills' || part.kind === 'tool';
+}
+
+function ProcessGroup({
+  parts,
+  width,
+  marginTop,
+  expanded,
+  running,
+  failed,
+  thinkingExpanded,
+  skillsExpanded,
+  toolOutputExpanded,
+  onToggle,
+}: {
+  parts: ProcessPart[];
+  width: number;
+  marginTop: number;
+  expanded: boolean;
+  running: boolean;
+  failed: boolean;
+  thinkingExpanded: boolean;
+  skillsExpanded: boolean;
+  toolOutputExpanded: boolean;
+  onToggle: () => void;
+}) {
+  const thinking = parts.filter(
+    (part): part is Extract<ProcessPart, { kind: 'thinking' }> => part.kind === 'thinking',
+  );
+  const skills = parts.filter(
+    (part): part is Extract<ProcessPart, { kind: 'skills' }> => part.kind === 'skills',
+  );
+  const tools = parts.filter(
+    (part): part is Extract<ProcessPart, { kind: 'tool' }> => part.kind === 'tool',
+  );
+  const skillCount = skills.reduce((total, part) => total + part.skills.length, 0);
+  const pieces: string[] = [];
+  if (thinking.length > 0) pieces.push('思考');
+  if (tools.length > 0) pieces.push(`${tools.length} 工具`);
+  if (skillCount > 0) pieces.push(`${skillCount} 技能`);
+  const status = failed ? 'failed' : running ? 'running' : 'done';
+  const color = failed ? theme.error : running ? theme.thinking : theme.tool;
+
+  return (
+    <box style={{ flexDirection: 'column', marginTop, width }}>
+      <text
+        fg={color}
+        style={{ width: width - 1 }}
+        selectable={false}
+        onMouseDown={onToggle}
+      >
+        {expanded ? '▾' : '▸'} ✻ {pieces.join(' · ') || '思考'} · {status}
+        {expanded ? '' : ' · click to expand'}
+      </text>
+      {expanded ? (
+        <box style={{ flexDirection: 'column', width, paddingLeft: 0 }}>
+          {parts.map((part, index) => {
+            const branch = index === parts.length - 1 ? '└ ' : '├ ';
+            if (part.kind === 'thinking') {
+              return (
+                <box key={`process-thinking-${index}`} style={{ flexDirection: 'column', width }}>
+                  <text fg={theme.thinking} style={{ width: width - 1 }}>
+                    {branch}💭 Thinking ({part.text.length} chars){thinkingExpanded ? '' : ' · Ctrl+T'}
+                  </text>
+                  {thinkingExpanded ? (
+                    <box style={{ paddingLeft: 2, width: width - 2 }}>
+                      <text fg={theme.thinking} style={{ width: width - 3 }}>
+                        {part.text}
+                      </text>
+                    </box>
+                  ) : null}
+                </box>
+              );
+            }
+            if (part.kind === 'skills') {
+              return (
+                <box key={`process-skills-${index}`} style={{ flexDirection: 'column', width }}>
+                  <text fg={theme.skill} style={{ width: width - 1 }}>
+                    {branch}🎯 Skills ({part.skills.length}){skillsExpanded ? '' : ' · Ctrl+K'}
+                  </text>
+                  {skillsExpanded
+                    ? part.skills.map((skill, skillIndex) => (
+                        <text key={skillIndex} fg={theme.muted} style={{ width: width - 3, paddingLeft: 2 }}>
+                          ◆ {skill.name}
+                          {skill.pattern ? ` · ${skill.pattern}` : ''}
+                        </text>
+                      ))
+                    : null}
+                </box>
+              );
+            }
+            return (
+              <box key={`process-tool-${part.tool.toolId}`} style={{ flexDirection: 'row', width }}>
+                <text fg={theme.border}>{branch}</text>
+                <ToolCallBlock
+                  tool={part.tool}
+                  width={width - 3}
+                  toolOutputExpanded={toolOutputExpanded}
+                  compact
+                />
+              </box>
+            );
+          })}
         </box>
       ) : null}
     </box>
@@ -1271,121 +1393,38 @@ function TurnBlock({
                 : turn.content
                   ? [{ kind: 'text', text: turn.content }]
                   : [];
+            const processParts = parts.filter(isProcessPart);
+            const firstProcessIndex = parts.findIndex(isProcessPart);
             return parts.map((part, index) => {
+              if (index === firstProcessIndex) {
+                return (
+                  <ProcessGroup
+                    key="process"
+                    parts={processParts}
+                    width={width - 2}
+                    marginTop={index > 0 ? 1 : 0}
+                    expanded={
+                      toolGroupExpanded ||
+                      turn.error !== undefined ||
+                      processParts.some((item) => item.kind === 'tool' && item.tool.done && item.tool.failed)
+                    }
+                    running={streaming || processParts.some((item) => item.kind === 'tool' && !item.tool.done)}
+                    failed={
+                      turn.error !== undefined ||
+                      processParts.some((item) => item.kind === 'tool' && item.tool.done && item.tool.failed)
+                    }
+                    thinkingExpanded={thinkingExpanded}
+                    skillsExpanded={skillsExpanded}
+                    toolOutputExpanded={toolOutputExpanded}
+                    onToggle={onToggleToolGroup}
+                  />
+                );
+              }
+              if (isProcessPart(part)) return null;
               if (part.kind === 'compaction') {
                 return <CompactionBlock key={`compaction-${part.id}`} part={part} width={width - 2} />;
               }
-
-              if (part.kind === 'thinking') {
-                return thinkingExpanded ? (
-                  <box
-                    key={`thinking-${index}`}
-                    style={{
-                      flexDirection: 'column',
-                      border: ['left'],
-                      borderColor: theme.thinking,
-                      paddingLeft: 1,
-                      marginTop: 1,
-                      width: width - 2,
-                    }}
-                  >
-                    <text fg={theme.thinking} style={{ width: width - 3 }}>
-                      {part.text}
-                    </text>
-                  </box>
-                ) : (
-                  <text key={`thinking-${index}`} fg={theme.thinking} style={{ width: width - 2 }}>
-                    💭 Thinking ({part.text.length} chars) · Ctrl+T
-                  </text>
-                );
-              }
-
-              if (part.kind === 'skills') {
-                return skillsExpanded ? (
-                  <box
-                    key={`skills-${index}`}
-                    style={{
-                      flexDirection: 'column',
-                      border: ['left'],
-                      borderColor: theme.skill,
-                      paddingLeft: 1,
-                      marginTop: 1,
-                      width: width - 2,
-                    }}
-                  >
-                    <text fg={theme.skill}>
-                      <strong>🎯 Skills</strong>
-                    </text>
-                    {part.skills.map((skill, skillIndex) => (
-                      <text key={skillIndex} fg={theme.muted} style={{ width: width - 3 }}>
-                        ◆ {skill.name}
-                        {skill.pattern ? ` · ${skill.pattern}` : ''}
-                      </text>
-                    ))}
-                  </box>
-                ) : (
-                  <text key={`skills-${index}`} fg={theme.skill} style={{ width: width - 2 }}>
-                    🎯 {part.skills.length} skill(s): {part.skills.map((skill) => skill.name).join(', ')} · Ctrl+K
-                  </text>
-                );
-              }
-
-              if (part.kind === 'tool') {
-                if (index > 0 && parts[index - 1]?.kind === 'tool') return null;
-                const group: ToolCallView[] = [];
-                for (let next = index; next < parts.length; next += 1) {
-                  const item = parts[next];
-                  if (item?.kind !== 'tool') break;
-                  group.push(item.tool);
-                }
-                const failedCount = group.filter((tool) => tool.done && tool.failed).length;
-                const running = group.some((tool) => !tool.done);
-                const expanded =
-                  streaming ||
-                  toolGroupExpanded ||
-                  turn.error !== undefined ||
-                  failedCount > 0;
-                return (
-                  <box
-                    key={`tools-${index}`}
-                    style={{ flexDirection: 'column', marginTop: 1, width: width - 2 }}
-                  >
-                    <text
-                      fg={failedCount > 0 ? theme.error : theme.tool}
-                      style={{ width: width - 3 }}
-                      onMouseDown={() => {
-                        if (!streaming) onToggleToolGroup();
-                      }}
-                    >
-                      {expanded ? '▾' : '▸'} ⚙ Tools ({group.length})
-                      {running
-                        ? ' · running'
-                        : failedCount > 0
-                          ? ` · ${failedCount} failed`
-                          : ' · done'}
-                      {expanded ? '' : ' · click to expand'}
-                    </text>
-                    {expanded
-                      ? group.map((tool, toolIndex) => (
-                          <box
-                            key={`tool-${tool.toolId}`}
-                            style={{ flexDirection: 'row', width: width - 2 }}
-                          >
-                            <text fg={theme.border}>
-                              {toolIndex === group.length - 1 ? '└ ' : '├ '}
-                            </text>
-                            <ToolCallBlock
-                              tool={tool}
-                              width={width - 4}
-                              toolOutputExpanded={toolOutputExpanded}
-                            />
-                          </box>
-                        ))
-                      : null}
-                  </box>
-                );
-              }
-
+              if (part.kind !== 'text') return null;
               const isLastText = index === parts.length - 1;
               return turn.status === 'streaming' && isLastText ? (
                 <text key={`text-${index}`} fg={theme.text} style={{ width: width - 2 }}>
