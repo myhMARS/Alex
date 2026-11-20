@@ -3,7 +3,7 @@
 > A terminal-first AI agent built on Bun, TypeScript, and an event-driven module kernel.
 
 [![Bun](https://img.shields.io/badge/Bun-1.4-black?logo=bun)](https://bun.sh)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue?logo=typescript)](https://www.typescriptlang.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-7.0-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![Tests](https://img.shields.io/badge/tests-305%20passing-brightgreen)](#development)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
