@@ -127,7 +127,12 @@ async function main(): Promise<void> {
   host.register(new PromptModule());
   host.register(new SessionModule());
   host.register(new StoreModule(sessionsDir ? { sessionsDir } : {}));
-  host.register(new ToolsModule({ roots: [process.cwd(), attachmentStoreDir()] }));
+  host.register(
+    new ToolsModule({
+      roots: [process.cwd(), attachmentStoreDir()],
+      reviewer: model,
+    }),
+  );
   const registry = new AgentRegistryModule({
     model,
     defaultAgentId: 'main',

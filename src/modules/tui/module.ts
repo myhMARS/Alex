@@ -43,11 +43,14 @@ import {
   type CompactionResult,
 } from '../../kernel/contracts/compaction';
 import {
+  PermissionModeChanged,
+  SetPermissionMode,
   ToolApprovalRequested,
   ToolApprovalResolved,
   ToolFinished,
   ToolsProvided,
   ToolStarted,
+  type PermissionMode,
 } from '../../kernel/contracts/tools';
 import { CronJobEvent, ListCronJobs } from '../../kernel/contracts/cron';
 import {
@@ -240,6 +243,7 @@ export interface TuiSnapshot {
   effort: string;
   model: string;
   contextPercent: number | null;
+  permissionMode: PermissionMode;
 }
 
 const HELP_TEXT = [
@@ -324,6 +328,7 @@ export class TuiModule implements Module {
   private selectedPath = '';
   private sidebarTimer: ReturnType<typeof setInterval> | null = null;
   private thinkingExpanded = false;
+  private permissionMode: PermissionMode = 'manual';
   private skillsExpanded = false;
   private toolOutputExpanded = false;
   private readonly expandedToolTurns = new Set<string>();
@@ -376,6 +381,10 @@ export class TuiModule implements Module {
       await bus.subscribe(type, handler);
       this.subscriptions.push({ type, handler });
     }
+    await bus.subscribe(PermissionModeChanged, (event) => {
+      this.permissionMode = event.mode;
+      this.refresh();
+    });
     for (const type of [AgentSpawned, AgentDisposed, AgentTaskStarted, AgentTaskFinished]) {
       const handler: EventHandler = () => {
         void this.refreshAgentsPage();
@@ -791,6 +800,21 @@ export class TuiModule implements Module {
   }
 
   /** Expand/collapse the tool-call group of one completed turn. */
+  /** Cycle permission modes: manual → model → full → read-only. */
+  async cyclePermissionMode(): Promise<PermissionMode> {
+    const order: PermissionMode[] = ['manual', 'model', 'full', 'read-only'];
+    const next = order[(order.indexOf(this.permissionMode) + 1) % order.length] ?? 'manual';
+    const bus = this.bus;
+    if (!bus) return next;
+    try {
+      this.permissionMode = await bus.request(new SetPermissionMode({ mode: next }));
+    } catch {
+      this.permissionMode = next;
+    }
+    this.refresh();
+    return this.permissionMode;
+  }
+
   toggleToolTurn(turnId: string): boolean {
     if (!turnId) return false;
     const next = !this.expandedToolTurns.has(turnId);
@@ -1950,6 +1974,7 @@ export class TuiModule implements Module {
               ),
             )
           : null,
+      permissionMode: this.permissionMode,
     };
   }
 

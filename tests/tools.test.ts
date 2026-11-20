@@ -14,9 +14,11 @@ import {
   GetToolCatalog,
   ListDirectory,
   ListFileTree,
+  SetPermissionMode,
   ToolApprovalRequested,
   ToolApprovalResolved,
 } from '../src/kernel/contracts/tools';
+import type { ChatModel, ChatStreamEvent } from '../src/llm/client';
 import type { Tool } from '../src/tools/tool';
 import { checkShellCommand } from '../src/tools/builtin/shell';
 import { parseDuckDuckGoResults } from '../src/tools/builtin/web';
@@ -31,6 +33,23 @@ afterEach(async () => {
   }
 });
 
+class ReviewerModel implements ChatModel {
+  constructor(private readonly payload: string) {}
+
+  async *streamChat(): AsyncIterable<ChatStreamEvent> {
+    yield { type: 'content', delta: this.payload };
+    yield {
+      type: 'done',
+      result: {
+        content: this.payload,
+        thinking: '',
+        toolCalls: [],
+        finishReason: 'stop',
+      },
+    };
+  }
+}
+
 interface Env {
   dir: string;
   auditPath: string;
@@ -43,6 +62,7 @@ async function makeEnv(
     allowed?: string[];
     denied?: string[];
     approvalTimeoutMs?: number;
+    reviewer?: ChatModel;
   } = {},
 ): Promise<Env> {
   const dir = await mkdtemp(join(tmpdir(), 'alex-ts-tools-'));
@@ -58,6 +78,7 @@ async function makeEnv(
     audit: new AuditLogger(auditPath),
     approvalTimeoutMs: options.approvalTimeoutMs ?? 2_000,
     plugins: false,
+    ...(options.reviewer ? { reviewer: options.reviewer } : {}),
   });
   await tools.start(bus);
   await bus.start();
@@ -208,6 +229,42 @@ describe('ToolsModule over the bus', () => {
     expect(edited.error).toBeUndefined();
     expect(previews[1]).toContain('-new line');
     expect(previews[1]).toContain('+edited line');
+    await bus.shutdown();
+  });
+
+  test('read-only mode rejects writes and full mode skips approval', async () => {
+    const { bus, dir } = await makeEnv({ allowed: ['read'] });
+    const path = join(dir, 'mode.txt');
+    await bus.request(new SetPermissionMode({ mode: 'read-only' }));
+    const readonly = await run(bus, 'write', { path, content: 'x' });
+    expect(readonly.error).toContain('read-only');
+
+    await bus.request(new SetPermissionMode({ mode: 'full' }));
+    const full = await run(bus, 'write', { path, content: 'x' });
+    expect(full.error).toBeUndefined();
+    expect(await readFile(path, 'utf8')).toBe('x');
+    await bus.shutdown();
+  });
+
+  test('model mode lets the reviewer approve a write', async () => {
+    const reviewer = new ReviewerModel('{"decision":"allow"}');
+    const { bus, dir } = await makeEnv({ allowed: ['read'], reviewer });
+    await bus.request(new SetPermissionMode({ mode: 'model' }));
+    const path = join(dir, 'reviewed.txt');
+    const result = await run(bus, 'write', { path, content: 'reviewed' });
+    expect(result.error).toBeUndefined();
+    expect(await readFile(path, 'utf8')).toBe('reviewed');
+    await bus.shutdown();
+  });
+
+  test('model mode lets the reviewer deny a write', async () => {
+    const reviewer = new ReviewerModel('{"decision":"deny","reason":"unsafe"}');
+    const { bus, dir } = await makeEnv({ allowed: ['read'], reviewer });
+    await bus.request(new SetPermissionMode({ mode: 'model' }));
+    const path = join(dir, 'denied.txt');
+    const result = await run(bus, 'write', { path, content: 'reviewed' });
+    expect(result.error).toContain('model reviewer denied');
+    await expect(readFile(path, 'utf8')).rejects.toThrow();
     await bus.shutdown();
   });
 

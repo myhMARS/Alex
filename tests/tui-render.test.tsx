@@ -227,6 +227,18 @@ describe('TUI renderer', () => {
     await bus.shutdown();
   });
 
+  test('Shift+Tab cycles permission modes in the status bar', async () => {
+    const { bus, setup } = await mountedTui();
+    let frame = plain(setup.captureCharFrame());
+    expect(frame).toContain('perm 手动');
+    setup.mockInput.pressTab({ shift: true });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await setup.renderOnce();
+    frame = plain(setup.captureCharFrame());
+    expect(frame).toContain('perm 模型');
+    await bus.shutdown();
+  });
+
   test('shows approval modal and resolves it with keyboard shortcuts', async () => {
     const { bus, setup } = await mountedTui();
     const approvals: ToolApprovalResolved[] = [];
@@ -240,7 +252,7 @@ describe('TUI renderer', () => {
         reqId: 'req-1',
         toolName: 'write',
         permission: 'write',
-        preview: 'write notes.txt (2 lines)',
+        preview: 'edit notes.txt\n--- a/notes.txt\n+++ b/notes.txt\n@@ -1 +1 @@\n-old line\n+new line',
       }),
     );
     await bus.idle();
@@ -248,7 +260,9 @@ describe('TUI renderer', () => {
 
     const frame = plain(setup.captureCharFrame());
     expect(frame).toContain('Tool approval required');
-    expect(frame).toContain('write notes.txt');
+    expect(frame).toContain('edit notes.txt');
+    expect(frame).toContain('-old line');
+    expect(frame).toContain('+new line');
     expect(frame).toContain('permission: write');
 
     await setup.mockInput.pressKey('y');

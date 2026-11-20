@@ -141,6 +141,30 @@ export class UnregisterTool extends Request<void> {
   }
 }
 
+// ── Permission modes ────────────────────────────────────────────────────────
+
+export type PermissionMode = 'read-only' | 'manual' | 'model' | 'full';
+
+export class GetPermissionMode extends Request<PermissionMode> {}
+
+export class SetPermissionMode extends Request<PermissionMode> {
+  mode: PermissionMode;
+
+  constructor(init: { mode?: PermissionMode; sessionId?: string } = {}) {
+    super(init);
+    this.mode = init.mode ?? 'manual';
+  }
+}
+
+export class PermissionModeChanged extends Event {
+  mode: PermissionMode;
+
+  constructor(init: MessageContext & { mode?: PermissionMode } = {}) {
+    super(init);
+    this.mode = init.mode ?? 'manual';
+  }
+}
+
 // ── Events (broadcast) ───────────────────────────────────────────────────────
 
 export class ToolsProvided extends Event {

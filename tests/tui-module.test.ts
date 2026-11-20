@@ -1633,6 +1633,12 @@ describe('TuiModule as a bus module', () => {
     expect(tui.getSnapshot().skillsExpanded).toBe(true);
     expect(tui.toggleToolOutput()).toBe(true);
     expect(tui.getSnapshot().toolOutputExpanded).toBe(true);
+    expect(tui.getSnapshot().permissionMode).toBe('manual');
+    expect(await tui.cyclePermissionMode()).toBe('model');
+    expect(tui.getSnapshot().permissionMode).toBe('model');
+    expect(await tui.cyclePermissionMode()).toBe('full');
+    expect(await tui.cyclePermissionMode()).toBe('read-only');
+    expect(await tui.cyclePermissionMode()).toBe('manual');
     expect(tui.getSnapshot().sidebarCollapsed).toBe(true);
     expect(tui.toggleSidebar()).toBe(false);
     expect(tui.getSnapshot().sidebarCollapsed).toBe(false);

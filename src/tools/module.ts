@@ -17,19 +17,24 @@ import type { AsyncEventBus } from '../kernel/bus';
 import type { ToolExecutionContext, ToolResult, ToolSpec } from '../kernel/dto/tool';
 import {
   ExecuteTool,
+  GetPermissionMode,
   GetToolCatalog,
   InvokeProviderTool,
   ListDirectory,
   ListFileTree,
+  PermissionModeChanged,
   RegisterTool,
   SetAgentPermissions,
+  SetPermissionMode,
   ToolApprovalRequested,
   ToolApprovalResolved,
   ToolsProvided,
   UnregisterTool,
   type FileTreeEntry,
   type FileTreeSnapshot,
+  type PermissionMode,
 } from '../kernel/contracts/tools';
+import type { ChatModel } from '../llm/client';
 import {
   RegisterPromptSection,
   UnregisterPromptSection,
@@ -79,6 +84,8 @@ export interface ToolsModuleOptions {
   pluginDirs?: string[];
   /** Set false to skip plugin loading (tests). */
   plugins?: boolean;
+  /** Same model used by the agent; required for permission mode `model`. */
+  reviewer?: ChatModel;
 }
 
 type ApprovalOutcome = { granted: boolean; remember: boolean } | 'timeout';
@@ -108,6 +115,8 @@ export class ToolsModule implements Module {
   private pluginResult: PluginLoadResult = { loaded: [], errors: [] };
   private bus: AsyncEventBus | null = null;
   private toolsPromptRegistered = false;
+  private permissionMode: PermissionMode = 'manual';
+  private readonly reviewer?: ChatModel;
 
   constructor(options: ToolsModuleOptions = {}) {
     this.roots = (options.roots ?? [process.cwd()]).map((root) => resolve(root));
@@ -116,6 +125,7 @@ export class ToolsModule implements Module {
     this.approvalTimeoutMs = options.approvalTimeoutMs ?? 120_000;
     this.pluginDirs = options.pluginDirs ?? [join(homedir(), '.alex', 'plugins')];
     this.loadPluginsAtStart = options.plugins !== false;
+    this.reviewer = options.reviewer;
     if (options.builtin !== false) {
       registerBuiltinTools(this.registry, { roots: this.roots });
     }
@@ -127,6 +137,12 @@ export class ToolsModule implements Module {
     }
     this.bus = bus;
     bus.provide(GetToolCatalog, () => this.catalog());
+    bus.provide(GetPermissionMode, () => this.permissionMode);
+    bus.provide(SetPermissionMode, (req) => {
+      this.permissionMode = req.mode;
+      bus.publish(new PermissionModeChanged({ mode: this.permissionMode }));
+      return this.permissionMode;
+    });
     bus.provide(ListFileTree, (req) => this.listFileTree(req.maxDepth, req.maxEntries));
     bus.provide(ListDirectory, (req) => this.listDirectory(req.path, req.maxEntries));
     bus.provide(ExecuteTool, (req) => this.execute(req));
@@ -394,12 +410,20 @@ export class ToolsModule implements Module {
       ? this.agentPolicies.get(req.agentId) ?? this.policy
       : this.policy;
     if (permission) {
-      const decision = policy.check(permission);
-      if (decision === 'deny') {
+      const decision = await this.permissionDecision(
+        req,
+        permission,
+        summarise,
+        policy,
+      );
+      if (decision.kind === 'deny') {
         await this.auditDecision(req.name, summarise, req, permission, 'denied', false);
-        return blocked(req.name, `tool '${req.name}' blocked: permission '${permission}' explicitly denied`);
+        return blocked(req.name, `tool '${req.name}' blocked: ${decision.reason}`);
       }
-      if (decision === 'ask') {
+      if (decision.kind === 'model-allow') {
+        await this.auditDecision(req.name, summarise, req, permission, 'granted', false);
+      }
+      if (decision.kind === 'ask') {
         const outcome = await this.requestApproval(req.name, summarise, req, permission);
         if (outcome === 'timeout') {
           await this.auditDecision(req.name, summarise, req, permission, 'timeout', false);
@@ -464,6 +488,99 @@ export class ToolsModule implements Module {
   }
 
   // ── approval ───────────────────────────────────────────────────────────
+
+  private async permissionDecision(
+    req: ExecuteTool,
+    permission: string,
+    summarise: ((args: Record<string, unknown>) => string) | undefined,
+    policy: PermissionPolicy,
+  ): Promise<
+    | { kind: 'allow' }
+    | { kind: 'model-allow' }
+    | { kind: 'deny'; reason: string }
+    | { kind: 'ask' }
+  > {
+    if (this.permissionMode === 'full') return { kind: 'allow' };
+    if (this.permissionMode === 'read-only') {
+      return permission === 'read' || permission === 'network'
+        ? { kind: 'allow' }
+        : { kind: 'deny', reason: `read-only mode blocks permission '${permission}'` };
+    }
+
+    const base = policy.check(permission);
+    if (this.permissionMode === 'manual') {
+      if (base === 'deny') {
+        return { kind: 'deny', reason: `permission '${permission}' explicitly denied` };
+      }
+      return base === 'allow' ? { kind: 'allow' } : { kind: 'ask' };
+    }
+
+    // model mode: keep explicit denials, skip review for already-allowed
+    // permissions, and ask the model about everything else.
+    if (base === 'deny') {
+      return { kind: 'deny', reason: `permission '${permission}' explicitly denied` };
+    }
+    if (base === 'allow') return { kind: 'allow' };
+    const review = await this.reviewToolCall(
+      req,
+      permission,
+      summarise?.(req.args) ?? defaultPreview(req.args),
+    );
+    if (review === 'allow') return { kind: 'model-allow' };
+    if (review === 'deny') {
+      return { kind: 'deny', reason: 'model reviewer denied the tool call' };
+    }
+    // Reviewer unavailable or malformed: fail closed to human approval.
+    return { kind: 'ask' };
+  }
+
+  private async reviewToolCall(
+    req: ExecuteTool,
+    permission: string,
+    preview: string,
+  ): Promise<'allow' | 'deny' | 'error'> {
+    const reviewer = this.reviewer;
+    if (!reviewer) return 'error';
+    try {
+      let content = '';
+      for await (const event of reviewer.streamChat({
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You are a security reviewer for one pending tool call. Decide whether it is safe to execute. ' +
+              'Return only JSON: {"decision":"allow"} or {"decision":"deny","reason":"..."}. ' +
+              'Allow ordinary project-local reads, writes, tests, builds, formatting, and non-destructive git operations. ' +
+              'Deny destructive or irreversible operations, secret exfiltration, production changes, and privilege changes. ' +
+              'Fail closed when the actual effect is ambiguous.',
+          },
+          {
+            role: 'user',
+            content: [
+              `tool: ${req.name}`,
+              `permission: ${permission}`,
+              `session: ${req.sessionId || '(none)'}`,
+              `arguments: ${JSON.stringify(req.args).slice(0, 8_000)}`,
+              'preview:',
+              preview.slice(0, 8_000),
+            ].join('\n'),
+          },
+        ],
+        maxTokens: 160,
+        temperature: 0,
+      })) {
+        if (event.type === 'content') content += event.delta;
+      }
+      const match = content.match(/\{[\s\S]*\}/);
+      if (!match) return 'error';
+      const parsed = JSON.parse(match[0]) as { decision?: unknown };
+      if (parsed.decision === 'allow') return 'allow';
+      if (parsed.decision === 'deny') return 'deny';
+      return 'error';
+    } catch {
+      return 'error';
+    }
+  }
 
   private requestApproval(
     toolName: string,

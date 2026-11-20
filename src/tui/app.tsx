@@ -397,6 +397,12 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
       tui.setToast(collapsed ? '侧栏已收起' : '侧栏已展开');
       return;
     }
+    if (key.shift && key.name === 'tab') {
+      void tui.cyclePermissionMode().then((mode) => {
+        tui.setToast(`权限模式：${permissionModeLabel(mode)}`);
+      });
+      return;
+    }
     if (key.ctrl && key.name === 'g') {
       tui.submitFeedback(true);
       return;
@@ -2068,7 +2074,11 @@ function ApprovalPanel({
       </text>
       <box style={{ flexDirection: 'column', flexGrow: 1, overflow: 'hidden', width: width - 4 }}>
         {visible.map((line, index) => (
-          <text key={start + index} fg={theme.muted} style={{ width: width - 4 }}>
+          <text
+            key={start + index}
+            fg={approvalLineColor(line)}
+            style={{ width: width - 4 }}
+          >
             {line || ' '}
           </text>
         ))}
@@ -2091,12 +2101,28 @@ function StatusBar({ snapshot }: { snapshot: TuiSnapshot }) {
       }}
     >
       <text fg={theme.muted}>
-        {snapshot.streaming.length > 0 ? '● streaming' : '○ idle'} · model{' '}
-        {snapshot.model || '-'} · effort {snapshot.effort} · ctx{' '}
+        {snapshot.streaming.length > 0 ? '● streaming' : '○ idle'} · perm{' '}
+        <span fg={theme.accent}>{permissionModeLabel(snapshot.permissionMode)}</span>
+        {' '}· Shift+Tab · model {snapshot.model || '-'} · effort {snapshot.effort} · ctx{' '}
         {snapshot.contextPercent === null ? '-' : `${snapshot.contextPercent}%`}
       </text>
     </box>
   );
+}
+
+function permissionModeLabel(mode: TuiSnapshot['permissionMode']): string {
+  if (mode === 'read-only') return '只读';
+  if (mode === 'model') return '模型';
+  if (mode === 'full') return '完全';
+  return '手动';
+}
+
+function approvalLineColor(line: string): string {
+  if (line.startsWith('@@')) return theme.accent;
+  if (line.startsWith('+++') || line.startsWith('---')) return theme.muted;
+  if (line.startsWith('+')) return theme.user;
+  if (line.startsWith('-')) return theme.error;
+  return theme.text;
 }
 
 function truncate(text: string, max: number): string {
