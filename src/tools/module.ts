@@ -555,19 +555,13 @@ export class ToolsModule implements Module {
   ): Promise<'allow' | 'deny' | 'error'> {
     const reviewer = this.reviewer;
     if (!reviewer) return 'error';
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20_000);
     try {
       let content = '';
+      let thinking = '';
       for await (const event of reviewer.streamChat({
         messages: [
-          {
-            role: 'system',
-            content:
-              'You are a security reviewer for one pending tool call. Decide whether it is safe to execute. ' +
-              'Return only JSON: {"decision":"allow"} or {"decision":"deny","reason":"..."}. ' +
-              'Allow ordinary project-local reads, writes, tests, builds, formatting, and non-destructive git operations. ' +
-              'Deny destructive or irreversible operations, secret exfiltration, production changes, and privilege changes. ' +
-              'Fail closed when the actual effect is ambiguous.',
-          },
           {
             role: 'user',
             content: [
@@ -580,19 +574,51 @@ export class ToolsModule implements Module {
             ].join('\n'),
           },
         ],
-        maxTokens: 160,
+        systemPrompt:
+          'You are a security reviewer for one pending tool call. Decide whether it is safe to execute. ' +
+          'Return only JSON: {"decision":"allow"} or {"decision":"deny","reason":"..."}. ' +
+          'Allow ordinary project-local reads, writes, tests, builds, formatting, and non-destructive git operations. ' +
+          'Deny destructive or irreversible operations, secret exfiltration, production changes, and privilege changes. ' +
+          'Fail closed when the actual effect is ambiguous.',
+        // Reviewing must not spend the output budget on reasoning; otherwise a
+        // thinking model can return empty content and fall back to a human prompt.
+        thinking: false,
+        maxTokens: 256,
         temperature: 0,
+        signal: controller.signal,
       })) {
         if (event.type === 'content') content += event.delta;
+        else if (event.type === 'thinking') thinking += event.delta;
       }
-      const match = content.match(/\{[\s\S]*\}/);
-      if (!match) return 'error';
-      const parsed = JSON.parse(match[0]) as { decision?: unknown };
-      if (parsed.decision === 'allow') return 'allow';
-      if (parsed.decision === 'deny') return 'deny';
+      // Some providers still emit reasoning despite thinking:false. Try both
+      // content and reasoning so a valid review is not discarded.
+      for (const candidate of [content, thinking]) {
+        const match = candidate.match(/\{[\s\S]*\}/);
+        if (!match) continue;
+        try {
+          const parsed = JSON.parse(match[0]) as { decision?: unknown };
+          if (parsed.decision === 'allow') return 'allow';
+          if (parsed.decision === 'deny') return 'deny';
+        } catch {
+          // Try the next candidate.
+        }
+      }
+      if (process.env.ALEX_DEBUG) {
+        console.debug(`[model-review] ${req.name}: empty/malformed response`);
+      }
+      if (process.env.ALEX_DEBUG) {
+        console.debug(`[model-review] ${req.name}: unexpected decision`);
+      }
       return 'error';
-    } catch {
+    } catch (error) {
+      if (process.env.ALEX_DEBUG) {
+        console.debug(
+          `[model-review] ${req.name}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
       return 'error';
+    } finally {
+      clearTimeout(timer);
     }
   }
 

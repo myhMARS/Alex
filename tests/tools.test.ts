@@ -19,7 +19,7 @@ import {
   ToolApprovalRequested,
   ToolApprovalResolved,
 } from '../src/kernel/contracts/tools';
-import type { ChatModel, ChatStreamEvent } from '../src/llm/client';
+import type { ChatModel, ChatRequest, ChatStreamEvent } from '../src/llm/client';
 import type { Tool } from '../src/tools/tool';
 import { checkShellCommand } from '../src/tools/builtin/shell';
 import { parseDuckDuckGoResults } from '../src/tools/builtin/web';
@@ -35,9 +35,12 @@ afterEach(async () => {
 });
 
 class ReviewerModel implements ChatModel {
+  lastRequest?: ChatRequest;
+
   constructor(private readonly payload: string) {}
 
-  async *streamChat(): AsyncIterable<ChatStreamEvent> {
+  async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
+    this.lastRequest = request;
     yield { type: 'content', delta: this.payload };
     yield {
       type: 'done',
@@ -255,6 +258,34 @@ describe('ToolsModule over the bus', () => {
     const result = await run(bus, 'write', { path, content: 'reviewed' });
     expect(result.error).toBeUndefined();
     expect(await readFile(path, 'utf8')).toBe('reviewed');
+    await bus.shutdown();
+  });
+
+  test('model reviewer disables thinking and accepts reasoning fallback', async () => {
+    const reviewer = new ReviewerModel('{"decision":"allow"}');
+    const { bus, dir } = await makeEnv({ allowed: ['read'], reviewer });
+    await bus.request(new SetPermissionMode({ mode: 'model' }));
+    const path = join(dir, 'reviewed-thinking.txt');
+    const result = await run(bus, 'write', { path, content: 'reviewed' });
+    expect(result.error).toBeUndefined();
+    expect(reviewer.lastRequest?.thinking).toBe(false);
+    expect(reviewer.lastRequest?.maxTokens).toBe(256);
+
+    const thinkingReviewer: ChatModel = {
+      async *streamChat(): AsyncIterable<ChatStreamEvent> {
+        yield { type: 'thinking', delta: '{"decision":"allow"}' };
+        yield {
+          type: 'done',
+          result: { content: '', thinking: '{"decision":"allow"}', toolCalls: [], finishReason: 'stop' },
+        };
+      },
+    };
+    const second = await makeEnv({ allowed: ['read'], reviewer: thinkingReviewer });
+    await second.bus.request(new SetPermissionMode({ mode: 'model' }));
+    const secondPath = join(second.dir, 'reasoned.txt');
+    const secondResult = await run(second.bus, 'write', { path: secondPath, content: 'ok' });
+    expect(secondResult.error).toBeUndefined();
+    await second.bus.shutdown();
     await bus.shutdown();
   });
 
