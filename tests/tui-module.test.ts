@@ -1486,6 +1486,7 @@ bus.provide(ListAgentTasks, () => [
         firstMessage: 'recent message',
         messageCount: 7,
         title: 'Recent work',
+        workspace: '/projects/recent',
       },
     ]);
     const tui = new TuiModule();
@@ -1497,6 +1498,7 @@ bus.provide(ListAgentTasks, () => [
     expect(body.indexOf('recent-session')).toBeLessThan(body.indexOf('older-session'));
     expect(body).toContain('7 msgs');
     expect(body).toContain('recent message');
+    expect(body).toContain('projects/recent');
     expect(body).toMatch(/1\. Recent work/);
     expect(body).toContain('recent-session');
     expect(body).toMatch(/2\. older-session/);
@@ -1672,6 +1674,132 @@ bus.provide(ListAgentTasks, () => [
     expect(changes).toEqual([false, true]);
     expect(tui.getSnapshot().page?.body).toContain('[ ON ]');
     expect(tui.getSnapshot().page?.body).toContain('CONNECTED');
+    await bus.shutdown();
+  });
+
+  test('file tree search refreshes results recursively', async () => {
+    const bus = new AsyncEventBus();
+    bus.provide(ListDirectory, (req) => ({
+      root: '/repo',
+      path: req.path,
+      entries:
+        req.path === ''
+          ? [
+              { path: 'src', name: 'src', depth: 0, type: 'dir' as const },
+              { path: 'README.md', name: 'README.md', depth: 0, type: 'file' as const },
+            ]
+          : req.path === 'src'
+            ? [
+                { path: 'src/app.ts', name: 'app.ts', depth: 0, type: 'file' as const },
+                { path: 'src/lib', name: 'lib', depth: 0, type: 'dir' as const },
+              ]
+            : [{ path: 'src/lib/x.ts', name: 'x.ts', depth: 0, type: 'file' as const }],
+      isGitRepo: false,
+      gitStatus: {},
+    }));
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+    await tui.setSidebarTab('files');
+    expect(tui.getSnapshot().fileRows.map((row) => row.path)).toContain('README.md');
+
+    await tui.setFileQuery('x.ts');
+    expect(tui.getSnapshot().fileQuery).toBe('x.ts');
+    expect(tui.getSnapshot().fileRows.map((row) => row.path)).toEqual(['src/lib/x.ts']);
+
+    await tui.setFileQuery('');
+    expect(tui.getSnapshot().fileQuery).toBe('');
+    expect(tui.getSnapshot().fileRows.map((row) => row.path)).toContain('src');
+    await bus.shutdown();
+  });
+
+  test('/resume scope hides sessions from other workspaces', async () => {
+    const bus = new AsyncEventBus();
+    const cwd = process.cwd();
+    bus.provide(ListSessions, () => [
+      {
+        sessionId: 'here',
+        createdAt: '2026-01-02T00:00:00Z',
+        updatedAt: '2026-01-02T00:00:00Z',
+        firstMessage: 'current workspace',
+        messageCount: 1,
+        workspace: cwd,
+      },
+      {
+        sessionId: 'elsewhere',
+        createdAt: '2026-01-01T00:00:00Z',
+        updatedAt: '2026-01-01T00:00:00Z',
+        firstMessage: 'other workspace',
+        messageCount: 1,
+        workspace: '/some/other/project',
+      },
+      {
+        sessionId: 'legacy',
+        createdAt: '2026-01-03T00:00:00Z',
+        updatedAt: '2026-01-03T00:00:00Z',
+        firstMessage: 'legacy session',
+        messageCount: 1,
+      },
+    ]);
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+
+    tui.setSessionScope('workspace');
+    await tui.showPage('sessions');
+    const scoped = tui.getSnapshot().page?.body ?? '';
+    expect(scoped).toContain('current workspace');
+    expect(scoped).not.toContain('other workspace');
+    expect(scoped).toContain('legacy session');
+    expect(scoped).toContain('当前工作区');
+
+    tui.setSessionScope('all');
+    await tui.showPage('sessions');
+    const all = tui.getSnapshot().page?.body ?? '';
+    expect(all).toContain('other workspace');
+    expect(all).toContain('所有工作区');
+    await bus.shutdown();
+  });
+
+  test('searches other sessions in the current workspace', async () => {
+    const bus = new AsyncEventBus();
+    const cwd = process.cwd();
+    bus.provide(ListSessions, () => [
+      {
+        sessionId: 's-current',
+        createdAt: '2026-01-03T00:00:00Z',
+        updatedAt: '2026-01-03T00:00:00Z',
+        firstMessage: 'current',
+        messageCount: 1,
+        title: 'Current',
+        workspace: cwd,
+      },
+      {
+        sessionId: 's-alpha',
+        createdAt: '2026-01-02T00:00:00Z',
+        updatedAt: '2026-01-02T00:00:00Z',
+        firstMessage: 'alpha project discussion',
+        messageCount: 4,
+        title: 'Alpha project',
+        workspace: cwd,
+      },
+      {
+        sessionId: 's-elsewhere',
+        createdAt: '2026-01-01T00:00:00Z',
+        updatedAt: '2026-01-01T00:00:00Z',
+        firstMessage: 'alpha in another workspace',
+        messageCount: 2,
+        title: 'Alpha elsewhere',
+        workspace: '/some/other/project',
+      },
+    ]);
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+
+    const matches = await tui.searchWorkspaceSessions('alpha');
+    expect(matches.map((session) => session.sessionId)).toEqual(['s-alpha']);
+    expect(await tui.searchWorkspaceSessions('discussion')).toHaveLength(1);
     await bus.shutdown();
   });
 

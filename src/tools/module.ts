@@ -7,7 +7,7 @@
  */
 
 import { homedir } from 'node:os';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { readdir, stat } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -105,6 +105,10 @@ export class ToolsModule implements Module {
   private readonly policy: PermissionPolicy;
   private readonly audit: AuditLogger;
   private readonly roots: string[];
+  /** Immutable base roots; approved external directories extend `roots`. */
+  private readonly baseRoots: string[];
+  /** External directories approved for a specific session. */
+  private readonly externalRoots = new Map<string, Set<string>>();
   private readonly approvalTimeoutMs: number;
   private readonly pluginDirs: string[];
   private readonly loadPluginsAtStart: boolean;
@@ -120,6 +124,7 @@ export class ToolsModule implements Module {
 
   constructor(options: ToolsModuleOptions = {}) {
     this.roots = (options.roots ?? [process.cwd()]).map((root) => resolve(root));
+    this.baseRoots = [...this.roots];
     this.policy = options.policy ?? new PermissionPolicy();
     this.audit = options.audit ?? new AuditLogger();
     this.approvalTimeoutMs = options.approvalTimeoutMs ?? 120_000;
@@ -458,6 +463,9 @@ export class ToolsModule implements Module {
       }
     }
 
+    const externalBlock = await this.ensureExternalPathAccess(req);
+    if (externalBlock) return externalBlock;
+
     const runId = nextId('run');
     const ctx: ToolExecutionContext = {
       sessionId: req.sessionId,
@@ -499,6 +507,95 @@ export class ToolsModule implements Module {
       const message = error instanceof Error ? error.message : String(error);
       return { name: req.name, error: message, runId };
     }
+  }
+
+  /**
+   * File tools are rooted at the workspace. When a tool targets an absolute
+   * path outside those roots, ask the user once per directory and remember the
+   * grant for this session only.
+   */
+  private async ensureExternalPathAccess(req: ExecuteTool): Promise<ToolResult | null> {
+    const target = await this.externalTarget(req);
+    if (!target) return null;
+    if (this.isWithinRoots(target.path, this.baseRoots)) return null;
+
+    const sessionKey = req.sessionId || 'default';
+    const approved = this.externalRoots.get(sessionKey) ?? new Set<string>();
+    for (const root of approved) {
+      if (this.isWithinRoots(target.path, [root])) {
+        if (!this.roots.includes(root)) this.roots.push(root);
+        return null;
+      }
+    }
+
+    if (this.permissionMode === 'full') {
+      approved.add(target.root);
+      this.externalRoots.set(sessionKey, approved);
+      if (!this.roots.includes(target.root)) this.roots.push(target.root);
+      return null;
+    }
+
+    const preview = [
+      '外部路径访问请求',
+      `工具: ${req.name}`,
+      `目标: ${target.path}`,
+      `目录: ${target.root}`,
+      '批准后，当前 session 可访问该目录下的文件。',
+    ].join('\n');
+    const outcome = await this.requestApproval(
+      req.name,
+      undefined,
+      req,
+      'read',
+      preview,
+    );
+    if (outcome === 'timeout') {
+      await this.auditDecision(req.name, undefined, req, 'read', 'timeout', false);
+      return blocked(
+        req.name,
+        `tool '${req.name}' blocked: external path approval timed out`,
+      );
+    }
+    await this.auditDecision(
+      req.name,
+      undefined,
+      req,
+      'read',
+      outcome.granted ? 'granted' : 'denied',
+      true,
+    );
+    if (!outcome.granted) {
+      return blocked(
+        req.name,
+        `tool '${req.name}' blocked: access to external directory '${target.root}' denied`,
+      );
+    }
+    approved.add(target.root);
+    this.externalRoots.set(sessionKey, approved);
+    if (!this.roots.includes(target.root)) this.roots.push(target.root);
+    return null;
+  }
+
+  private async externalTarget(
+    req: ExecuteTool,
+  ): Promise<{ path: string; root: string } | null> {
+    if (
+      !['read', 'write', 'edit', 'glob', 'grep', 'git_inspect'].includes(req.name)
+    ) {
+      return null;
+    }
+    const raw = req.args.path ?? req.args.file_path;
+    if (typeof raw !== 'string' || !raw.trim()) return null;
+    const path = resolve(raw);
+    const info = await stat(path).catch(() => null);
+    const directory = info?.isDirectory() ? path : dirname(path);
+    return { path, root: directory === path ? path : directory };
+  }
+
+  private isWithinRoots(candidate: string, roots: string[]): boolean {
+    return roots.some(
+      (root) => candidate === root || candidate.startsWith(root + sep),
+    );
   }
 
   // ── approval ───────────────────────────────────────────────────────────
@@ -627,12 +724,13 @@ export class ToolsModule implements Module {
     summarise: ((args: Record<string, unknown>) => string) | undefined,
     req: ExecuteTool,
     permission: Permission,
+    previewOverride?: string,
   ): Promise<ApprovalOutcome> {
     const bus = this.bus;
     if (!bus) return Promise.resolve('timeout');
 
     const reqId = nextId('req');
-    const preview = summarise?.(req.args) ?? defaultPreview(req.args);
+    const preview = previewOverride ?? summarise?.(req.args) ?? defaultPreview(req.args);
 
     return new Promise<ApprovalOutcome>((resolveApproval) => {
       const timer = setTimeout(() => {

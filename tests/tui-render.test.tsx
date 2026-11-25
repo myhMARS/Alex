@@ -933,7 +933,6 @@ describe('TUI renderer', () => {
     expect(frame).toContain('Commands (');
     expect(frame).toContain('/help');
     expect(frame).toContain('/skills');
-    expect(frame).toContain('/reflect');
     expect(frame).toContain('❯ /help');
 
     setup.mockInput.pressArrow('down');
@@ -964,6 +963,25 @@ describe('TUI renderer', () => {
     await new Promise((resolve) => setTimeout(resolve, 80));
     await bus.idle();
     expect(tui.getSnapshot().page?.kind).toBe('skills');
+    await bus.shutdown();
+  });
+
+  test('command palette lists each command only once', async () => {
+    const bus = new AsyncEventBus();
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+    const setup = await testRender(
+      <TuiApp tui={tui} sessionId="s1" toolCount={17} onQuit={() => {}} />,
+      { width: 100, height: 30 },
+    );
+    await setup.renderOnce();
+    await setup.mockInput.typeText('/res');
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    await setup.renderOnce();
+    const frame = plain(setup.captureCharFrame());
+    expect((frame.match(/\/resume/g) ?? []).length).toBe(1);
+    expect(frame).not.toContain('恢复历史主会话');
     await bus.shutdown();
   });
 
@@ -1134,6 +1152,46 @@ describe('TUI renderer', () => {
     await bus.shutdown();
   });
 
+  test('file tree search box filters recursively', async () => {
+    const bus = new AsyncEventBus();
+    bus.provide(ListDirectory, (req) => ({
+      root: '/repo',
+      path: req.path,
+      entries:
+        req.path === ''
+          ? [{ path: 'src', name: 'src', depth: 0, type: 'dir' as const }]
+          : req.path === 'src'
+            ? [{ path: 'src/app.ts', name: 'app.ts', depth: 0, type: 'file' as const }]
+            : [],
+      isGitRepo: false,
+      gitStatus: {},
+    }));
+    const tui = new TuiModule();
+    await tui.start(bus);
+    await bus.start();
+    await tui.setSidebarTab('files');
+    await tui.refreshFileTree();
+    const setup = await testRender(
+      <TuiApp tui={tui} sessionId="s1" toolCount={0} onQuit={() => {}} />,
+      { width: 100, height: 30 },
+    );
+    await setup.mockInput.pressKey('s', { ctrl: true });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    await setup.renderOnce();
+    const lines = plain(setup.captureCharFrame()).split('\n');
+    const row = lines.findIndex((line) => line.includes('search files'));
+    expect(row).toBeGreaterThanOrEqual(0);
+    await setup.mockMouse.click(lines[row]!.indexOf('search files') + 2, row);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await setup.mockInput.typeText('app.ts');
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    await setup.renderOnce();
+    const frame = plain(setup.captureCharFrame());
+    expect(frame).toContain('SEARCH · 1 match');
+    expect(frame).toContain('app.ts');
+    await bus.shutdown();
+  });
+
   test('sidebar tabs can be switched with the mouse', async () => {
     const bus = new AsyncEventBus();
     bus.provide(ListDirectory, (req) => ({
@@ -1275,6 +1333,27 @@ describe('TUI renderer', () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
     await setup.renderOnce();
     expect(setup.renderer.currentFocusedRenderable).not.toBeNull();
+    await bus.shutdown();
+  });
+
+  test('dragging the sidebar divider resizes it', async () => {
+    const { bus, setup } = await mountedTui();
+    await setup.renderOnce();
+    setup.mockInput.pressKey('s', { ctrl: true });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    await setup.renderOnce();
+    const before = plain(setup.captureCharFrame()).split('\n');
+    const beforeX = before.find((line) => line.includes('STATUS'))?.indexOf('STATUS') ?? -1;
+    expect(beforeX).toBeGreaterThan(0);
+
+    // Clicking the divider cycles to the next width preset.
+    await setup.mockMouse.click(100 - 30 - 1, 8);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    await setup.renderOnce();
+    const after = plain(setup.captureCharFrame()).split('\n');
+    const afterX = after.find((line) => line.includes('STATUS'))?.indexOf('STATUS') ?? -1;
+    expect(afterX).toBeGreaterThan(0);
+    expect(afterX).toBeLessThan(beforeX);
     await bus.shutdown();
   });
 
@@ -1562,6 +1641,130 @@ describe('TUI renderer', () => {
     expect(feedback).toHaveLength(2);
     expect(feedback[0]?.positive).toBe(true);
     expect(feedback[1]?.positive).toBe(false);
+    await bus.shutdown();
+  });
+
+  test('Ctrl+F opens an inline session search box', async () => {
+    const { bus, setup } = await mountedTui();
+    setup.mockInput.pressKey('f', { ctrl: true });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await setup.renderOnce();
+    expect(plain(setup.captureCharFrame())).toContain('搜索用户输入');
+
+    await setup.mockInput.typeText('there');
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await setup.renderOnce();
+    const frame = plain(setup.captureCharFrame());
+    expect(frame).toContain('1/1');
+    expect(frame).toContain('Hi there');
+
+    setup.mockInput.pressKey('escape');
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    await setup.renderOnce();
+    expect(plain(setup.captureCharFrame())).not.toContain('搜索用户输入');
+    await bus.shutdown();
+  });
+
+  test('session search includes the current session title', async () => {
+    const { bus, setup } = await mountedTui();
+    bus.publish(
+      new SessionTitleUpdated({ sessionId: 's1', agentId: 'main', title: 'Project Alpha' }),
+    );
+    await bus.idle();
+    await setup.renderOnce();
+    setup.mockInput.pressKey('f', { ctrl: true });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await setup.mockInput.typeText('alpha');
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await setup.renderOnce();
+    const frame = plain(setup.captureCharFrame());
+    expect(frame).toContain('标题匹配 · 全部消息');
+    expect(frame).toContain('Project Alpha');
+    await bus.shutdown();
+  });
+
+  test('session search lists matching sessions from the current workspace', async () => {
+    const { bus, setup } = await mountedTui();
+    bus.provide(ListSessions, () => [
+      {
+        sessionId: 'other-alpha',
+        createdAt: '2026-01-02T00:00:00Z',
+        updatedAt: '2026-01-02T00:00:00Z',
+        firstMessage: 'alpha project discussion',
+        messageCount: 4,
+        title: 'Alpha project',
+        workspace: process.cwd(),
+      },
+    ]);
+    setup.mockInput.pressKey('f', { ctrl: true });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await setup.mockInput.typeText('alpha');
+    await new Promise((resolve) => setTimeout(resolve, 260));
+    await setup.renderOnce();
+    const frame = plain(setup.captureCharFrame());
+    expect(frame).toContain('其他会话');
+    expect(frame).toContain('Alpha project');
+    await bus.shutdown();
+  });
+
+  test('Enter cycles through session search matches', async () => {
+    const { bus, setup } = await mountedTui();
+    bus.publish(new TurnStarted({ sessionId: 's1', turnId: 't2', userInput: 'second question' }));
+    bus.publish(
+      new TurnCompleted({
+        sessionId: 's1',
+        turnId: 't2',
+        content: 'another there',
+        messages: [],
+      }),
+    );
+    await bus.idle();
+    await setup.renderOnce();
+    setup.mockInput.pressKey('f', { ctrl: true });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await setup.mockInput.typeText('there');
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    await setup.renderOnce();
+    expect(plain(setup.captureCharFrame())).toContain('1/2');
+
+    setup.mockInput.pressArrow('down');
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await setup.renderOnce();
+    expect(plain(setup.captureCharFrame())).toContain('2/2');
+
+    setup.mockInput.pressEnter();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    await setup.renderOnce();
+    expect(plain(setup.captureCharFrame())).not.toContain('搜索用户输入');
+    await bus.shutdown();
+  });
+
+  test('arrow selection includes other-workspace session results', async () => {
+    const { bus, setup } = await mountedTui();
+    bus.provide(ListSessions, () => [
+      {
+        sessionId: 'other-there',
+        createdAt: '2026-01-02T00:00:00Z',
+        updatedAt: '2026-01-02T00:00:00Z',
+        firstMessage: 'there project discussion',
+        messageCount: 4,
+        title: 'there project',
+        workspace: process.cwd(),
+      },
+    ]);
+    setup.mockInput.pressKey('f', { ctrl: true });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await setup.mockInput.typeText('there');
+    await new Promise((resolve) => setTimeout(resolve, 260));
+    await setup.renderOnce();
+    expect(plain(setup.captureCharFrame())).toContain('1/2');
+
+    setup.mockInput.pressArrow('down');
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    await setup.renderOnce();
+    const frame = plain(setup.captureCharFrame());
+    expect(frame).toContain('2/2');
+    expect(frame).toContain('❯ there project');
     await bus.shutdown();
   });
 

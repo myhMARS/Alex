@@ -135,6 +135,12 @@ function messageContent(message: { content?: unknown }): string {
   return message.content == null ? '' : String(message.content);
 }
 
+function compactPath(path: string, max = 22): string {
+  const normalized = path.replace(/\\/g, '/');
+  if (normalized.length <= max) return normalized;
+  return `…${normalized.slice(-(max - 1))}`;
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -260,6 +266,7 @@ export interface TuiSnapshot {
   fileTree: FileTreeSnapshot;
   fileRows: TuiFileRow[];
   fileSelected: number;
+  fileQuery: string;
   thinkingExpanded: boolean;
   skillsExpanded: boolean;
   toolOutputExpanded: boolean;
@@ -312,6 +319,7 @@ const HELP_TEXT = [
   '  /new             新建会话（清空视图并切换新 session）',
   '  /quit            退出',
   '',
+  '  Ctrl+F           搜索当前会话与同工作区其他会话',
   '  Ctrl+T           展开/收起 thinking',
   '  Ctrl+K           展开/收起 skills',
   '  Ctrl+O           展开/收起工具输出',
@@ -341,6 +349,7 @@ export class TuiModule implements Module {
   private sessionTitle = '';
   private sessionChoices: SessionMeta[] = [];
   private sessionFilter = '';
+  private sessionScope: 'workspace' | 'all' = 'all';
   private mcpStatusMessage = '';
   private mcpServers: Record<string, unknown>[] = [];
   private readonly mcpExpanded = new Set<number>();
@@ -358,6 +367,9 @@ export class TuiModule implements Module {
   private readonly children = new Map<string, FileTreeEntry[]>();
   private fileRows: TuiFileRow[] = [];
   private fileSelected = 0;
+  private fileQuery = '';
+  private fileSearchRows: TuiFileRow[] | null = null;
+  private fileSearchToken = 0;
   private selectedPath = '';
   private sidebarTimer: ReturnType<typeof setInterval> | null = null;
   private thinkingExpanded = false;
@@ -781,6 +793,48 @@ export class TuiModule implements Module {
     return this.sessionFilter;
   }
 
+  /** Limit /resume-style session lists to the current workspace. */
+  setSessionScope(scope: 'workspace' | 'all'): void {
+    this.sessionScope = scope;
+  }
+
+  get currentSessionScope(): 'workspace' | 'all' {
+    return this.sessionScope;
+  }
+
+  /** Search titles/first messages of other sessions in the same workspace. */
+  async searchWorkspaceSessions(query: string, limit = 6): Promise<SessionMeta[]> {
+    const bus = this.bus;
+    const needle = query.trim().toLowerCase().replace(/\s+/g, ' ');
+    if (!bus || !needle) return [];
+    try {
+      const sessions = await bus.request(new ListSessions());
+      const terms = needle.split(' ').filter(Boolean);
+      return sessions
+        .filter((session) => session.sessionId !== this.sessionId)
+        .filter((session) => this.sessionInCurrentWorkspace(session))
+        .filter((session) => {
+          const haystack = [session.title ?? '', session.firstMessage]
+            .join(' ')
+            .toLowerCase()
+            .replace(/\s+/g, ' ');
+          return terms.every((term) => haystack.includes(term));
+        })
+        .slice(0, limit);
+    } catch {
+      return [];
+    }
+  }
+
+  private sessionInCurrentWorkspace(session: SessionMeta): boolean {
+    if (!session.workspace) return true; // legacy sessions stay visible
+    const cwd = process.cwd().replace(/\\/g, '/');
+    const workspace = session.workspace.replace(/\\/g, '/');
+    return process.platform === 'win32'
+      ? workspace.toLowerCase() === cwd.toLowerCase()
+      : workspace === cwd;
+  }
+
   /** Rename a session by 1-based list index or session id. */
   async renameSession(target: number | string, title: string): Promise<{ ok: boolean; message: string }> {
     const meta = this.resolveSession(target);
@@ -872,42 +926,6 @@ export class TuiModule implements Module {
     } catch (error) {
       return { ok: false, message: `导出失败：${errorMessage(error)}` };
     }
-  }
-
-  /** Search user/assistant/tool text inside the current session view. */
-  searchCurrentSession(query: string): { ok: boolean; message: string } {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return { ok: false, message: '用法：/find <关键词>' };
-    const matches: string[] = [];
-    this.viewState.turns.forEach((turn, turnIndex) => {
-      if ((turn.agentId || 'main') !== this.viewAgentId) return;
-      const fields: Array<[string, string]> = [
-        ['user', turn.userInput],
-        ['assistant', turn.content],
-        ...turn.tools.map((tool) => [`tool:${tool.name}`, tool.output ?? ''] as [string, string]),
-      ];
-      for (const [label, text] of fields) {
-        const index = text.toLowerCase().indexOf(needle);
-        if (index < 0) continue;
-        const start = Math.max(0, index - 36);
-        const snippet = text
-          .slice(start, index + needle.length + 64)
-          .replace(/\s+/g, ' ')
-          .trim();
-        matches.push(
-          `${turnIndex + 1}. [${label}] ${start > 0 ? '…' : ''}${snippet}${start + needle.length + 64 < text.length ? '…' : ''}`,
-        );
-      }
-    });
-    this.page = {
-      kind: 'search',
-      title: '会话搜索',
-      body:
-        `查询：${query}\n匹配：${matches.length} 条\n\n` +
-        (matches.length > 0 ? matches.slice(0, 80).join('\n') : '（无匹配）'),
-    };
-    this.refresh();
-    return { ok: true, message: `找到 ${matches.length} 条匹配` };
   }
 
   private resolveSession(target: number | string): SessionMeta | undefined {
@@ -1413,19 +1431,75 @@ export class TuiModule implements Module {
     };
   }
 
+  /** Filter the file tree by path; an empty query restores the expanded tree. */
+  async setFileQuery(query: string): Promise<void> {
+    const next = query.trim();
+    this.fileQuery = next;
+    const token = ++this.fileSearchToken;
+    if (!next) {
+      this.fileSearchRows = null;
+      this.fileSelected = 0;
+      this.refresh();
+      return;
+    }
+    const bus = this.bus;
+    if (!bus) return;
+    const needle = next.toLowerCase();
+    const matches: TuiFileRow[] = [];
+    const visit = async (dir: string, depth: number): Promise<void> => {
+      if (token !== this.fileSearchToken || depth > 8 || matches.length >= 2_000) return;
+      let entries: TuiFileRow[] = [];
+      try {
+        const snapshot = await bus.request(new ListDirectory(dir));
+        entries = snapshot.entries as TuiFileRow[];
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (token !== this.fileSearchToken) return;
+        if (entry.path.toLowerCase().includes(needle)) {
+          matches.push({
+            ...entry,
+            name: entry.path,
+            depth: 0,
+            expanded: false,
+            gitStatus:
+              entry.type === 'file'
+                ? this.fileTree.gitStatus[entry.path] ?? ''
+                : this.directoryGitStatus(entry.path),
+          });
+        }
+        if (entry.type === 'dir') await visit(entry.path, depth + 1);
+        if (matches.length >= 2_000) return;
+      }
+    };
+    await visit('', 0);
+    if (token !== this.fileSearchToken) return;
+    this.fileSearchRows = matches;
+    this.fileSelected = 0;
+    this.selectedPath = matches[0]?.path ?? '';
+    this.refresh();
+  }
+
+  private activeFileRows(): TuiFileRow[] {
+    return this.fileSearchRows ?? this.fileRows;
+  }
+
   /** Move the file-tree cursor by `delta` rows. */
   moveFileSelection(delta: number): void {
-    if (this.fileRows.length === 0) return;
+    const rows = this.activeFileRows();
+    if (rows.length === 0) return;
     this.fileSelected = Math.max(
       0,
-      Math.min(this.fileRows.length - 1, this.fileSelected + delta),
+      Math.min(rows.length - 1, this.fileSelected + delta),
     );
-    this.selectedPath = this.fileRows[this.fileSelected]?.path ?? '';
+    this.selectedPath = rows[this.fileSelected]?.path ?? '';
     this.refresh();
   }
 
   /** Expand the selected directory (no-op for files). */
   async expandSelectedDir(): Promise<void> {
+    if (this.fileSearchRows) return;
     const row = this.fileRows[this.fileSelected];
     if (row?.type !== 'dir' || this.expandedDirs.has(row.path)) return;
     this.expandedDirs.add(row.path);
@@ -1446,6 +1520,7 @@ export class TuiModule implements Module {
 
   /** Collapse the selected directory, or jump to its parent directory. */
   collapseSelectedDir(): void {
+    if (this.fileSearchRows) return;
     const row = this.fileRows[this.fileSelected];
     if (!row) return;
     if (row.type === 'dir' && this.expandedDirs.has(row.path)) {
@@ -1468,6 +1543,7 @@ export class TuiModule implements Module {
 
   /** Toggle the selected directory (used by Enter). */
   async toggleSelectedDir(): Promise<void> {
+    if (this.fileSearchRows) return;
     const row = this.fileRows[this.fileSelected];
     if (row?.type !== 'dir') return;
     if (this.expandedDirs.has(row.path)) this.collapseSelectedDir();
@@ -2236,6 +2312,9 @@ export class TuiModule implements Module {
       );
     }
 
+    if (this.sessionScope === 'workspace') {
+      sessions = sessions.filter((session) => this.sessionInCurrentWorkspace(session));
+    }
     const rawFilter = this.sessionFilter.trim();
     const lower = rawFilter.toLowerCase();
     const showArchived = lower === 'archived';
@@ -2257,6 +2336,7 @@ export class TuiModule implements Module {
         session.sessionId,
         session.title ?? '',
         session.firstMessage,
+        session.workspace ?? '',
         formatSessionTime(when),
         when,
       ]
@@ -2277,9 +2357,10 @@ export class TuiModule implements Module {
       return (b.updatedAt ?? b.createdAt).localeCompare(a.updatedAt ?? a.createdAt);
     });
     this.sessionChoices = filtered;
+    const where = this.sessionScope === 'workspace' ? '当前工作区' : '所有工作区';
     const scope = rawFilter
-      ? `筛选：${rawFilter} · ${filtered.length} 个会话`
-      : `共 ${filtered.length} 个会话（置顶优先 · 已归档默认隐藏）`;
+      ? `筛选：${rawFilter} · ${filtered.length} 个会话 · ${where}`
+      : `共 ${filtered.length} 个会话 · ${where}（置顶优先 · 已归档默认隐藏）`;
     if (filtered.length === 0) {
       return `${scope}\n\n${rawFilter ? '没有匹配的会话。' : '暂无已保存的会话。'}`;
     }
@@ -2291,12 +2372,15 @@ export class TuiModule implements Module {
         const message = session.firstMessage.replace(/\s+/g, ' ').trim();
         const title = session.title?.trim() || session.sessionId;
         const flags = `${session.pinned ? ' · pinned' : ''}${session.archived ? ' · archived' : ''}`;
+        const workspace = session.workspace
+          ? ` · ${compactPath(session.workspace)}`
+          : '';
         const actions =
           `${session.pinned ? '[取消置顶]' : '[置顶]'} ` +
           `${session.archived ? '[恢复]' : '[归档]'} [标题] [导出] [删除]`;
         return [
           `${String(index + 1).padStart(2, ' ')}. ${title}${flags}\t${actions}`,
-          `    ${title === session.sessionId ? '' : `${session.sessionId} · `}${when} · ${session.messageCount} msgs`,
+          `    ${title === session.sessionId ? '' : `${session.sessionId} · `}${when} · ${session.messageCount} msgs${workspace}`,
           session.parentSessionId
             ? `    ↳ fork of ${session.parentSessionId}${session.forkBoundarySeq !== undefined ? ` @ seq ${session.forkBoundarySeq}` : ''}`
             : '',
@@ -2306,7 +2390,7 @@ export class TuiModule implements Module {
           .filter(Boolean)
           .join('\n');
       }),
-      '点击按钮操作 · 数字加载 · /rename <n> <标题> · /find <关键词> 会话内搜索',
+      '点击按钮操作 · 数字加载 · /rename <n> <标题> · Ctrl+F 会话内搜索',
     ].join('\n');
   }
 
@@ -2365,8 +2449,9 @@ export class TuiModule implements Module {
       sidebarAgents: this.sidebarAgents,
       viewAgentId: this.viewAgentId,
       fileTree: this.fileTree,
-      fileRows: this.fileRows,
+      fileRows: this.activeFileRows(),
       fileSelected: this.fileSelected,
+      fileQuery: this.fileQuery,
       thinkingExpanded: this.thinkingExpanded,
       skillsExpanded: this.skillsExpanded,
       toolOutputExpanded: this.toolOutputExpanded,

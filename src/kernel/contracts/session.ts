@@ -22,6 +22,8 @@ export interface SessionMeta {
   forkBoundarySeq?: number;
   /** Agent that produced this session, derived from turn_started events. */
   agentId?: string;
+  /** Absolute working directory this session belongs to. */
+  workspace?: string;
 }
 
 export interface SessionEventRecord {
@@ -48,6 +50,8 @@ export interface SessionBundle {
   forkBoundarySeq?: number;
   /** Agent that produced this session, derived from turn_started events. */
   agentId?: string;
+  /** Absolute working directory this session belongs to. */
+  workspace?: string;
 }
 
 export class ListSessions extends Request<SessionMeta[]> {}

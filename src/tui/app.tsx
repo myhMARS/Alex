@@ -5,9 +5,10 @@ import { rm, stat } from 'node:fs/promises';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useKeyboard, useRenderer, useTerminalDimensions } from '@opentui/react';
 import { RGBA } from '@opentui/core';
-import type { InputRenderable, PasteEvent } from '@opentui/core';
+import type { InputRenderable, PasteEvent, ScrollBoxRenderable } from '@opentui/core';
 
 import type { AttachmentDTO } from '../kernel/dto/message';
+import type { SessionMeta } from '../kernel/contracts/session';
 import { attachmentLabel, loadAttachment } from '../attachments/loader';
 import { copyTextToClipboard, readClipboardImagePath } from '../attachments/clipboard';
 import type {
@@ -39,32 +40,51 @@ interface PaletteCommand {
 }
 
 const PALETTE_MAX_VISIBLE = 10;
-const SIDEBAR_WIDTH = 30;
+const DEFAULT_SIDEBAR_WIDTH = 30;
+const MIN_SIDEBAR_WIDTH = 22;
+const MAX_SIDEBAR_WIDTH = 64;
+const SIDEBAR_WIDTH = DEFAULT_SIDEBAR_WIDTH;
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-const PAGE_COMMANDS: Record<string, TuiPageKind> = {
-  '/help': 'help',
-  '/h': 'help',
-  '/skills': 'skills',
-  '/skill': 'skills',
-  '/cron': 'cron',
-  '/mcp': 'mcp',
-  '/sessions': 'sessions',
-  '/resume': 'sessions',
-  '/reflections': 'reflections',
-  '/reflect': 'reflections',
-  '/context': 'context',
-  '/ctx': 'context',
-  '/settings': 'settings',
-  '/config': 'settings',
-  '/log': 'log',
-  '/prompt': 'prompt',
-  '/agents': 'agents',
-  '/mailbox': 'mailbox',
-  '/lineage': 'lineage',
-  '/tasks': 'tasks',
-  '/teams': 'teams',
-};
+interface PageCommandSpec {
+  name: string;
+  aliases: string[];
+  page: TuiPageKind;
+  description: string;
+}
+
+const PAGE_COMMAND_SPECS: PageCommandSpec[] = [
+  { name: '/help', aliases: ['/h'], page: 'help', description: '显示命令帮助' },
+  { name: '/skills', aliases: ['/skill'], page: 'skills', description: '已学习技能列表' },
+  { name: '/cron', aliases: [], page: 'cron', description: '定时任务列表' },
+  { name: '/mcp', aliases: [], page: 'mcp', description: 'MCP 服务器状态' },
+  { name: '/context', aliases: ['/ctx'], page: 'context', description: '当前对话上下文窗口状态' },
+  { name: '/settings', aliases: ['/config'], page: 'settings', description: '模型设置（API Key / 上下文 / 输出 token）' },
+  { name: '/teams', aliases: [], page: 'teams', description: '查看所有 Team 汇总' },
+  { name: '/tasks', aliases: [], page: 'tasks', description: '查看 Agent task 详情（当前 session）' },
+  { name: '/lineage', aliases: [], page: 'lineage', description: '查看 Agent / Session 谱系树' },
+  { name: '/mailbox', aliases: [], page: 'mailbox', description: '查看 Agent mailbox' },
+  { name: '/agents', aliases: [], page: 'agents', description: '查看 Agent Team 与任务状态' },
+  { name: '/prompt', aliases: [], page: 'prompt', description: '查看 system prompt 组装结果' },
+  { name: '/log', aliases: [], page: 'log', description: '当前会话事件日志（含压缩前原始事件）' },
+  { name: '/reflections', aliases: [], page: 'reflections', description: '最近的技能反思记录' },
+];
+
+/** Single source of truth: canonical command + aliases → page. */
+const PAGE_COMMANDS: Record<string, TuiPageKind> = Object.fromEntries(
+  PAGE_COMMAND_SPECS.flatMap((spec) =>
+    [spec.name, ...spec.aliases].map((name) => [name, spec.page] as const),
+  ),
+);
+
+function dedupeCommands(commands: PaletteCommand[]): PaletteCommand[] {
+  const seen = new Set<string>();
+  return commands.filter((command) => {
+    if (seen.has(command.name)) return false;
+    seen.add(command.name);
+    return true;
+  });
+}
 
 export interface TuiAppProps {
   tui: TuiModule;
@@ -105,6 +125,20 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
   const [inlineDraft, setInlineDraft] = useState('');
   const [pendingTeamDispose, setPendingTeamDispose] = useState<string | null>(null);
   const [pendingSessionDelete, setPendingSessionDelete] = useState<number | null>(null);
+  const [fileSearch, setFileSearch] = useState('');
+  const [fileSearchFocused, setFileSearchFocused] = useState(false);
+  const [sessionSearchActive, setSessionSearchActive] = useState(false);
+  const [sessionSearch, setSessionSearch] = useState('');
+  const [otherSessionMatches, setOtherSessionMatches] = useState<SessionMeta[]>([]);
+  const [sessionSearchIndex, setSessionSearchIndex] = useState(0);
+  const [pendingJumpTurnId, setPendingJumpTurnId] = useState<string | null>(null);
+  const sessionSearchMatchCountRef = useRef(0);
+  const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
+  const [resizingSidebar, setResizingSidebar] = useState(false);
+  const sidebarDragged = useRef(false);
+  const fileSearchRef = useRef<InputRenderable | null>(null);
+  const sessionSearchRef = useRef<InputRenderable | null>(null);
+  const chatScrollRef = useRef<ScrollBoxRenderable | null>(null);
   const approvalMaxOffset = approvalPreview
     ? Math.max(0, approvalPreview.lines.length - approvalVisibleLines)
     : 0;
@@ -130,9 +164,12 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
   }, [tui, sessionId]);
 
   const paletteCommands = useMemo<PaletteCommand[]>(
-    () => [
-      { name: '/help', description: '显示命令帮助', run: () => void tui.showPage('help') },
-      { name: '/skills', description: '已学习技能列表', run: () => void tui.showPage('skills') },
+    () => dedupeCommands([
+      ...PAGE_COMMAND_SPECS.map((spec) => ({
+        name: spec.name,
+        description: spec.description,
+        run: () => void tui.showPage(spec.page),
+      })),
       {
         name: '/reflect',
         description: '立即触发一次技能反思',
@@ -146,32 +183,23 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
         description: '合并语义重复的 skills',
         run: () => void tui.mergeSkills().then((result) => tui.setToast(result.message)),
       },
-      { name: '/cron', description: '定时任务列表', run: () => void tui.showPage('cron') },
-      { name: '/mcp', description: 'MCP 服务器状态', run: () => void tui.showPage('mcp') },
       {
         name: '/sessions',
-        description: '会话列表 / 恢复历史会话',
-        run: () => void tui.showPage('sessions'),
+        description: '所有工作区的会话列表',
+        run: () => {
+          tui.setSessionScope('all');
+          tui.setSessionFilter('');
+          void tui.showPage('sessions');
+        },
       },
       {
-        name: '/settings',
-        description: '模型设置（API Key / 上下文 / 输出 token）',
-        run: () => void tui.showPage('settings'),
-      },
-      {
-        name: '/context',
-        description: '当前对话上下文窗口状态',
-        run: () => void tui.showPage('context'),
-      },
-      {
-        name: '/teams',
-        description: '查看所有 Team 汇总',
-        run: () => void tui.showPage('teams'),
-      },
-      {
-        name: '/tasks',
-        description: '查看 Agent task 详情（当前 session）',
-        run: () => void tui.showPage('tasks'),
+        name: '/resume',
+        description: '恢复当前工作区的会话',
+        run: () => {
+          tui.setSessionScope('workspace');
+          tui.setSessionFilter('');
+          void tui.showPage('sessions');
+        },
       },
       {
         name: '/task',
@@ -194,41 +222,11 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
         run: () => tui.setToast('用法：/set <key> <value>'),
       },
       {
-        name: '/resume',
-        description: '恢复历史主会话',
-        run: () => void tui.showPage('sessions'),
-      },
-      {
-        name: '/lineage',
-        description: '查看 Agent / Session 谱系树',
-        run: () => void tui.showPage('lineage'),
-      },
-      {
-        name: '/mailbox',
-        description: '查看 Agent mailbox',
-        run: () => void tui.showPage('mailbox'),
-      },
-      {
-        name: '/agents',
-        description: '查看 Agent Team 与任务状态',
-        run: () => void tui.showPage('agents'),
-      },
-      {
-        name: '/prompt',
-        description: '查看 system prompt 组装结果',
-        run: () => void tui.showPage('prompt'),
-      },
-      {
         name: '/reload-prompts',
         description: '重新读取用户 prompt / AGENTS.md',
         run: () => {
           void tui.reloadPrompts().then((result) => tui.setToast(result.message));
         },
-      },
-      {
-        name: '/log',
-        description: '当前会话事件日志（含压缩前原始事件）',
-        run: () => void tui.showPage('log'),
       },
       {
         name: '/checkpoint',
@@ -270,11 +268,6 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
         },
       },
       {
-        name: '/reflections',
-        description: '最近的技能反思记录',
-        run: () => void tui.showPage('reflections'),
-      },
-      {
         name: '/image',
         description: '发送图片：/image <path>',
         run: () => tui.setToast('用法：/image <path>'),
@@ -293,7 +286,7 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
       },
       { name: '/new', description: '新建会话', run: () => void tui.newSession() },
       { name: '/quit', description: '退出 Alex', run: onQuit },
-    ],
+    ]),
     [tui, onQuit],
   );
 
@@ -332,8 +325,17 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
     setPaletteDismissed(false);
   }, []);
 
+  useEffect(() => {
+    if (!sessionSearchActive) return;
+    const timer = setTimeout(() => sessionSearchRef.current?.focus(), 10);
+    return () => clearTimeout(timer);
+  }, [sessionSearchActive]);
+
   const focusComposer = useCallback(() => {
     if (approval || inlineEdit) return;
+    setFileSearchFocused(false);
+    setSessionSearchActive(false);
+    setSessionSearch('');
     inputRef.current?.focus();
   }, [approval, inlineEdit]);
 
@@ -385,6 +387,24 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
         return;
       }
       onQuit();
+      return;
+    }
+    if (key.ctrl && key.name === 'f') {
+      if (page || approval) return;
+      if (sessionSearchActive) {
+        setSessionSearchActive(false);
+        setSessionSearch('');
+        inputRef.current?.focus();
+      } else {
+        setSessionSearch('');
+        setSessionSearchActive(true);
+      }
+      return;
+    }
+    if (sessionSearchActive && key.name === 'escape') {
+      setSessionSearchActive(false);
+      setSessionSearch('');
+      inputRef.current?.focus();
       return;
     }
     if (key.ctrl && key.name === 't') {
@@ -475,6 +495,42 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
     if (key.name === 'escape' && pendingAttachments.length > 0) {
       setPendingAttachments([]);
       tui.setToast('已清空待发送附件');
+      return;
+    }
+    if (sessionSearchActive && (key.name === 'up' || key.name === 'down')) {
+      const count = sessionSearchMatchCountRef.current;
+      if (count > 0) {
+        setSessionSearchIndex((index) =>
+          (index + (key.name === 'down' ? 1 : -1) + count) % count,
+        );
+      }
+      return;
+    }
+    if (fileSearchFocused) {
+      if (key.name === 'escape') {
+        setFileSearchFocused(false);
+        setFileSearch('');
+        void tui.setFileQuery('');
+        inputRef.current?.focus();
+        return;
+      }
+      if (key.name === 'up') {
+        tui.moveFileSelection(-1);
+        return;
+      }
+      if (key.name === 'down') {
+        tui.moveFileSelection(1);
+        return;
+      }
+    }
+    if (sidebarVisible && (key.meta || key.option) && (key.name === 'left' || key.name === 'right')) {
+      const delta = key.name === 'left' ? 2 : -2;
+      setSidebarWidth((current) =>
+        Math.max(
+          MIN_SIDEBAR_WIDTH,
+          Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, width - 42), current + delta),
+        ),
+      );
       return;
     }
     if (inlineEdit && key.name === 'escape') {
@@ -685,13 +741,22 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
           return;
         }
       }
+      if (lower === '/resume') {
+        tui.setSessionScope('workspace');
+        tui.setSessionFilter('');
+        void tui.showPage('sessions');
+        clearInput();
+        return;
+      }
       if (lower === '/sessions') {
+        tui.setSessionScope('all');
         tui.setSessionFilter('');
         void tui.showPage('sessions');
         clearInput();
         return;
       }
       if (lower.startsWith('/sessions ')) {
+        tui.setSessionScope('all');
         tui.setSessionFilter(text.slice('/sessions'.length).trim());
         void tui.showPage('sessions');
         clearInput();
@@ -706,12 +771,6 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
         void tui.renameSession(target, renameMatch[2]!).then((result) => {
           tui.setToast(`${result.ok ? '✓' : '✗'} ${result.message}`);
         });
-        return;
-      }
-      if (lower.startsWith('/find ')) {
-        clearInput();
-        const result = tui.searchCurrentSession(text.slice('/find'.length).trim());
-        tui.setToast(`${result.ok ? '✓' : '✗'} ${result.message}`);
         return;
       }
       if (lower === '/export') {
@@ -927,7 +986,81 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
 
   const sidebarVisible =
     showSidebar && !snapshot.sidebarCollapsed && !approval && !page;
-  const contentWidth = Math.max(40, width - 2 - (sidebarVisible ? SIDEBAR_WIDTH : 0));
+  const searchNeedle = sessionSearch.trim().toLowerCase().replace(/\s+/g, ' ');
+  const titleMatches = Boolean(
+    sessionSearchActive &&
+      searchNeedle &&
+      textMatchesQuery(snapshot.sessionTitle, searchNeedle),
+  );
+  const filteredTurns = useMemo(() => {
+    if (!sessionSearchActive || !searchNeedle) return snapshot.turns;
+    if (titleMatches) return [...snapshot.turns, ...snapshot.streaming];
+    return [...snapshot.turns, ...snapshot.streaming].filter((turn) =>
+      sessionTurnMatches(turn, searchNeedle),
+    );
+  }, [snapshot.turns, snapshot.streaming, sessionSearchActive, searchNeedle, titleMatches]);
+
+  useEffect(() => {
+    setSessionSearchIndex(0);
+  }, [searchNeedle, sessionSearchActive]);
+
+  useEffect(() => {
+    sessionSearchMatchCountRef.current =
+      filteredTurns.length + otherSessionMatches.length;
+  }, [filteredTurns.length, otherSessionMatches.length]);
+
+  useEffect(() => {
+    if (!sessionSearchActive || !searchNeedle || filteredTurns.length === 0) return;
+    if (sessionSearchIndex >= filteredTurns.length) return;
+    const index = Math.min(Math.max(0, sessionSearchIndex), filteredTurns.length - 1);
+    const turn = filteredTurns[index];
+    if (!turn) return;
+    chatScrollRef.current?.scrollChildIntoView(`turn-${turn.turnId}`);
+  }, [sessionSearchActive, searchNeedle, sessionSearchIndex, filteredTurns]);
+
+  const closeAndJumpSearch = useCallback(() => {
+    const total = filteredTurns.length + otherSessionMatches.length;
+    const index = Math.min(Math.max(0, sessionSearchIndex), Math.max(0, total - 1));
+    const turn = filteredTurns[index];
+    const other = turn ? undefined : otherSessionMatches[index - filteredTurns.length];
+    if (turn) setPendingJumpTurnId(turn.turnId);
+    setSessionSearchActive(false);
+    setSessionSearch('');
+    setOtherSessionMatches([]);
+    inputRef.current?.focus();
+    if (other) void tui.loadSession(other.sessionId);
+  }, [filteredTurns, otherSessionMatches, sessionSearchIndex, tui]);
+
+  useEffect(() => {
+    if (sessionSearchActive || !pendingJumpTurnId) return;
+    const timer = setTimeout(() => {
+      chatScrollRef.current?.scrollChildIntoView(`turn-${pendingJumpTurnId}`);
+      setPendingJumpTurnId(null);
+    }, 20);
+    return () => clearTimeout(timer);
+  }, [sessionSearchActive, pendingJumpTurnId]);
+
+  useEffect(() => {
+    if (!sessionSearchActive || !searchNeedle) {
+      setOtherSessionMatches([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void tui.searchWorkspaceSessions(sessionSearch).then((sessions) => {
+        if (!cancelled) setOtherSessionMatches(sessions);
+      });
+    }, 150);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [sessionSearchActive, searchNeedle, sessionSearch, tui]);
+
+  const contentWidth = Math.max(
+    40,
+    width - 2 - (sidebarVisible ? sidebarWidth + 1 : 0),
+  );
 
 
   return (
@@ -1028,14 +1161,22 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
             <Welcome width={contentWidth} />
           ) : (
             <scrollbox
+              ref={chatScrollRef as never}
               style={{ flexGrow: 1, width: '100%' }}
               onMouseDown={() => focusComposer()}
-              stickyScroll
+              stickyScroll={!sessionSearchActive}
               stickyStart="bottom"
               scrollbarOptions={{ visible: false }}
             >
               <Chat
                 turns={snapshot.turns}
+                highlightTurnId={
+                  sessionSearchActive
+                    ? sessionSearchIndex < filteredTurns.length
+                      ? filteredTurns[sessionSearchIndex]?.turnId
+                      : undefined
+                    : (pendingJumpTurnId ?? undefined)
+                }
                 width={contentWidth}
                 thinkingExpanded={snapshot.thinkingExpanded}
                 skillsExpanded={snapshot.skillsExpanded}
@@ -1048,7 +1189,50 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
           )}
         </box>
         {sidebarVisible ? (
+          <box
+            style={{
+              width: 1,
+              height: '100%',
+              flexShrink: 0,
+              backgroundColor: resizingSidebar ? theme.accent : theme.border,
+            }}
+            onMouseDown={(event) => {
+              event.stopPropagation?.();
+              sidebarDragged.current = false;
+              setResizingSidebar(true);
+            }}
+            onMouseDrag={(event) => {
+              sidebarDragged.current = true;
+              setSidebarWidth(
+                Math.max(
+                  MIN_SIDEBAR_WIDTH,
+                  Math.min(
+                    MAX_SIDEBAR_WIDTH,
+                    Math.max(MIN_SIDEBAR_WIDTH, width - 42),
+                    width - event.x - 1,
+                  ),
+                ),
+              );
+            }}
+            onMouseDragEnd={() => {
+              setResizingSidebar(false);
+            }}
+            onMouseUp={() => {
+              if (!sidebarDragged.current) {
+                // Clicking the divider cycles through useful widths; dragging
+                // remains available for arbitrary sizing.
+                const max = Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, width - 42));
+                setSidebarWidth((current) =>
+                  current + 6 <= max ? current + 6 : MIN_SIDEBAR_WIDTH,
+                );
+              }
+              setResizingSidebar(false);
+            }}
+          />
+        ) : null}
+        {sidebarVisible ? (
           <Sidebar
+            width={sidebarWidth}
             sidebar={snapshot.sidebar}
             sessionId={activeSessionId}
             reflection={snapshot.reflection}
@@ -1062,6 +1246,17 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
             fileTree={snapshot.fileTree}
             fileRows={snapshot.fileRows}
             fileSelected={snapshot.fileSelected}
+            fileQuery={snapshot.fileQuery}
+            fileSearchFocused={fileSearchFocused}
+            fileSearchRef={fileSearchRef}
+            onFileSearchFocus={() => {
+              setFileSearchFocused(true);
+              fileSearchRef.current?.focus();
+            }}
+            onFileSearchChange={(value) => {
+              setFileSearch(value);
+              void tui.setFileQuery(value);
+            }}
             onTabSelect={(next) => void tui.setSidebarTab(next)}
           />
         ) : null}
@@ -1099,7 +1294,7 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
       <box
         style={{
           height: 2,
-          border: ['top'],
+          border: sessionSearchActive ? [] : ['top'],
           borderColor: theme.border,
           flexDirection: 'row',
           paddingLeft: 1,
@@ -1117,18 +1312,46 @@ export function TuiApp({ tui, sessionId, toolCount, onQuit }: TuiAppProps) {
                 ? 'click a setting value to edit · Esc close'
                   : page
                     ? ':q close page · /help for commands'
-                    : 'Message Alex… (/help for commands, /quit to exit)'
+                    : 'Message Alex… (Ctrl+F search · /help · /quit)'
           }
           onInput={(value) => setInputValue(value)}
           onPaste={(event) => {
             void handlePaste(event);
           }}
           onSubmit={handleSubmit}
-          focused={!approval && !inlineEdit}
+          focused={!approval && !inlineEdit && !fileSearchFocused && !sessionSearchActive}
         />
       </box>
 
       <StatusBar snapshot={snapshot} width={width} />
+
+      {sessionSearchActive && !page && !approval ? (
+        <SearchOverlay
+          query={sessionSearch}
+          matches={filteredTurns}
+          otherSessions={otherSessionMatches}
+          activeIndex={sessionSearchIndex}
+          titleMatches={titleMatches}
+          inputRef={sessionSearchRef}
+          width={width}
+          height={height}
+          onInput={(value) => setSessionSearch(value)}
+          onSubmit={closeAndJumpSearch}
+          onClose={() => {
+            setSessionSearchActive(false);
+            setSessionSearch('');
+            setOtherSessionMatches([]);
+            inputRef.current?.focus();
+          }}
+          onSelectMatch={(index) => setSessionSearchIndex(index)}
+          onSelectSession={(otherSessionId) => {
+            setSessionSearchActive(false);
+            setSessionSearch('');
+            setOtherSessionMatches([]);
+            void tui.loadSession(otherSessionId);
+          }}
+        />
+      ) : null}
 
       {snapshot.toast ? (
         <box
@@ -1194,6 +1417,191 @@ function QueueDock({
       {messages.length > visible.length ? (
         <text fg={theme.border}>{`  … ${messages.length - visible.length} more`}</text>
       ) : null}
+    </box>
+  );
+}
+
+function searchResultSnippet(turn: TurnView, needle: string): { label: string; text: string } {
+  const candidates: Array<[string, string]> = [
+    ['YOU', turn.userInput],
+    ['ALEX', turn.content],
+  ];
+  const found = candidates.find(([, value]) => value && textMatchesQuery(value, needle));
+  const value = found?.[1] ?? turn.userInput ?? turn.content ?? '';
+  const firstTerm = needle.split(' ')[0] ?? '';
+  const lower = value.toLowerCase();
+  const index = Math.max(0, lower.indexOf(firstTerm));
+  const start = Math.max(0, index - 24);
+  const snippet = value
+    .slice(start, index + firstTerm.length + 64)
+    .replace(/\s+/g, ' ')
+    .trim();
+  return {
+    label: found?.[0] ?? 'MATCH',
+    text: `${start > 0 ? '…' : ''}${snippet}${start + firstTerm.length + 64 < value.length ? '…' : ''}`,
+  };
+}
+
+function SearchOverlay({
+  query,
+  matches,
+  otherSessions,
+  activeIndex,
+  titleMatches,
+  inputRef,
+  width,
+  height,
+  onInput,
+  onSubmit,
+  onClose,
+  onSelectMatch,
+  onSelectSession,
+}: {
+  query: string;
+  matches: TurnView[];
+  otherSessions: SessionMeta[];
+  activeIndex: number;
+  titleMatches: boolean;
+  inputRef: React.RefObject<InputRenderable | null>;
+  width: number;
+  height: number;
+  onInput: (value: string) => void;
+  onSubmit: () => void;
+  onClose: () => void;
+  onSelectMatch: (index: number) => void;
+  onSelectSession: (sessionId: string) => void;
+}) {
+  const needle = query.trim().toLowerCase().replace(/\s+/g, ' ');
+  const maxRows = 6;
+  const total = matches.length + otherSessions.length;
+  const active = Math.min(activeIndex, Math.max(0, total - 1));
+  const currentActive = active < matches.length ? active : matches.length - 1;
+  const start = Math.max(
+    0,
+    Math.min(currentActive - Math.floor(maxRows / 2), Math.max(0, matches.length - maxRows)),
+  );
+  const visible = matches.slice(start, start + maxRows);
+  const otherActive = active - matches.length;
+  const otherStart = Math.max(
+    0,
+    Math.min(otherActive - 1, Math.max(0, otherSessions.length - 3)),
+  );
+  const others = otherSessions.slice(otherStart, otherStart + 3);
+  const panelWidth = Math.min(94, Math.max(54, width - 10));
+  const estimatedHeight = 9 + visible.length + (others.length > 0 ? others.length + 2 : 0);
+  const top = Math.max(2, Math.floor((height - estimatedHeight) / 2));
+  const left = Math.max(1, Math.floor((width - panelWidth) / 2));
+  return (
+    <box
+      style={{
+        position: 'absolute',
+        top,
+        left,
+        width: panelWidth,
+        zIndex: 40,
+        border: true,
+        borderStyle: 'rounded',
+        borderColor: RGBA.fromInts(137, 180, 250, 210),
+        backgroundColor: RGBA.fromInts(18, 18, 28, 235),
+        flexDirection: 'column',
+        paddingLeft: 1,
+        paddingRight: 1,
+      }}
+      onMouseDown={(event) => event.stopPropagation?.()}
+    >
+      <box style={{ flexDirection: 'row', height: 1 }}>
+        <text fg={theme.accent}>
+          <strong>⌕ SEARCH</strong>
+        </text>
+        <text fg={theme.border}>  │  </text>
+        <input
+          ref={inputRef}
+          style={{ flexGrow: 1 }}
+          placeholder="搜索用户输入 / AI 回复 / 会话标题…"
+          onInput={onInput}
+          onSubmit={onSubmit}
+          focused
+        />
+        <text fg={theme.muted}>ESC</text>
+      </box>
+      <text fg={theme.border}>{'─'.repeat(Math.max(1, panelWidth - 4))}</text>
+      {titleMatches ? (
+        <text fg={theme.skill}>标题匹配 · 全部消息</text>
+      ) : null}
+      {needle && matches.length === 0 && others.length === 0 ? (
+        <text fg={theme.warning}>没有匹配 · 换个关键词或 Esc 关闭</text>
+      ) : null}
+      {!needle ? (
+        <text fg={theme.muted}>输入关键词开始搜索</text>
+      ) : (
+        <>
+          {visible.map((turn, offset) => {
+            const index = start + offset;
+            const selected = index === active;
+            const snippet = searchResultSnippet(turn, needle);
+            return (
+              <box
+                key={`${turn.turnId}-${index}`}
+                style={{
+                  flexDirection: 'row',
+                  backgroundColor: selected ? ACTIVE_ROW_BG : undefined,
+                }}
+                onMouseDown={() => onSelectMatch(index)}
+              >
+                <text fg={selected ? theme.accent : theme.border}>{selected ? '❯ ' : '  '}</text>
+                <text fg={theme.skill}>{snippet.label.padEnd(6, ' ')}</text>
+                <text fg={selected ? theme.text : theme.muted}>
+                  {truncate(snippet.text, Math.max(12, panelWidth - 16))}
+                </text>
+              </box>
+            );
+          })}
+          {matches.length > visible.length ? (
+            <text fg={theme.border}>
+              {'  '}… {matches.length - visible.length} more · ↑↓ 或 Enter 切换
+            </text>
+          ) : null}
+          {matches.length > 0 ? (
+            <text fg={theme.muted}>
+              {'  '}
+              {active + 1}/{total} · ↑↓ 选择 · Enter 跳转并关闭
+            </text>
+          ) : null}
+        </>
+      )}
+      {others.length > 0 ? (
+        <>
+          <text fg={theme.border}>{'─'.repeat(Math.max(1, panelWidth - 4))}</text>
+          <text fg={theme.skill}>
+            <strong>其他会话</strong>
+            <span fg={theme.muted}>  点击切换</span>
+          </text>
+          {others.map((session, offset) => {
+            const index = matches.length + otherStart + offset;
+            const selected = index === active;
+            return (
+              <box
+                key={session.sessionId}
+                style={{
+                  flexDirection: 'row',
+                  backgroundColor: selected ? ACTIVE_ROW_BG : undefined,
+                }}
+                onMouseDown={() => onSelectSession(session.sessionId)}
+              >
+                <text fg={selected ? theme.accent : theme.border}>{selected ? '❯ ' : '▸ '}</text>
+                <text fg={selected ? theme.text : theme.muted}>
+                  {truncate(
+                    session.title?.trim() || session.sessionId,
+                    Math.max(12, panelWidth - 22),
+                  )}
+                </text>
+                <text fg={theme.muted}>  {session.messageCount} msgs</text>
+              </box>
+            );
+          })}
+        </>
+      ) : null}
+      <text fg={theme.border}>Esc 关闭</text>
     </box>
   );
 }
@@ -1342,8 +1750,23 @@ function Welcome({ width }: { width: number }) {
   );
 }
 
+function textMatchesQuery(text: string, needle: string): boolean {
+  const haystack = text.toLowerCase().replace(/\s+/g, ' ');
+  const terms = needle.split(' ').filter(Boolean);
+  return terms.every((term) => haystack.includes(term));
+}
+
+function sessionTurnMatches(turn: TurnView, needle: string): boolean {
+  // Session search deliberately covers only user input and assistant replies.
+  // Thinking, tool calls, tool output and attachments are excluded.
+  return textMatchesQuery([turn.userInput, turn.content].join(' '), needle);
+}
+
+
+
 function Chat({
   turns,
+  highlightTurnId,
   width,
   thinkingExpanded,
   skillsExpanded,
@@ -1353,6 +1776,7 @@ function Chat({
   onToggleToolTurn,
 }: {
   turns: TurnView[];
+  highlightTurnId?: string;
   width: number;
   thinkingExpanded: boolean;
   skillsExpanded: boolean;
@@ -1368,6 +1792,7 @@ function Chat({
         <TurnBlock
           key={`${turn.turnId}-${turn.userInput}`}
           turn={turn}
+          highlighted={turn.turnId === highlightTurnId}
           width={width}
           thinkingExpanded={thinkingExpanded}
           skillsExpanded={skillsExpanded}
@@ -1625,6 +2050,7 @@ function ProcessGroup({
 
 function TurnBlock({
   turn,
+  highlighted,
   width,
   thinkingExpanded,
   skillsExpanded,
@@ -1634,6 +2060,7 @@ function TurnBlock({
   onToggleToolGroup,
 }: {
   turn: TurnView;
+  highlighted?: boolean;
   width: number;
   thinkingExpanded: boolean;
   skillsExpanded: boolean;
@@ -1659,7 +2086,15 @@ function TurnBlock({
     turn.parts.some((part) => part.kind === 'compaction');
 
   return (
-    <box style={{ flexDirection: 'column', marginBottom: 1, width }}>
+    <box
+      id={`turn-${turn.turnId}`}
+      style={{
+        flexDirection: 'column',
+        marginBottom: 1,
+        width,
+        backgroundColor: highlighted ? RGBA.fromInts(49, 50, 68, 90) : undefined,
+      }}
+    >
       {turn.userInput ? (
         <box
           style={{
@@ -1824,7 +2259,23 @@ function shortenRoot(root: string): string {
   return normalizedRoot;
 }
 
+function fileGlyph(name: string): { glyph: string; color: string } {
+  const ext = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1).toLowerCase() : '';
+  if (['ts', 'tsx', 'js', 'jsx', 'py', 'go', 'rs', 'java', 'c', 'cpp', 'sh'].includes(ext)) {
+    return { glyph: '◆', color: theme.tool };
+  }
+  if (['md', 'txt', 'rst'].includes(ext)) return { glyph: '▤', color: theme.skill };
+  if (['json', 'yml', 'yaml', 'toml', 'ini', 'env'].includes(ext)) {
+    return { glyph: '⚙', color: theme.warning };
+  }
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'].includes(ext)) {
+    return { glyph: '▣', color: theme.user };
+  }
+  return { glyph: '·', color: theme.border };
+}
+
 function Sidebar({
+  width,
   sidebar,
   sessionId,
   reflection,
@@ -1836,8 +2287,14 @@ function Sidebar({
   fileTree,
   fileRows,
   fileSelected,
+  fileQuery,
+  fileSearchFocused,
+  fileSearchRef,
+  onFileSearchFocus,
+  onFileSearchChange,
   onTabSelect,
 }: {
+  width: number;
   sidebar: TuiSnapshot['sidebar'];
   sessionId: string;
   reflection: TuiSnapshot['reflection'];
@@ -1849,8 +2306,14 @@ function Sidebar({
   fileTree: TuiSnapshot['fileTree'];
   fileRows: TuiSnapshot['fileRows'];
   fileSelected: number;
+  fileQuery: string;
+  fileSearchFocused: boolean;
+  fileSearchRef: React.RefObject<InputRenderable | null>;
+  onFileSearchFocus: () => void;
+  onFileSearchChange: (value: string) => void;
   onTabSelect: (tab: TuiSnapshot['sidebarTab']) => void;
 }) {
+  const SIDEBAR_WIDTH = width;
   const treeRef = React.useRef<{ scrollTop: number } | null>(null);
   useEffect(() => {
     if (treeRef.current) {
@@ -1873,8 +2336,6 @@ function Sidebar({
       style={{
         width: SIDEBAR_WIDTH,
         flexShrink: 0,
-        border: ['left'],
-        borderColor: theme.border,
         paddingLeft: 1,
         flexDirection: 'column',
       }}
@@ -2032,14 +2493,44 @@ function Sidebar({
         </scrollbox>
       ) : (
         <>
-          <box style={{ flexDirection: 'column', width: SIDEBAR_WIDTH - 2 }}>
-            <text fg={theme.muted}>ROOT</text>
+          <box style={{ flexDirection: 'column', width: SIDEBAR_WIDTH - 2, paddingTop: 1 }}>
+            <text fg={theme.accent}>
+              <strong>ROOT</strong>
+              <span fg={theme.muted}>  {fileRows.length} entries</span>
+            </text>
             <text fg={theme.text}>{truncate(shortenRoot(fileTree.root), SIDEBAR_WIDTH - 4)}</text>
             <text fg={fileTree.isGitRepo ? theme.user : theme.border}>
               {fileTree.isGitRepo
                 ? `git ✓ ${Object.keys(fileTree.gitStatus).length} changed`
                 : 'not a repo'}
             </text>
+            <box
+              style={{
+                flexDirection: 'row',
+                width: SIDEBAR_WIDTH - 2,
+                marginTop: 1,
+                backgroundColor: fileSearchFocused ? '#313244' : '#181825',
+                border: ['left'],
+                borderColor: fileSearchFocused ? theme.accent : theme.border,
+                paddingLeft: 1,
+              }}
+              onMouseDown={(event) => {
+                event.stopPropagation?.();
+                onFileSearchFocus();
+              }}
+            >
+              <text fg={fileSearchFocused ? theme.accent : theme.muted}>⌕ </text>
+              <input
+                ref={fileSearchRef}
+                style={{ flexGrow: 1 }}
+                placeholder="search files…"
+                focused={fileSearchFocused}
+                onInput={onFileSearchChange}
+              />
+            </box>
+            {fileQuery ? (
+              <text fg={theme.muted}>SEARCH · {fileRows.length} match(es)</text>
+            ) : null}
           </box>
           <text fg={theme.border}>──────────────────────────</text>
           <scrollbox
@@ -2057,17 +2548,17 @@ function Sidebar({
           >
             <box style={{ flexDirection: 'column', width: SIDEBAR_WIDTH - 2 }}>
               {fileRows.length === 0 ? (
-                <text fg={theme.muted}>无文件</text>
+                <text fg={theme.muted}>{fileQuery ? '没有匹配文件' : '无文件'}</text>
               ) : (
                 fileRows.map((row, index) => {
                   const selected = index === fileSelected;
                   const indent = '  '.repeat(row.depth);
-                  const caret = row.type === 'dir' ? (row.expanded ? '▾ ' : '▸ ') : '· ';
-                  const statusWidth = row.gitStatus ? 2 : 0;
+                  const glyph = row.type === 'file' ? fileGlyph(row.name) : null;
+                  const caret = row.type === 'dir' ? (row.expanded ? '▾ ' : '▸ ') : '';
                   const lead = selected ? '❯ ' : '  ';
                   const nameWidth = Math.max(
                     4,
-                    SIDEBAR_WIDTH - 2 - lead.length - indent.length - 2 - statusWidth,
+                    SIDEBAR_WIDTH - 2 - lead.length - indent.length - caret.length - 2 - 2,
                   );
                   return (
                     <box
@@ -2078,6 +2569,15 @@ function Sidebar({
                         backgroundColor: selected ? '#313244' : undefined,
                       }}
                     >
+                      <text fg={selected ? theme.accent : theme.border}>
+                        {lead}
+                        {indent}
+                      </text>
+                      <text fg={row.type === 'dir' ? theme.accent : theme.muted}>
+                        {caret}
+                        {glyph ? glyph.glyph : ''}
+                        {glyph ? ' ' : ''}
+                      </text>
                       <text
                         fg={
                           row.type === 'dir'
@@ -2089,17 +2589,15 @@ function Sidebar({
                               : theme.muted
                         }
                       >
-                        {lead}
-                        {indent}
-                        {caret}
                         {truncate(row.name, nameWidth)}
                       </text>
                       <box style={{ flexGrow: 1 }} />
-                      {row.gitStatus ? (
-                        <text fg={statusColor[row.gitStatus] ?? theme.muted}>
-                          {row.gitStatus}{' '}
-                        </text>
-                      ) : null}
+                      <text
+                        fg={row.gitStatus ? statusColor[row.gitStatus] ?? theme.muted : theme.border}
+                        style={{ width: 2 }}
+                      >
+                        {row.gitStatus ?? ' '}
+                      </text>
                     </box>
                   );
                 })
@@ -2107,7 +2605,7 @@ function Sidebar({
               {fileTree.truncated ? <text fg={theme.warning}>… truncated</text> : null}
             </box>
           </scrollbox>
-          <text fg={theme.border}>↑↓ →← Enter · F5 · F1/F2</text>
+          <text fg={theme.border}>↑↓ move · →/Enter open · F5 refresh</text>
         </>
       )}
     </box>

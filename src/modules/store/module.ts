@@ -20,7 +20,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import type { Module } from '../../kernel/runtime';
 import type { AsyncEventBus } from '../../kernel/bus';
@@ -53,6 +53,7 @@ interface SessionHeader {
   session_id: string;
   created_at: string;
   first_message: string;
+  workspace?: string;
   cron_history: Record<string, unknown>[];
   parent_session_id?: string;
   forked_at?: string;
@@ -64,6 +65,7 @@ interface SessionFile {
   session_id: string;
   created_at: string;
   first_message: string;
+  workspace?: string;
   events: SessionEventRecord[];
   cron_history: Record<string, unknown>[];
   parent_session_id?: string;
@@ -75,6 +77,8 @@ export interface StoreModuleOptions {
   sessionsDir?: string;
   /** Directory for Markdown exports (default ~/.alex/exports). */
   exportsDir?: string;
+  /** Workspace bound to this store (default process.cwd()). */
+  cwd?: string;
 }
 
 export function defaultSessionsDir(): string {
@@ -86,10 +90,16 @@ export class StoreModule implements Module {
   readonly dependencies: readonly string[] = [];
   private readonly sessionsDir: string;
   private readonly exportsDir: string;
+  private readonly workspace: string;
+  /** Last persisted seq per session; avoids re-reading the whole JSONL per event. */
+  private readonly seqCache = new Map<string, number>();
+  /** Projected message count per session; avoids re-reading on every TurnCompleted. */
+  private readonly messageCountCache = new Map<string, number>();
 
   constructor(options: StoreModuleOptions = {}) {
     this.sessionsDir = options.sessionsDir ?? defaultSessionsDir();
     this.exportsDir = options.exportsDir ?? join(homedir(), '.alex', 'exports');
+    this.workspace = resolve(options.cwd ?? process.cwd());
   }
 
   async start(bus: AsyncEventBus): Promise<void> {
@@ -171,6 +181,8 @@ export class StoreModule implements Module {
       await unlink(tmp).catch(() => undefined);
       throw error;
     });
+    this.seqCache.set(sessionId, valid[valid.length - 1]?.seq ?? 0);
+    this.messageCountCache.set(sessionId, projectSessionEvents(valid).length);
     return { repaired: true, validEvents: valid.length, droppedEvents: dropped };
   }
 
@@ -215,6 +227,8 @@ export class StoreModule implements Module {
     if (!sessionId) return false;
     try {
       await unlink(this.sessionPath(sessionId));
+      this.seqCache.delete(sessionId);
+      this.messageCountCache.delete(sessionId);
       return true;
     } catch (error) {
       if (isNotFound(error)) return false;
@@ -255,44 +269,57 @@ export class StoreModule implements Module {
     if (!sessionId || records.length === 0) return;
     await mkdir(this.sessionsDir, { recursive: true });
     const path = this.sessionPath(sessionId);
-    const existing = await this.readSessionFile(sessionId);
-    if (!existing) {
-      const events = records.map((record, index) => ({
-        ...record,
-        seq: record.seq > 0 ? record.seq : index + 1,
-      }));
-      const header: SessionHeader = {
-        kind: 'session',
-        format_version: SESSION_FORMAT_VERSION,
-        session_id: sessionId,
-        created_at: new Date().toISOString(),
-        first_message: computeFirstMessage(projectSessionEvents(events)),
-        cron_history: [],
-      };
-      const lines = [JSON.stringify(header), ...events.map((event) => JSON.stringify(event))];
-      await writeFile(path, `${lines.join('\n')}\n`, 'utf8');
-      await syncFile(path);
-      return;
+    let lastSeq = this.seqCache.get(sessionId);
+    if (lastSeq === undefined) {
+      const existing = await this.readSessionFile(sessionId);
+      if (!existing) {
+        const events = records.map((record, index) => ({
+          ...record,
+          seq: record.seq > 0 ? record.seq : index + 1,
+        }));
+        const header: SessionHeader = {
+          kind: 'session',
+          format_version: SESSION_FORMAT_VERSION,
+          session_id: sessionId,
+          created_at: new Date().toISOString(),
+          first_message: computeFirstMessage(projectSessionEvents(events)),
+          workspace: this.workspace,
+          cron_history: [],
+        };
+        const lines = [JSON.stringify(header), ...events.map((event) => JSON.stringify(event))];
+        await writeFile(path, `${lines.join('\n')}\n`, 'utf8');
+        this.seqCache.set(sessionId, events[events.length - 1]?.seq ?? 0);
+        this.messageCountCache.set(sessionId, projectSessionEvents(events).length);
+        return;
+      }
+      lastSeq = existing.events[existing.events.length - 1]?.seq ?? 0;
+      this.seqCache.set(sessionId, lastSeq);
+      this.messageCountCache.set(sessionId, projectSessionEvents(existing.events).length);
     }
-    let lastSeq = existing.events.length > 0
-      ? existing.events[existing.events.length - 1]!.seq
-      : 0;
+    let seq = lastSeq ?? 0;
     const appended = records.map((record) => ({
       ...record,
-      seq: record.seq > lastSeq ? record.seq : ++lastSeq,
+      seq: record.seq > seq ? record.seq : ++seq,
     }));
     await appendFile(
       path,
       `${appended.map((event) => JSON.stringify(event)).join('\n')}\n`,
       'utf8',
     );
-    await syncFile(path);
+    this.seqCache.set(sessionId, seq);
+    let messageCount = this.messageCountCache.get(sessionId) ?? 0;
+    for (const event of appended) messageCount = nextMessageCount(messageCount, event);
+    this.messageCountCache.set(sessionId, messageCount);
+    // Do not fsync every event batch: this caused visible pauses on large
+    // sessions (each event used to re-read the whole JSONL and fsync it).
+    // Explicit CheckpointSession still flushes to disk.
   }
 
   /** Fork a session by copying its complete event log. */
   async forkSession(req: ForkSession): Promise<SessionBundle | null> {
     const source = await this.readSessionFile(req.sourceSessionId);
     if (!source) return null;
+    this.assertWorkspace(source);
     const events =
       req.boundarySeq === undefined
         ? source.events
@@ -307,6 +334,7 @@ export class StoreModule implements Module {
       session_id: targetId,
       created_at: created,
       first_message: firstMessage || source.first_message,
+      workspace: source.workspace ?? this.workspace,
       cron_history: source.cron_history,
       parent_session_id: source.session_id,
       forked_at: created,
@@ -320,6 +348,8 @@ export class StoreModule implements Module {
       'utf8',
     );
     await syncFile(path);
+    this.seqCache.set(targetId, events[events.length - 1]?.seq ?? 0);
+    this.messageCountCache.set(targetId, projectSessionEvents(events).length);
     return {
       sessionId: targetId,
       createdAt: created,
@@ -341,6 +371,8 @@ export class StoreModule implements Module {
     cronHistory?: Record<string, unknown>[],
   ): Promise<boolean> {
     if (!sessionId) throw new Error('sessionId is required');
+    const cachedMessages = this.messageCountCache.get(sessionId);
+    if (cachedMessages !== undefined && messages.length <= cachedMessages) return true;
     await mkdir(this.sessionsDir, { recursive: true });
     const path = this.sessionPath(sessionId);
     const existing = await this.readSessionFile(sessionId);
@@ -372,11 +404,14 @@ export class StoreModule implements Module {
         session_id: sessionId,
         created_at: new Date().toISOString(),
         first_message: computeFirstMessage(projected),
+        workspace: this.workspace,
         cron_history: cronHistory ?? [],
       };
       const lines = [JSON.stringify(header), ...events.map((event) => JSON.stringify(event))];
       await writeFile(path, `${lines.join('\n')}\n`, 'utf8');
       await syncFile(path);
+      this.seqCache.set(sessionId, events[events.length - 1]?.seq ?? 0);
+      this.messageCountCache.set(sessionId, projectSessionEvents(events).length);
       return true;
     }
     if (changed) {
@@ -387,6 +422,8 @@ export class StoreModule implements Module {
         'utf8',
       );
       await syncFile(path);
+      this.seqCache.set(sessionId, events[events.length - 1]?.seq ?? 0);
+      this.messageCountCache.set(sessionId, projectSessionEvents(events).length);
     }
     return true;
   }
@@ -422,6 +459,7 @@ export class StoreModule implements Module {
           forkedAt: data.forked_at,
           forkBoundarySeq: data.fork_boundary_seq,
           agentId: sessionAgentId(data.events),
+          workspace: data.workspace,
         },
       });
     }
@@ -436,7 +474,10 @@ export class StoreModule implements Module {
     if (!sessionId) return null;
     const data = await this.readSessionFile(sessionId);
     if (!data) return null;
+    this.assertWorkspace(data);
     const messages = projectSessionEvents(data.events);
+    this.seqCache.set(data.session_id || sessionId, data.events[data.events.length - 1]?.seq ?? 0);
+    this.messageCountCache.set(data.session_id || sessionId, messages.length);
     return {
       sessionId: data.session_id || sessionId,
       createdAt: data.created_at,
@@ -450,7 +491,22 @@ export class StoreModule implements Module {
       forkedAt: data.forked_at,
       forkBoundarySeq: data.fork_boundary_seq,
       agentId: sessionAgentId(data.events),
+      workspace: data.workspace,
     };
+  }
+
+  private assertWorkspace(data: SessionFile): void {
+    if (!data.workspace) return; // legacy sessions without a workspace stay resumable
+    const expected = resolve(data.workspace);
+    if (
+      process.platform === 'win32'
+        ? expected.toLowerCase() !== this.workspace.toLowerCase()
+        : expected !== this.workspace
+    ) {
+      throw new Error(
+        `会话属于其他工作区：${expected}\n当前工作区：${this.workspace}\n请在对应目录重新启动 Alex 后 resume`,
+      );
+    }
   }
 
   private sessionPath(sessionId: string): string {
@@ -484,6 +540,7 @@ export class StoreModule implements Module {
         session_id: header.session_id || sessionId,
         created_at: header.created_at || '',
         first_message: header.first_message || '',
+        workspace: header.workspace,
         events,
         cron_history: Array.isArray(header.cron_history) ? header.cron_history : [],
         parent_session_id: header.parent_session_id,
@@ -549,6 +606,21 @@ function renderSessionMarkdown(
     lines.push(content || '(empty)', '');
   }
   return `${lines.join('\n').trimEnd()}\n`;
+}
+
+function nextMessageCount(count: number, event: SessionEventRecord): number {
+  if (
+    event.type === 'user_message' ||
+    event.type === 'assistant_message' ||
+    event.type === 'tool_message'
+  ) {
+    return count + 1;
+  }
+  if (event.type === 'replace_messages') {
+    return Array.isArray(event.data?.messages) ? event.data.messages.length : 0;
+  }
+  if (event.type === 'clear_messages') return 0;
+  return count;
 }
 
 function sessionTitle(events: SessionEventRecord[]): string | undefined {

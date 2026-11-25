@@ -184,10 +184,10 @@ describe('ToolsModule over the bus', () => {
     await bus.shutdown();
   });
 
-  test('refuses paths outside the allowed roots', async () => {
-    const { bus, dir } = await makeEnv();
+  test('blocks paths outside the allowed roots when approval times out', async () => {
+    const { bus, dir } = await makeEnv({ approvalTimeoutMs: 80 });
     const result = await run(bus, 'read', { path: join(dir, '..', 'outside.txt') });
-    expect(result.output).toContain('outside the allowed roots');
+    expect(result.error).toContain('external path approval timed out');
     await bus.shutdown();
   });
 
@@ -247,6 +247,44 @@ describe('ToolsModule over the bus', () => {
     const full = await run(bus, 'write', { path, content: 'x' });
     expect(full.error).toBeUndefined();
     expect(await readFile(path, 'utf8')).toBe('x');
+    await bus.shutdown();
+  });
+
+  test('external paths need approval once per session', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'alex-ts-root-a-'));
+    const external = await mkdtemp(join(tmpdir(), 'alex-ts-root-b-'));
+    tempDirs.push(workspace, external);
+    const path = join(external, 'outside.txt');
+    await writeFile(path, 'outside content', 'utf8');
+    const bus = new AsyncEventBus();
+    const tools = new ToolsModule({
+      roots: [workspace],
+      policy: new PermissionPolicy({ allowed: ['read'], env: {} }),
+      plugins: false,
+    });
+    await tools.start(bus);
+    await bus.start();
+    const approvals: ToolApprovalRequested[] = [];
+    await bus.subscribe(ToolApprovalRequested, (event) => {
+      approvals.push(event);
+      bus.publish(new ToolApprovalResolved({ reqId: event.reqId, granted: true }));
+    });
+
+    const first = await run(bus, 'read', { path });
+    expect(first.error).toBeUndefined();
+    expect(first.output).toContain('outside content');
+    expect(approvals).toHaveLength(1);
+    expect(approvals[0]?.preview).toContain(external);
+
+    const second = await run(bus, 'read', { path });
+    expect(second.error).toBeUndefined();
+    expect(approvals).toHaveLength(1);
+
+    const other = await bus.request(
+      new ExecuteTool({ name: 'read', args: { path }, sessionId: 'other-session' }),
+    );
+    expect(other.output).toContain('outside content');
+    expect(approvals).toHaveLength(2);
     await bus.shutdown();
   });
 

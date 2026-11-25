@@ -35,6 +35,7 @@ import { launchTui } from './tui/launcher';
 import {
   GetSessionProjection,
   ListSessions,
+  LoadSession,
 } from './kernel/contracts/session';
 import { GetMCPStatus, GetToolCatalog } from './kernel/contracts/tools';
 
@@ -182,6 +183,21 @@ async function main(): Promise<void> {
 
   try {
     if (tuiMode) {
+      const explicitSessionId = options.sessionId ?? process.env.ALEX_SESSION_ID;
+      if (explicitSessionId) {
+        try {
+          const bundle = await bus.request(
+            new LoadSession({ targetSessionId: explicitSessionId }),
+          );
+          if (bundle) await tui.loadSession(explicitSessionId);
+        } catch (error) {
+          console.error(
+            `Error: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          process.exitCode = 1;
+          return;
+        }
+      }
       const toolCount = (await bus.request(new GetToolCatalog())).length;
       await launchTui({ tui, sessionId, toolCount });
     } else if (demo) {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -46,6 +46,46 @@ async function setup(): Promise<{
 }
 
 describe('session management', () => {
+  test('binds sessions to a workspace and rejects cross-workspace resume', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'alex-ts-workspace-'));
+    tempDirs.push(root);
+    const sessionsDir = join(root, 'sessions');
+    const workspaceA = join(root, 'project-a');
+    const workspaceB = join(root, 'project-b');
+    await mkdir(workspaceA, { recursive: true });
+    await mkdir(workspaceB, { recursive: true });
+
+    const busA = new AsyncEventBus();
+    const storeA = new StoreModule({ sessionsDir, cwd: workspaceA });
+    await storeA.start(busA);
+    await busA.start();
+    busA.publish(
+      new TurnCompleted({ sessionId: 'bound', messages: [userMessage('hello')] }),
+    );
+    await busA.idle();
+    const [meta] = await busA.request(new ListSessions());
+    expect(meta?.workspace).toBe(workspaceA);
+    await busA.shutdown();
+
+    const busB = new AsyncEventBus();
+    const storeB = new StoreModule({ sessionsDir, cwd: workspaceB });
+    await storeB.start(busB);
+    await busB.start();
+    await expect(
+      busB.request(new LoadSession({ targetSessionId: 'bound' })),
+    ).rejects.toThrow('其他工作区');
+    await busB.shutdown();
+
+    const busA2 = new AsyncEventBus();
+    const storeA2 = new StoreModule({ sessionsDir, cwd: workspaceA });
+    await storeA2.start(busA2);
+    await busA2.start();
+    expect((await busA2.request(new LoadSession({ targetSessionId: 'bound' })))?.sessionId).toBe(
+      'bound',
+    );
+    await busA2.shutdown();
+  });
+
   test('renames, pins, archives and unarchives sessions', async () => {
     const { bus } = await setup();
     bus.publish(
@@ -224,23 +264,4 @@ describe('session management in the TUI', () => {
     await bus.shutdown();
   });
 
-  test('searches inside the current conversation', async () => {
-    const { bus, tui } = await tuiSetup();
-    bus.publish(new TurnStarted({ sessionId: 's1', turnId: 't1', userInput: 'find this needle' }));
-    bus.publish(
-      new TurnCompleted({
-        sessionId: 's1',
-        turnId: 't1',
-        content: 'the needle is here',
-        messages: [],
-      }),
-    );
-    await bus.idle();
-    const result = tui.searchCurrentSession('needle');
-    expect(result.ok).toBe(true);
-    expect(tui.getSnapshot().page?.kind).toBe('search');
-    expect(tui.getSnapshot().page?.body).toContain('匹配：2 条');
-    expect(tui.getSnapshot().page?.body).toContain('find this needle');
-    await bus.shutdown();
-  });
 });
